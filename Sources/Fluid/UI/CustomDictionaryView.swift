@@ -43,7 +43,8 @@ struct CustomDictionaryView: View {
     @State private var isTrainingProcessing = false
     @State private var replacementConfirmation: ReplacementConfirmation?
     @State private var composerMode: DictionaryComposerMode = .train
-    @State private var manualTriggersText = ""
+    @State private var manualTriggerDraft = ""
+    @State private var manualTriggerChips: [String] = []
     @State private var manualReplacement = ""
     @State private var isDictionaryExpanded = false
 
@@ -184,7 +185,7 @@ struct CustomDictionaryView: View {
     }
 
     private var manualTriggers: [String] {
-        CustomDictionaryManualEntry.parseTriggers(self.manualTriggersText)
+        CustomDictionaryManualEntry.normalizedTriggers(self.manualTriggerChips + [self.manualTriggerDraft])
     }
 
     private var manualDuplicateTriggers: [String] {
@@ -486,10 +487,34 @@ struct CustomDictionaryView: View {
         VStack(alignment: .leading, spacing: self.theme.metrics.spacing.sm) {
             Text("When FluidVoice hears")
                 .font(self.theme.typography.captionStrong)
-            TextField("fluid voice, fluid boys", text: self.$manualTriggersText)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit { self.addManualReplacementIfValid() }
-            Text("Separate multiple versions with commas.")
+
+            HStack(spacing: self.theme.metrics.spacing.sm) {
+                TextField("fluid voice, comma, or phrase", text: self.$manualTriggerDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { self.addManualTriggerDraft() }
+
+                Button {
+                    self.addManualTriggerDraft()
+                } label: {
+                    Image(systemName: "plus")
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.bordered)
+                .disabled(CustomDictionaryManualEntry.normalizedTrigger(self.manualTriggerDraft) == nil)
+                .help("Add another version")
+            }
+
+            if !self.manualTriggerChips.isEmpty {
+                FlowLayout(spacing: 6) {
+                    ForEach(Array(self.manualTriggerChips.enumerated()), id: \.offset) { index, trigger in
+                        ManualTriggerChip(text: trigger) {
+                            self.manualTriggerChips.remove(at: index)
+                        }
+                    }
+                }
+            }
+
+            Text("Add one version at a time. Commas can be saved too.")
                 .font(self.theme.typography.caption)
                 .foregroundStyle(self.theme.palette.secondaryText)
         }
@@ -972,8 +997,19 @@ struct CustomDictionaryView: View {
             replacement: self.manualReplacement.trimmingCharacters(in: .whitespacesAndNewlines)
         )
         self.addReplacementEntry(entry)
-        self.manualTriggersText = ""
+        self.manualTriggerDraft = ""
+        self.manualTriggerChips = []
         self.manualReplacement = ""
+    }
+
+    private func addManualTriggerDraft() {
+        guard let trigger = CustomDictionaryManualEntry.normalizedTrigger(self.manualTriggerDraft) else { return }
+        guard !self.manualTriggerChips.contains(where: { $0.caseInsensitiveCompare(trigger) == .orderedSame }) else {
+            self.manualTriggerDraft = ""
+            return
+        }
+        self.manualTriggerChips.append(trigger)
+        self.manualTriggerDraft = ""
     }
 
     private func beginTrainingReplacement() {
@@ -1463,11 +1499,23 @@ private struct DictionaryComposerModeTab: View {
 }
 
 private enum CustomDictionaryManualEntry {
-    static func parseTriggers(_ text: String) -> [String] {
-        text
-            .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
-            .filter { !$0.isEmpty }
+    static func normalizedTrigger(_ text: String) -> String? {
+        let trigger = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return trigger.isEmpty ? nil : trigger
+    }
+
+    static func normalizedTriggers(_ values: [String]) -> [String] {
+        var seen: Set<String> = []
+        var triggers: [String] = []
+        triggers.reserveCapacity(values.count)
+
+        for value in values {
+            guard let trigger = self.normalizedTrigger(value), !seen.contains(trigger) else { continue }
+            seen.insert(trigger)
+            triggers.append(trigger)
+        }
+
+        return triggers
     }
 }
 
@@ -1704,6 +1752,39 @@ private struct DictionaryPreviewChip: View {
                             .stroke(self.theme.palette.cardBorder.opacity(0.35), lineWidth: 1)
                     )
             )
+    }
+}
+
+private struct ManualTriggerChip: View {
+    let text: String
+    let onDelete: () -> Void
+
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text(self.text)
+                .font(self.theme.typography.caption)
+                .lineLimit(1)
+
+            Button(action: self.onDelete) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(self.theme.palette.tertiaryText)
+            }
+            .buttonStyle(.plain)
+            .help("Remove \(self.text)")
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(self.theme.palette.cardBackground.opacity(0.85))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .stroke(self.theme.palette.cardBorder.opacity(0.35), lineWidth: 1)
+                )
+        )
     }
 }
 
@@ -2093,12 +2174,23 @@ struct AddDictionaryEntrySheet: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Misheard Words (triggers)")
                     .font(.subheadline.weight(.medium))
-                Text("Enter words separated by commas. These are what the transcription might hear.")
+                Text("Add one version per line. Commas can be saved too.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                TextField("fluid voice, fluid boys", text: self.$triggersText)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit { self.saveIfValid() }
+                TextEditor(text: self.$triggersText)
+                    .font(.body)
+                    .frame(minHeight: 54, maxHeight: 76)
+                    .scrollContentBackground(.hidden)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(self.theme.palette.contentBackground)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .stroke(self.theme.palette.cardBorder.opacity(0.5), lineWidth: 1)
+                            )
+                    )
 
                 // Duplicate warning
                 if !self.duplicateTriggers.isEmpty {
@@ -2185,10 +2277,9 @@ struct AddDictionaryEntrySheet: View {
     }
 
     private func parseTriggers() -> [String] {
-        self.triggersText
-            .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
-            .filter { !$0.isEmpty }
+        CustomDictionaryManualEntry.normalizedTriggers(
+            self.triggersText.components(separatedBy: .newlines)
+        )
     }
 
     private func saveIfValid() {
@@ -2243,12 +2334,23 @@ struct EditDictionaryEntrySheet: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Misheard Words (triggers)")
                     .font(.subheadline.weight(.medium))
-                Text("Enter words separated by commas. These are what the transcription might hear.")
+                Text("Add one version per line. Commas can be saved too.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                TextField("fluid voice, fluid boys", text: self.$triggersText)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit { self.saveIfValid() }
+                TextEditor(text: self.$triggersText)
+                    .font(.body)
+                    .frame(minHeight: 54, maxHeight: 76)
+                    .scrollContentBackground(.hidden)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(self.theme.palette.contentBackground)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .stroke(self.theme.palette.cardBorder.opacity(0.5), lineWidth: 1)
+                            )
+                    )
 
                 // Duplicate warning
                 if !self.duplicateTriggers.isEmpty {
@@ -2333,16 +2435,15 @@ struct EditDictionaryEntrySheet: View {
         .frame(minWidth: 400, idealWidth: 450, maxWidth: 500)
         .frame(minHeight: 320, idealHeight: 380, maxHeight: 420)
         .onAppear {
-            self.triggersText = self.entry.triggers.joined(separator: ", ")
+            self.triggersText = self.entry.triggers.joined(separator: "\n")
             self.replacement = self.entry.replacement
         }
     }
 
     private func parseTriggers() -> [String] {
-        self.triggersText
-            .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
-            .filter { !$0.isEmpty }
+        CustomDictionaryManualEntry.normalizedTriggers(
+            self.triggersText.components(separatedBy: .newlines)
+        )
     }
 
     private func saveIfValid() {

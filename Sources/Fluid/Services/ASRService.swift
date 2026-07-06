@@ -3361,9 +3361,9 @@ final class ASRService: ObservableObject {
             for trigger in entry.triggers {
                 guard !trigger.isEmpty else { continue }
 
-                let escapedTrigger = NSRegularExpression.escapedPattern(for: trigger)
+                let escapedTrigger = self.dictionaryPattern(for: trigger)
                 guard let regex = try? NSRegularExpression(
-                    pattern: "\\b" + escapedTrigger + "\\b",
+                    pattern: escapedTrigger,
                     options: .caseInsensitive
                 ) else { continue }
 
@@ -3371,8 +3371,31 @@ final class ASRService: ObservableObject {
             }
         }
 
-        self.cachedDictionaryPatterns = patterns
+        self.cachedDictionaryPatterns = patterns.sorted {
+            $0.regex.pattern.utf16.count > $1.regex.pattern.utf16.count
+        }
         self.dictionaryCacheNeedsRebuild = false
+    }
+
+    private static func dictionaryPattern(for trigger: String) -> String {
+        let escapedTrigger = NSRegularExpression.escapedPattern(for: trigger)
+        let prefix = self.startsWithWordCharacter(trigger) ? "\\b" : ""
+        let suffix = self.endsWithWordCharacter(trigger) ? "\\b" : ""
+        return prefix + escapedTrigger + suffix
+    }
+
+    private static func startsWithWordCharacter(_ text: String) -> Bool {
+        guard let scalar = text.unicodeScalars.first else { return false }
+        return self.isWordCharacter(scalar)
+    }
+
+    private static func endsWithWordCharacter(_ text: String) -> Bool {
+        guard let scalar = text.unicodeScalars.last else { return false }
+        return self.isWordCharacter(scalar)
+    }
+
+    private static func isWordCharacter(_ scalar: Unicode.Scalar) -> Bool {
+        CharacterSet.alphanumerics.contains(scalar) || scalar == "_"
     }
 
     /// Invalidates the dictionary cache. Called when settings change.

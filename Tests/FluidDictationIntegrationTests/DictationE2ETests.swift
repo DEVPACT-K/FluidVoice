@@ -298,6 +298,28 @@ final class DictationE2ETests: XCTestCase {
         }
     }
 
+    func testCustomDictionaryReplacementMatchesPunctuationTriggers() {
+        defer { ASRService.invalidateDictionaryCache() }
+        let entry = SettingsStore.CustomDictionaryEntry(
+            triggers: [",,", ","],
+            replacement: ","
+        )
+
+        self.withRestoredDefaults(keys: [self.customDictionaryEntriesKey]) {
+            SettingsStore.shared.customDictionaryEntries = [entry]
+            ASRService.invalidateDictionaryCache()
+
+            XCTAssertEqual(
+                ASRService.applyCustomDictionary("Hello,, world."),
+                "Hello, world."
+            )
+            XCTAssertEqual(
+                ASRService.applyCustomDictionary("Hello, world."),
+                "Hello, world."
+            )
+        }
+    }
+
     func testSlashCommandFormattingNormalizesSpokenAndLiteralCommands() {
         XCTAssertEqual(
             ASRService.applySlashCommandFormatting("Run slash status and then / model."),
