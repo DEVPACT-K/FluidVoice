@@ -63,20 +63,117 @@ private final class DictationAIStreamPreviewBuffer {
         let now = CFAbsoluteTimeGetCurrent()
         guard now - self.lastUIUpdate >= self.minimumUpdateInterval else { return }
         self.lastUIUpdate = now
-        self.publish()
+        self.publish(allowsUnanchoredRemovals: false)
     }
 
-    func flush() {
-        self.publish()
+    func flush(processedText: String) {
+        self.chunks = [processedText]
+        self.publish(allowsUnanchoredRemovals: true)
+        DictationAIDiffPreviewSnapshotWriter.write(
+            originalText: self.originalText,
+            processedText: processedText,
+            segments: NotchContentState.shared.dictationAIDiffPreviewSegments
+        )
     }
 
-    private func publish() {
+    private func publish(allowsUnanchoredRemovals: Bool) {
         let processedText = self.chunks.joined()
         NotchContentState.shared.updateDictationAIDiffPreview(
             originalText: self.originalText,
-            processedText: processedText
+            processedText: processedText,
+            allowsUnanchoredRemovals: allowsUnanchoredRemovals
         )
         NotchOverlayManager.shared.updateTranscriptionText(processedText)
+    }
+}
+
+private enum DictationAIDiffPreviewSnapshotWriter {
+    private static let fileManager = FileManager.default
+
+    static func write(
+        originalText: String,
+        processedText: String,
+        segments: [DictationAIDiffSegment]
+    ) {
+        guard !processedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+
+        do {
+            let url = try self.snapshotURL()
+            let html = self.html(originalText: originalText, processedText: processedText, segments: segments)
+            try html.write(to: url, atomically: true, encoding: .utf8)
+            DebugLogger.shared.info("Saved AI diff preview snapshot: \(url.path)", source: "DictationAIDiffPreview")
+        } catch {
+            DebugLogger.shared.warning("Failed to save AI diff preview snapshot: \(error.localizedDescription)", source: "DictationAIDiffPreview")
+        }
+    }
+
+    private static func snapshotURL() throws -> URL {
+        let baseDirectory = self.fileManager.urls(for: .libraryDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        let directory = baseDirectory.appendingPathComponent("Logs/Fluid", isDirectory: true)
+        if !self.fileManager.fileExists(atPath: directory.path) {
+            try self.fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        return directory.appendingPathComponent("DictationAIDiffPreview.html", isDirectory: false)
+    }
+
+    private static func html(
+        originalText: String,
+        processedText: String,
+        segments: [DictationAIDiffSegment]
+    ) -> String {
+        let rendered = segments.isEmpty
+            ? self.escape(processedText)
+            : segments.map(self.span(for:)).joined()
+
+        return """
+        <!doctype html>
+        <html>
+        <head>
+        <meta charset="utf-8">
+        <title>FluidVoice AI Diff Preview</title>
+        <style>
+        body { background: #111318; color: rgba(255,255,255,0.9); font: 15px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; margin: 28px; line-height: 1.55; }
+        h1 { font-size: 15px; margin: 0 0 16px; color: rgba(255,255,255,0.72); }
+        h2 { font-size: 12px; margin: 22px 0 8px; color: rgba(255,255,255,0.48); text-transform: uppercase; letter-spacing: 0.08em; }
+        section { max-width: 920px; }
+        .box { border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; padding: 14px 16px; background: rgba(255,255,255,0.04); white-space: pre-wrap; }
+        .inserted { color: #5cf293; }
+        .removed { color: #ff5c61; text-decoration: line-through; text-decoration-thickness: 1.5px; }
+        .unchanged { color: rgba(255,255,255,0.9); }
+        </style>
+        </head>
+        <body>
+        <section>
+        <h1>FluidVoice AI Diff Preview</h1>
+        <h2>Rendered diff</h2>
+        <div class="box">\(rendered)</div>
+        <h2>Raw transcription</h2>
+        <div class="box">\(self.escape(originalText))</div>
+        <h2>Final output</h2>
+        <div class="box">\(self.escape(processedText))</div>
+        </section>
+        </body>
+        </html>
+        """
+    }
+
+    private static func span(for segment: DictationAIDiffSegment) -> String {
+        let className: String
+        switch segment.kind {
+        case .unchanged: className = "unchanged"
+        case .inserted: className = "inserted"
+        case .removed: className = "removed"
+        }
+        return "<span class=\"\(className)\">\(self.escape(segment.text))</span>"
+    }
+
+    private static func escape(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
     }
 }
 
@@ -2111,11 +2208,14 @@ struct ContentView: View {
         let shouldUseAIOnStop = activeDictationSlot.map {
             DictationAIPostProcessingGate.isConfigured(for: $0, appBundleID: self.recordingAppInfo?.bundleId)
         } ?? DictationAIPostProcessingGate.isConfigured(for: .primary, appBundleID: self.recordingAppInfo?.bundleId)
+        let shouldHoldOverlayForFinalASR = route == .normal &&
+            !SettingsStore.shared.selectedSpeechModel.supportsStreaming
         let shouldHideOverlayOnStop = route == .normal &&
             !wasRewriteMode &&
             !wasCommandMode &&
             !promptTest.isActive &&
-            !shouldUseAIOnStop
+            !shouldUseAIOnStop &&
+            !shouldHoldOverlayForFinalASR
         var didRequestOverlayHideOnStop = false
         DebugLogger.shared.info(
             "Routing decision snapshot | activeMode=\(modeAtStop.rawValue) | rewrite=\(wasRewriteMode) | command=\(wasCommandMode) | overlay=\(NotchContentState.shared.mode.rawValue)",
@@ -2157,9 +2257,6 @@ struct ContentView: View {
             "Stop transcription result | chars=\(transcribedText.count) | empty=\(transcribedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)",
             source: "ContentView"
         )
-
-        // Reset the transcription text display after transcription completes
-        NotchOverlayManager.shared.updateTranscriptionText("")
 
         guard transcribedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
             DebugLogger.shared.debug("Transcription returned empty text", source: "ContentView")
@@ -2206,12 +2303,11 @@ struct ContentView: View {
             return
         }
 
-        if NotchOverlayManager.shared.isBottomOverlayVisible {
-            BottomOverlayWindowController.shared.beginReleaseTransition()
-        }
-
         // If this was a rewrite recording, process the rewrite instead of typing
         if wasRewriteMode {
+            if NotchOverlayManager.shared.isBottomOverlayVisible {
+                BottomOverlayWindowController.shared.beginReleaseTransition()
+            }
             DebugLogger.shared.info("Processing rewrite with instruction: \(transcribedText)", source: "ContentView")
             let appInfo = self.recordingAppInfo ?? self.getCurrentAppInfo()
             await self.processRewriteWithVoiceInstruction(transcribedText, appInfo: appInfo)
@@ -2228,6 +2324,9 @@ struct ContentView: View {
 
         // If this was a command recording, process the command
         if wasCommandMode {
+            if NotchOverlayManager.shared.isBottomOverlayVisible {
+                BottomOverlayWindowController.shared.beginReleaseTransition()
+            }
             DebugLogger.shared.info("Processing command: \(transcribedText)", source: "ContentView")
             await self.processCommandWithVoice(transcribedText)
             AnalyticsService.shared.capture(
@@ -2264,13 +2363,16 @@ struct ContentView: View {
             let postProcessingInputChars = normalizedTranscribedText.count
             let postProcessingStart = Date()
 
-            // Update overlay text to show we're now refining (processing already true)
+            // Keep the final ASR text visible until streamed AI output takes over.
             self.appBench("processing_ui_request status=Refining")
             NotchContentState.shared.clearDictationAIDiffPreview()
-            NotchOverlayManager.shared.updateTranscriptionText("Refining")
+            NotchOverlayManager.shared.updateTranscriptionText(normalizedTranscribedText)
+            if NotchOverlayManager.shared.isBottomOverlayVisible {
+                BottomOverlayWindowController.shared.beginReleaseTransition(duration: 0.12)
+            }
             self.appBench("processing_ui_requested status=Refining")
 
-            // Ensure the status label becomes visible immediately.
+            // Ensure the final ASR preview becomes visible immediately.
             await Task.yield()
 
             let streamPreview = DictationAIStreamPreviewBuffer(originalText: normalizedTranscribedText)
@@ -2287,7 +2389,7 @@ struct ContentView: View {
                     dictationSlot: activeDictationSlot,
                     streamHandler: streamHandler
                 )
-                await streamPreview.flush()
+                await streamPreview.flush(processedText: finalText)
             } catch {
                 // Fall back to the raw transcription so the user still gets
                 // their words typed instead of an error string.
@@ -2328,6 +2430,9 @@ struct ContentView: View {
             NotchOverlayManager.shared.updateTranscriptionText("")
 
         } else {
+            if NotchOverlayManager.shared.isBottomOverlayVisible {
+                BottomOverlayWindowController.shared.beginReleaseTransition()
+            }
             finalText = normalizedTranscribedText
         }
 

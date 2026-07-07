@@ -10,8 +10,8 @@ import Combine
 import QuartzCore
 import SwiftUI
 
-struct DictationAIDiffSegment: Equatable {
-    enum Kind: Equatable {
+struct DictationAIDiffSegment: Equatable, Sendable {
+    enum Kind: Equatable, Sendable {
         case unchanged
         case inserted
         case removed
@@ -25,17 +25,28 @@ private enum DictationAIDiffBuilder {
     private struct WordToken: Equatable {
         let text: String
         let normalized: String
+        let renderedText: String
+    }
+
+    private struct Alignment {
+        var matchedProcessedIndexByOriginalIndex: [Int: Int] = [:]
+        var insertedIndicesByAnchor: [Int: [Int]] = [:]
+        var frontierOriginalIndex = -1
     }
 
     private static let maximumDiffWordCount = 180
     private static let punctuation = CharacterSet.punctuationCharacters
 
-    static func segments(originalText: String, processedText: String) -> [DictationAIDiffSegment] {
+    static func segments(
+        originalText: String,
+        processedText: String,
+        allowsUnanchoredRemovals: Bool = true
+    ) -> [DictationAIDiffSegment] {
         let originalWords = self.wordTokens(in: originalText)
         let processedWords = self.wordTokens(in: processedText)
 
         guard !processedWords.isEmpty else {
-            return self.render(words: originalWords, kind: .removed)
+            return allowsUnanchoredRemovals ? self.render(words: originalWords, kind: .removed) : []
         }
 
         guard !originalWords.isEmpty else {
@@ -48,38 +59,47 @@ private enum DictationAIDiffBuilder {
             return [DictationAIDiffSegment(text: processedText, kind: .unchanged)]
         }
 
-        let table = self.lcsTable(originalWords: originalWords, processedWords: processedWords)
-        let columns = processedWords.count + 1
+        let alignment = self.greedyAlignment(originalWords: originalWords, processedWords: processedWords)
+        let renderThroughIndex = allowsUnanchoredRemovals
+            ? originalWords.count - 1
+            : alignment.frontierOriginalIndex
+        let renderInsertionsThroughAnchor = allowsUnanchoredRemovals
+            ? originalWords.count
+            : min(alignment.frontierOriginalIndex + 1, originalWords.count)
+        guard renderThroughIndex >= 0 else {
+            return self.renderLiveLeadingInsertions(
+                alignment: alignment,
+                processedWords: processedWords
+            )
+        }
+
         var merged: [DictationAIDiffSegment] = []
         var rendered: [(String, DictationAIDiffSegment.Kind)] = []
-        var sourceIndex = 0
-        var targetIndex = 0
 
-        while sourceIndex < originalWords.count || targetIndex < processedWords.count {
-            if sourceIndex < originalWords.count,
-               targetIndex < processedWords.count,
-               originalWords[sourceIndex].normalized == processedWords[targetIndex].normalized
-            {
-                rendered.append((processedWords[targetIndex].text, .unchanged))
-                sourceIndex += 1
-                targetIndex += 1
-            } else if sourceIndex < originalWords.count,
-                      targetIndex == processedWords.count ||
-                      table[(sourceIndex + 1) * columns + targetIndex] >= table[sourceIndex * columns + targetIndex + 1]
-            {
-                rendered.append((originalWords[sourceIndex].text, .removed))
-                sourceIndex += 1
-            } else if targetIndex < processedWords.count {
-                rendered.append((processedWords[targetIndex].text, .inserted))
-                targetIndex += 1
+        for originalIndex in 0...min(renderThroughIndex, originalWords.count - 1) {
+            if let processedIndex = alignment.matchedProcessedIndexByOriginalIndex[originalIndex] {
+                for insertedIndex in alignment.insertedIndicesByAnchor[originalIndex] ?? [] {
+                    rendered.append((processedWords[insertedIndex].renderedText, .inserted))
+                }
+                rendered.append((processedWords[processedIndex].renderedText, .unchanged))
+            } else {
+                rendered.append((originalWords[originalIndex].renderedText, .removed))
+                for insertedIndex in alignment.insertedIndicesByAnchor[originalIndex] ?? [] {
+                    rendered.append((processedWords[insertedIndex].renderedText, .inserted))
+                }
             }
         }
 
-        for index in rendered.indices {
-            let suffix = index == rendered.count - 1 ? "" : " "
+        for anchorIndex in (renderThroughIndex + 1)...renderInsertionsThroughAnchor {
+            for processedIndex in alignment.insertedIndicesByAnchor[anchorIndex] ?? [] {
+                rendered.append((processedWords[processedIndex].renderedText, .inserted))
+            }
+        }
+
+        for item in rendered {
             self.appendSegment(
-                text: rendered[index].0 + suffix,
-                kind: rendered[index].1,
+                text: item.0,
+                kind: item.1,
                 to: &merged
             )
         }
@@ -87,42 +107,84 @@ private enum DictationAIDiffBuilder {
         return merged
     }
 
-    private static func wordTokens(in text: String) -> [WordToken] {
-        text
-            .split { $0.isWhitespace }
-            .compactMap { part in
-                let raw = String(part)
-                let normalized = raw
-                    .trimmingCharacters(in: self.punctuation)
-                    .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-                guard !raw.isEmpty else { return nil }
-                return WordToken(text: raw, normalized: normalized.isEmpty ? raw.lowercased() : normalized)
-            }
-    }
+    private static func greedyAlignment(originalWords: [WordToken], processedWords: [WordToken]) -> Alignment {
+        var alignment = Alignment()
+        var originalSearchIndex = 0
 
-    private static func lcsTable(originalWords: [WordToken], processedWords: [WordToken]) -> [Int] {
-        let columns = processedWords.count + 1
-        var table = Array(repeating: 0, count: (originalWords.count + 1) * columns)
-
-        for sourceIndex in stride(from: originalWords.count - 1, through: 0, by: -1) {
-            for targetIndex in stride(from: processedWords.count - 1, through: 0, by: -1) {
-                let index = sourceIndex * columns + targetIndex
-                if originalWords[sourceIndex].normalized == processedWords[targetIndex].normalized {
-                    table[index] = table[(sourceIndex + 1) * columns + targetIndex + 1] + 1
-                } else {
-                    table[index] = max(
-                        table[(sourceIndex + 1) * columns + targetIndex],
-                        table[sourceIndex * columns + targetIndex + 1]
-                    )
+        for processedIndex in processedWords.indices {
+            var matchedOriginalIndex: Int?
+            var candidateIndex = originalSearchIndex
+            while candidateIndex < originalWords.count {
+                if originalWords[candidateIndex].normalized == processedWords[processedIndex].normalized {
+                    matchedOriginalIndex = candidateIndex
+                    break
                 }
+                candidateIndex += 1
+            }
+
+            if let originalIndex = matchedOriginalIndex {
+                alignment.matchedProcessedIndexByOriginalIndex[originalIndex] = processedIndex
+                alignment.frontierOriginalIndex = max(alignment.frontierOriginalIndex, originalIndex)
+                originalSearchIndex = originalIndex + 1
+            } else {
+                alignment.insertedIndicesByAnchor[originalSearchIndex, default: []].append(processedIndex)
             }
         }
 
-        return table
+        return alignment
+    }
+
+    private static func renderLiveLeadingInsertions(
+        alignment: Alignment,
+        processedWords: [WordToken]
+    ) -> [DictationAIDiffSegment] {
+        let insertionIndices = alignment.insertedIndicesByAnchor[0] ?? []
+        let text = insertionIndices.map { processedWords[$0].renderedText }.joined()
+        guard !text.isEmpty else { return [] }
+        return [DictationAIDiffSegment(text: text, kind: .inserted)]
+    }
+
+    private static func wordTokens(in text: String) -> [WordToken] {
+        text
+            .split { $0.isWhitespace }
+            .enumerated()
+            .flatMap { index, part in
+                self.tokens(in: String(part), needsLeadingSpace: index > 0)
+            }
+    }
+
+    private static func tokens(in part: String, needsLeadingSpace: Bool) -> [WordToken] {
+        var tokens: [WordToken] = []
+        var current = ""
+        var currentIsPunctuation: Bool?
+
+        func appendCurrent() {
+            guard !current.isEmpty else { return }
+            let isFirstToken = tokens.isEmpty
+            let prefix = needsLeadingSpace && isFirstToken ? " " : ""
+            let normalized = currentIsPunctuation == true
+                ? current
+                : current.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            tokens.append(WordToken(text: current, normalized: normalized, renderedText: prefix + current))
+            current = ""
+            currentIsPunctuation = nil
+        }
+
+        for scalar in part.unicodeScalars {
+            let isPunctuation = self.punctuation.contains(scalar)
+            if let currentIsPunctuation, currentIsPunctuation != isPunctuation {
+                appendCurrent()
+            }
+            current.append(Character(scalar))
+            currentIsPunctuation = isPunctuation
+        }
+        appendCurrent()
+
+        return tokens
     }
 
     private static func render(words: [WordToken], kind: DictationAIDiffSegment.Kind) -> [DictationAIDiffSegment] {
-        let text = words.map(\.text).joined(separator: " ")
+        let text = words.map(\.renderedText).joined()
         guard !text.isEmpty else { return [] }
         return [DictationAIDiffSegment(text: text, kind: kind)]
     }
@@ -238,10 +300,15 @@ class NotchContentState: ObservableObject {
         self.isAIProcessingFailureVisible = false
     }
 
-    func updateDictationAIDiffPreview(originalText: String, processedText: String) {
+    func updateDictationAIDiffPreview(
+        originalText: String,
+        processedText: String,
+        allowsUnanchoredRemovals: Bool = true
+    ) {
         let segments = DictationAIDiffBuilder.segments(
             originalText: originalText,
-            processedText: processedText
+            processedText: processedText,
+            allowsUnanchoredRemovals: allowsUnanchoredRemovals
         )
         guard segments != self.dictationAIDiffPreviewSegments else { return }
         self.dictationAIDiffPreviewSegments = segments

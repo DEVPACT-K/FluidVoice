@@ -36,7 +36,6 @@ final class BottomOverlayWindowController {
     private var globalMouseDownMonitor: Any?
     private var targetScreen: NSScreen?
     private var releaseTransitionActiveUntil: Date?
-    private var deferredResizePending = false
     private var presentationGeneration: UInt64 = 0
     private let presentationDuration: TimeInterval = 0.05
     private let dismissalDuration: TimeInterval = 0.02
@@ -62,7 +61,7 @@ final class BottomOverlayWindowController {
         self.presentationGeneration &+= 1
         let currentGeneration = self.presentationGeneration
 
-        self.endReleaseTransition(flushDeferredUpdate: false)
+        self.endReleaseTransition()
         self.pendingResizeWorkItem?.cancel()
         self.pendingResizeWorkItem = nil
         BottomOverlayPromptMenuController.shared.hide()
@@ -160,7 +159,7 @@ final class BottomOverlayWindowController {
 
         guard let window = self.window, window.isVisible else {
             self.clearPresentationResources()
-            self.endReleaseTransition(flushDeferredUpdate: false)
+            self.endReleaseTransition()
             NotchContentState.shared.setBottomOverlayDismissing(false)
             NotchContentState.shared.targetAppIcon = nil
             Self.overlayBench("bottom_hide_return reason=no_window")
@@ -200,7 +199,7 @@ final class BottomOverlayWindowController {
 
         window.orderOut(nil)
         window.alphaValue = 1
-        self.endReleaseTransition(flushDeferredUpdate: false)
+        self.endReleaseTransition()
         NotchContentState.shared.setBottomOverlayDismissing(false)
         NotchContentState.shared.targetAppIcon = nil
         Self.overlayBench("bottom_hide_complete elapsedMs=\(Self.elapsedMs(since: startedAt))")
@@ -254,18 +253,11 @@ final class BottomOverlayWindowController {
         NotchContentState.shared.setBottomOverlayReleaseTransitioning(true)
     }
 
-    func endReleaseTransition(flushDeferredUpdate: Bool = true) {
+    func endReleaseTransition() {
         self.pendingReleaseTransitionResetWorkItem?.cancel()
         self.pendingReleaseTransitionResetWorkItem = nil
         self.releaseTransitionActiveUntil = nil
         NotchContentState.shared.setBottomOverlayReleaseTransitioning(false)
-
-        let shouldFlush = flushDeferredUpdate && self.deferredResizePending
-        self.deferredResizePending = false
-
-        if shouldFlush, self.window?.isVisible == true {
-            self.scheduleSizeAndPositionUpdate(after: 0)
-        }
     }
 
     private static func overlayBench(_ message: String) {
@@ -277,11 +269,6 @@ final class BottomOverlayWindowController {
     }
 
     private func scheduleSizeAndPositionUpdate(after delay: TimeInterval = 0.08) {
-        if self.isReleaseTransitionActive {
-            self.deferredResizePending = true
-            return
-        }
-
         self.pendingResizeWorkItem?.cancel()
 
         // Debounce rapid streaming updates to avoid resize thrash.
@@ -294,11 +281,6 @@ final class BottomOverlayWindowController {
 
     /// Update window size based on current SwiftUI content and re-position
     private func updateSizeAndPosition() {
-        if self.isReleaseTransitionActive {
-            self.deferredResizePending = true
-            return
-        }
-
         guard let window = window, let hostingView = window.contentView as? NSHostingView<BottomOverlayView> else { return }
 
         // Re-calculate fitting size for the new layout constants
@@ -355,16 +337,6 @@ final class BottomOverlayWindowController {
         panel.contentView = hostingView
 
         self.window = panel
-    }
-
-    private var isReleaseTransitionActive: Bool {
-        guard let deadline = self.releaseTransitionActiveUntil else { return false }
-        if deadline > Date() {
-            return true
-        }
-
-        self.releaseTransitionActiveUntil = nil
-        return false
     }
 
     private func ensureMouseDownMonitors() {
