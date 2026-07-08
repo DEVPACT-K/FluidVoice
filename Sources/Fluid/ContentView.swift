@@ -47,14 +47,9 @@ enum AIProcessingError: LocalizedError {
 
 @MainActor
 private final class DictationAIStreamPreviewBuffer {
-    private let originalText: String
     private var chunks: [String] = []
     private var lastUIUpdate = CFAbsoluteTimeGetCurrent()
     private let minimumUpdateInterval: CFTimeInterval = 0.033
-
-    init(originalText: String) {
-        self.originalText = originalText
-    }
 
     func append(_ chunk: String) {
         guard !chunk.isEmpty else { return }
@@ -72,10 +67,6 @@ private final class DictationAIStreamPreviewBuffer {
 
     private func publish() {
         let processedText = self.chunks.joined()
-        NotchContentState.shared.updateDictationAIDiffPreview(
-            originalText: self.originalText,
-            processedText: processedText
-        )
         NotchOverlayManager.shared.updateTranscriptionText(processedText)
     }
 }
@@ -2266,14 +2257,13 @@ struct ContentView: View {
 
             // Update overlay text to show we're now refining (processing already true)
             self.appBench("processing_ui_request status=Refining")
-            NotchContentState.shared.clearDictationAIDiffPreview()
             NotchOverlayManager.shared.updateTranscriptionText("Refining")
             self.appBench("processing_ui_requested status=Refining")
 
             // Ensure the status label becomes visible immediately.
             await Task.yield()
 
-            let streamPreview = DictationAIStreamPreviewBuffer(originalText: normalizedTranscribedText)
+            let streamPreview = DictationAIStreamPreviewBuffer()
             let streamHandler: PrivateAIStreamHandler = { chunk in
                 Task { @MainActor in
                     streamPreview.append(chunk)
@@ -2324,7 +2314,6 @@ struct ContentView: View {
 
             // Clear transient status text before leaving processing state to avoid
             // a brief non-shimmer "Refining..." preview flash.
-            NotchContentState.shared.clearDictationAIDiffPreview()
             NotchOverlayManager.shared.updateTranscriptionText("")
 
         } else {

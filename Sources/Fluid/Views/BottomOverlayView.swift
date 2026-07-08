@@ -2314,35 +2314,9 @@ struct BottomOverlayView: View {
         !self.processingPreviewText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private var processingPreviewSegments: [DictationAIDiffSegment] {
-        self.contentState.dictationAIDiffPreviewSegments
-    }
-
     private func richPreviewText(_ previewText: String) -> Text {
-        let segments = self.processingPreviewSegments
-        guard !segments.isEmpty else {
-            return Text(previewText)
-                .foregroundColor(.white.opacity(0.9))
-        }
-
-        return segments.reduce(Text("")) { partial, segment in
-            partial + self.segmentText(segment)
-        }
-    }
-
-    private func segmentText(_ segment: DictationAIDiffSegment) -> Text {
-        switch segment.kind {
-        case .unchanged:
-            return Text(segment.text)
-                .foregroundColor(.white.opacity(0.9))
-        case .inserted:
-            return Text(segment.text)
-                .foregroundColor(Color(red: 0.36, green: 0.95, blue: 0.58))
-        case .removed:
-            return Text(segment.text)
-                .foregroundColor(Color(red: 1.0, green: 0.36, blue: 0.38))
-                .strikethrough(true, color: Color(red: 1.0, green: 0.36, blue: 0.38))
-        }
+        Text(previewText)
+            .foregroundColor(.white.opacity(0.9))
     }
 
     private var overlayBorderLineWidth: CGFloat {
