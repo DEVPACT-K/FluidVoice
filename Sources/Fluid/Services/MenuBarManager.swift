@@ -944,10 +944,6 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
 
     private func bringToFront(_ window: NSWindow) {
         // Keep ordering explicit to avoid "opened but behind other apps" behavior.
-        if window.alphaValue <= 0.01 {
-            window.alphaValue = 1
-        }
-        window.orderFrontRegardless()
-        window.makeKeyAndOrderFront(nil)
+        window.revealOnActiveSpace()
     }
 }

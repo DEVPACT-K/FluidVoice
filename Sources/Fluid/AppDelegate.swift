@@ -310,11 +310,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     @discardableResult
     private func bringMainWindowToFrontIfPresent() -> Bool {
         if let mainWindow = NSApp.windows.first(where: self.isMainWindow) {
-            if mainWindow.alphaValue <= 0.01 {
-                mainWindow.alphaValue = 1
-            }
-            mainWindow.orderFrontRegardless()
-            mainWindow.makeKeyAndOrderFront(nil)
+            mainWindow.revealOnActiveSpace()
             DebugLogger.shared.debug("Brought main window to front", source: "AppDelegate")
             return true
         }
