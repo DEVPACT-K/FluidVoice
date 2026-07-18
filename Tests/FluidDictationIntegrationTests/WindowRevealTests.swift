@@ -17,10 +17,19 @@ final class WindowRevealTests: XCTestCase {
         window.isReleasedWhenClosed = false
         window.alphaValue = 0
 
+        let originalBehavior = window.collectionBehavior
         window.revealOnActiveSpace()
 
         XCTAssertTrue(window.collectionBehavior.contains(.moveToActiveSpace))
         XCTAssertEqual(window.alphaValue, 1)
+
+        // The behavior is scoped to the reveal and restored on the next runloop pass.
+        let restored = expectation(description: "collection behavior restored")
+        DispatchQueue.main.async {
+            XCTAssertEqual(window.collectionBehavior, originalBehavior)
+            restored.fulfill()
+        }
+        wait(for: [restored], timeout: 2)
         window.close()
     }
 }
