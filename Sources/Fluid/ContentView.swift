@@ -353,20 +353,31 @@ struct ContentView: View {
             }
             .toolbar {
                 if !self.settings.shouldShowOnboarding {
-                    ToolbarItemGroup(placement: .primaryAction) {
-                        self.todayStatsButton
-
-                        self.themePreferenceButton
-
-                        Button(action: self.openIssueReportingPage) {
-                            Image(systemName: "ladybug.fill")
+                    if #available(macOS 26.0, *) {
+                        ToolbarItem(placement: .primaryAction) {
+                            self.todayStatsButton
                         }
-                        .help("Report an issue")
-                        .accessibilityLabel("Report an issue")
+
+                        ToolbarSpacer(.fixed, placement: .primaryAction)
+
+                        ToolbarItem(placement: .primaryAction) {
+                            self.themePreferenceButton
+                        }
+
+                        ToolbarSpacer(.fixed, placement: .primaryAction)
+
+                        ToolbarItem(placement: .primaryAction) {
+                            self.issueReportingButton
+                        }
+                    } else {
+                        ToolbarItemGroup(placement: .primaryAction) {
+                            self.todayStatsButton
+                            self.themePreferenceButton
+                            self.issueReportingButton
+                        }
                     }
                 }
             }
-            .toolbar(removing: .sidebarToggle)
             .overlay(alignment: .center) {}
             .alert(
                 self.asr.errorTitle,
@@ -1163,6 +1174,14 @@ struct ContentView: View {
         NSWorkspace.shared.open(url)
     }
 
+    private var issueReportingButton: some View {
+        Button(action: self.openIssueReportingPage) {
+            Image(systemName: "ladybug.fill")
+        }
+        .help("Report an issue")
+        .accessibilityLabel("Report an issue")
+    }
+
     private var sidebarView: some View {
         List(selection: self.$selectedSidebarItem) {
             Section {
@@ -1190,7 +1209,7 @@ struct ContentView: View {
 
             Section {
                 self.sidebarNavigationLink(.welcome, title: "Getting Started", systemImage: "house.fill")
-                self.sidebarNavigationLink(.changelog, title: "Change logs", systemImage: "doc.text.magnifyingglass")
+                self.sidebarNavigationLink(.changelog, title: "Changelog", systemImage: "doc.text.magnifyingglass")
                 self.sidebarNavigationLink(.feedback, title: "Feedback", systemImage: "envelope.fill")
             } header: {
                 self.sidebarSectionHeader("Help")

@@ -6,7 +6,6 @@ struct AppTheme {
     struct Palette {
         let windowBackground: Color
         let contentBackground: Color
-        let sidebarBackground: Color
         let cardBackground: Color
         let elevatedCardBackground: Color
         let toolbarBackground: Color
@@ -260,7 +259,6 @@ struct AppTheme {
 
     struct Materials {
         let window: Material
-        let sidebar: Material
         let card: Material
         let elevatedCard: Material
         let formRow: Material
@@ -289,7 +287,6 @@ struct AppTheme {
             palette: Palette(
                 windowBackground: Color(nsColor: .windowBackgroundColor),
                 contentBackground: Color(nsColor: .controlBackgroundColor),
-                sidebarBackground: Color(nsColor: .windowBackgroundColor),
                 cardBackground: Color(nsColor: .controlBackgroundColor),
                 elevatedCardBackground: Color(nsColor: .windowBackgroundColor),
                 toolbarBackground: Color(nsColor: .windowBackgroundColor),
@@ -317,7 +314,6 @@ struct AppTheme {
             ),
             materials: Materials(
                 window: .thinMaterial,
-                sidebar: .ultraThinMaterial,
                 card: .thinMaterial,
                 elevatedCard: .regularMaterial,
                 formRow: .ultraThinMaterial,
@@ -332,7 +328,6 @@ struct AppTheme {
             palette: Palette(
                 windowBackground: Color(red: 0.07, green: 0.07, blue: 0.07),
                 contentBackground: Color(red: 0.09, green: 0.09, blue: 0.09),
-                sidebarBackground: Color(red: 0.06, green: 0.06, blue: 0.06),
                 cardBackground: Color(red: 0.08, green: 0.08, blue: 0.08),
                 elevatedCardBackground: Color(red: 0.11, green: 0.11, blue: 0.11),
                 toolbarBackground: Color(red: 0.06, green: 0.06, blue: 0.06),
@@ -360,7 +355,6 @@ struct AppTheme {
             ),
             materials: Materials(
                 window: .thinMaterial,
-                sidebar: .ultraThinMaterial,
                 card: .thinMaterial,
                 elevatedCard: .regularMaterial,
                 formRow: .ultraThinMaterial,
