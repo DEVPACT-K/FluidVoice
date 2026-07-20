@@ -16,11 +16,21 @@ enum DictionaryTrainingStep: Int, CaseIterable, Equatable {
     case verify
 }
 
+/// Immutable snapshot of the primitive training state the step model derives from.
+struct DictionaryTrainingSnapshot: Equatable {
+    let normalizedWord: String
+    let consecutiveCoveredCaptures: Int
+    let pronunciationEnrollmentCount: Int
+    let lastTrainingOutput: String
+    let lastTrainingOutputIsCovered: Bool
+    let trainingVariantsIsEmpty: Bool
+    let activePronunciationMatching: Bool
+}
+
 enum DictionaryTrainingStepModel {
     /// Replicates `trainingOutputIsCovered` (CustomDictionaryView.swift ~141-146).
     private static func isOutputCovered(
         lastTrainingOutputIsCovered: Bool,
-        trainingVariantsIsEmpty: Bool,
         pronunciationEnrollmentCount: Int,
         activePronunciationMatching: Bool
     ) -> Bool {
@@ -33,69 +43,49 @@ enum DictionaryTrainingStepModel {
     /// Single source of truth for `trainingAlreadyCorrectWithoutReplacement`;
     /// CustomDictionaryView delegates to this.
     static func alreadyCorrectWithoutReplacement(
-        normalizedWord: String,
-        consecutiveCoveredCaptures: Int,
-        pronunciationEnrollmentCount: Int,
-        lastTrainingOutput: String,
-        lastTrainingOutputIsCovered: Bool,
-        trainingVariantsIsEmpty: Bool,
-        activePronunciationMatching: Bool,
+        _ snapshot: DictionaryTrainingSnapshot,
         readyCoveredCount: Int
     ) -> Bool {
-        if activePronunciationMatching {
-            return trainingVariantsIsEmpty &&
-                !lastTrainingOutput.isEmpty &&
-                lastTrainingOutput.caseInsensitiveCompare(normalizedWord) == .orderedSame &&
-                pronunciationEnrollmentCount >= readyCoveredCount
+        if snapshot.activePronunciationMatching {
+            return snapshot.trainingVariantsIsEmpty &&
+                !snapshot.lastTrainingOutput.isEmpty &&
+                snapshot.lastTrainingOutput.caseInsensitiveCompare(snapshot.normalizedWord) == .orderedSame &&
+                snapshot.pronunciationEnrollmentCount >= readyCoveredCount
         }
 
         let outputIsCovered = self.isOutputCovered(
-            lastTrainingOutputIsCovered: lastTrainingOutputIsCovered,
-            trainingVariantsIsEmpty: trainingVariantsIsEmpty,
-            pronunciationEnrollmentCount: pronunciationEnrollmentCount,
-            activePronunciationMatching: activePronunciationMatching
+            lastTrainingOutputIsCovered: snapshot.lastTrainingOutputIsCovered,
+            pronunciationEnrollmentCount: snapshot.pronunciationEnrollmentCount,
+            activePronunciationMatching: snapshot.activePronunciationMatching
         )
-        return trainingVariantsIsEmpty &&
+        return snapshot.trainingVariantsIsEmpty &&
             outputIsCovered &&
-            !lastTrainingOutput.isEmpty &&
-            lastTrainingOutput.caseInsensitiveCompare(normalizedWord) == .orderedSame &&
-            consecutiveCoveredCaptures >= readyCoveredCount
+            !snapshot.lastTrainingOutput.isEmpty &&
+            snapshot.lastTrainingOutput.caseInsensitiveCompare(snapshot.normalizedWord) == .orderedSame &&
+            snapshot.consecutiveCoveredCaptures >= readyCoveredCount
     }
 
     /// Single source of truth for `trainingFinalOutputIsReady`;
     /// CustomDictionaryView delegates to this.
     static func finalOutputIsReady(
-        normalizedWord: String,
-        consecutiveCoveredCaptures: Int,
-        pronunciationEnrollmentCount: Int,
-        lastTrainingOutput: String,
-        lastTrainingOutputIsCovered: Bool,
-        trainingVariantsIsEmpty: Bool,
-        activePronunciationMatching: Bool,
+        _ snapshot: DictionaryTrainingSnapshot,
         readyCoveredCount: Int
     ) -> Bool {
         let alreadyCorrect = self.alreadyCorrectWithoutReplacement(
-            normalizedWord: normalizedWord,
-            consecutiveCoveredCaptures: consecutiveCoveredCaptures,
-            pronunciationEnrollmentCount: pronunciationEnrollmentCount,
-            lastTrainingOutput: lastTrainingOutput,
-            lastTrainingOutputIsCovered: lastTrainingOutputIsCovered,
-            trainingVariantsIsEmpty: trainingVariantsIsEmpty,
-            activePronunciationMatching: activePronunciationMatching,
+            snapshot,
             readyCoveredCount: readyCoveredCount
         )
 
-        if activePronunciationMatching {
-            return !alreadyCorrect && pronunciationEnrollmentCount >= readyCoveredCount
+        if snapshot.activePronunciationMatching {
+            return !alreadyCorrect && snapshot.pronunciationEnrollmentCount >= readyCoveredCount
         }
 
         let outputIsCovered = self.isOutputCovered(
-            lastTrainingOutputIsCovered: lastTrainingOutputIsCovered,
-            trainingVariantsIsEmpty: trainingVariantsIsEmpty,
-            pronunciationEnrollmentCount: pronunciationEnrollmentCount,
-            activePronunciationMatching: activePronunciationMatching
+            lastTrainingOutputIsCovered: snapshot.lastTrainingOutputIsCovered,
+            pronunciationEnrollmentCount: snapshot.pronunciationEnrollmentCount,
+            activePronunciationMatching: snapshot.activePronunciationMatching
         )
-        return !alreadyCorrect && outputIsCovered && consecutiveCoveredCaptures >= readyCoveredCount
+        return !alreadyCorrect && outputIsCovered && snapshot.consecutiveCoveredCaptures >= readyCoveredCount
     }
 
     /// Pure derivation of which step the composer logically represents right now,
@@ -107,36 +97,18 @@ enum DictionaryTrainingStepModel {
     ///   capture from snapping the accordion back to `.record`).
     /// - `.record` otherwise.
     static func derivedStep(
-        normalizedWord: String,
-        consecutiveCoveredCaptures: Int,
-        pronunciationEnrollmentCount: Int,
-        lastTrainingOutput: String,
-        lastTrainingOutputIsCovered: Bool,
-        trainingVariantsIsEmpty: Bool,
-        activePronunciationMatching: Bool,
+        _ snapshot: DictionaryTrainingSnapshot,
         readyCoveredCount: Int,
         hasReachedVerify: Bool
     ) -> DictionaryTrainingStep {
-        guard !normalizedWord.isEmpty else { return .word }
+        guard !snapshot.normalizedWord.isEmpty else { return .word }
 
         let ready = self.finalOutputIsReady(
-            normalizedWord: normalizedWord,
-            consecutiveCoveredCaptures: consecutiveCoveredCaptures,
-            pronunciationEnrollmentCount: pronunciationEnrollmentCount,
-            lastTrainingOutput: lastTrainingOutput,
-            lastTrainingOutputIsCovered: lastTrainingOutputIsCovered,
-            trainingVariantsIsEmpty: trainingVariantsIsEmpty,
-            activePronunciationMatching: activePronunciationMatching,
+            snapshot,
             readyCoveredCount: readyCoveredCount
         )
         let alreadyCorrect = self.alreadyCorrectWithoutReplacement(
-            normalizedWord: normalizedWord,
-            consecutiveCoveredCaptures: consecutiveCoveredCaptures,
-            pronunciationEnrollmentCount: pronunciationEnrollmentCount,
-            lastTrainingOutput: lastTrainingOutput,
-            lastTrainingOutputIsCovered: lastTrainingOutputIsCovered,
-            trainingVariantsIsEmpty: trainingVariantsIsEmpty,
-            activePronunciationMatching: activePronunciationMatching,
+            snapshot,
             readyCoveredCount: readyCoveredCount
         )
 

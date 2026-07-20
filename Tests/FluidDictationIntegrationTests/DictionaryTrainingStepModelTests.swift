@@ -14,14 +14,17 @@ final class DictionaryTrainingStepModelTests: XCTestCase {
         activePronunciationMatching: Bool = false,
         hasReachedVerify: Bool = false
     ) -> DictionaryTrainingStep {
-        DictionaryTrainingStepModel.derivedStep(
+        let snapshot = DictionaryTrainingSnapshot(
             normalizedWord: word,
             consecutiveCoveredCaptures: consecutiveCoveredCaptures,
             pronunciationEnrollmentCount: pronunciationEnrollmentCount,
             lastTrainingOutput: lastTrainingOutput,
             lastTrainingOutputIsCovered: lastTrainingOutputIsCovered,
             trainingVariantsIsEmpty: trainingVariantsIsEmpty,
-            activePronunciationMatching: activePronunciationMatching,
+            activePronunciationMatching: activePronunciationMatching
+        )
+        return DictionaryTrainingStepModel.derivedStep(
+            snapshot,
             readyCoveredCount: self.readyCoveredCount,
             hasReachedVerify: hasReachedVerify
         )
@@ -145,13 +148,15 @@ final class DictionaryTrainingStepModelTests: XCTestCase {
         activePronunciationMatching: Bool = false
     ) -> Bool {
         DictionaryTrainingStepModel.finalOutputIsReady(
-            normalizedWord: word,
-            consecutiveCoveredCaptures: consecutiveCoveredCaptures,
-            pronunciationEnrollmentCount: pronunciationEnrollmentCount,
-            lastTrainingOutput: lastTrainingOutput,
-            lastTrainingOutputIsCovered: lastTrainingOutputIsCovered,
-            trainingVariantsIsEmpty: trainingVariantsIsEmpty,
-            activePronunciationMatching: activePronunciationMatching,
+            DictionaryTrainingSnapshot(
+                normalizedWord: word,
+                consecutiveCoveredCaptures: consecutiveCoveredCaptures,
+                pronunciationEnrollmentCount: pronunciationEnrollmentCount,
+                lastTrainingOutput: lastTrainingOutput,
+                lastTrainingOutputIsCovered: lastTrainingOutputIsCovered,
+                trainingVariantsIsEmpty: trainingVariantsIsEmpty,
+                activePronunciationMatching: activePronunciationMatching
+            ),
             readyCoveredCount: self.readyCoveredCount
         )
     }
@@ -166,13 +171,15 @@ final class DictionaryTrainingStepModelTests: XCTestCase {
         activePronunciationMatching: Bool = false
     ) -> Bool {
         DictionaryTrainingStepModel.alreadyCorrectWithoutReplacement(
-            normalizedWord: word,
-            consecutiveCoveredCaptures: consecutiveCoveredCaptures,
-            pronunciationEnrollmentCount: pronunciationEnrollmentCount,
-            lastTrainingOutput: lastTrainingOutput,
-            lastTrainingOutputIsCovered: lastTrainingOutputIsCovered,
-            trainingVariantsIsEmpty: trainingVariantsIsEmpty,
-            activePronunciationMatching: activePronunciationMatching,
+            DictionaryTrainingSnapshot(
+                normalizedWord: word,
+                consecutiveCoveredCaptures: consecutiveCoveredCaptures,
+                pronunciationEnrollmentCount: pronunciationEnrollmentCount,
+                lastTrainingOutput: lastTrainingOutput,
+                lastTrainingOutputIsCovered: lastTrainingOutputIsCovered,
+                trainingVariantsIsEmpty: trainingVariantsIsEmpty,
+                activePronunciationMatching: activePronunciationMatching
+            ),
             readyCoveredCount: self.readyCoveredCount
         )
     }
