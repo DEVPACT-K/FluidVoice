@@ -19,6 +19,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     private var wasLaunchedAsLoginItem = false
     private var hasDeferredMLXUpgradeOffer = false
     private weak var mainWindowHiddenByAppHide: NSWindow?
+    private var shouldSuppressMainWindowLaunchReveal = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Bring up file logging + crash handlers immediately during launch.
@@ -125,6 +126,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         self.mainWindowHiddenByAppHide = nil
+        self.shouldSuppressMainWindowLaunchReveal = false
 
         if self.shouldSuppressNextReopenActivation {
             self.shouldSuppressNextReopenActivation = false
@@ -140,9 +142,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     func applicationWillHide(_ notification: Notification) {
         // A nonactivating recording panel can make AppKit unhide the process. Remember
         // the visible main window so the panel does not restore it along with itself.
-        self.didRevealMainWindowOnLaunch = true
+        self.shouldSuppressMainWindowLaunchReveal = true
         self.mainWindowHiddenByAppHide = NSApp.windows.first {
             self.isMainWindow($0) && $0.isVisible && !$0.isMiniaturized
+        }
+        if self.mainWindowHiddenByAppHide != nil {
+            self.didRevealMainWindowOnLaunch = true
         }
     }
 
@@ -151,8 +156,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
+        self.shouldSuppressMainWindowLaunchReveal = false
+
         if let mainWindow = self.mainWindowHiddenByAppHide {
             self.mainWindowHiddenByAppHide = nil
+            if mainWindow.alphaValue <= 0.01 {
+                mainWindow.alphaValue = 1
+            }
             mainWindow.orderFrontRegardless()
             mainWindow.makeKeyAndOrderFront(nil)
         }
@@ -223,7 +233,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
                 guard let self else { return }
                 guard self.didRevealMainWindowOnLaunch == false else { return }
 
-                if revealWindow {
+                let shouldRevealWindow = revealWindow && !self.shouldSuppressMainWindowLaunchReveal
+                if shouldRevealWindow {
                     NSApp.unhide(nil)
                     NSApp.activate(ignoringOtherApps: true)
 
@@ -238,7 +249,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 
                 DebugLogger.shared.debug("Main window not ready during launch reveal retry", source: "AppDelegate")
                 if delay >= 0.6 {
-                    self.requestMainWindowReopenIfNeeded(activate: revealWindow)
+                    self.requestMainWindowReopenIfNeeded(activate: shouldRevealWindow)
                 }
             }
         }
