@@ -18,6 +18,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     private var shouldSuppressNextReopenActivation = false
     private var wasLaunchedAsLoginItem = false
     private var hasDeferredMLXUpgradeOffer = false
+    private weak var mainWindowHiddenByAppHide: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Bring up file logging + crash handlers immediately during launch.
@@ -123,6 +124,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        self.mainWindowHiddenByAppHide = nil
+
         if self.shouldSuppressNextReopenActivation {
             self.shouldSuppressNextReopenActivation = false
             return true
@@ -134,10 +137,30 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         return !self.bringMainWindowToFrontIfPresent()
     }
 
+    func applicationWillHide(_ notification: Notification) {
+        // A nonactivating recording panel can make AppKit unhide the process. Remember
+        // the visible main window so the panel does not restore it along with itself.
+        self.didRevealMainWindowOnLaunch = true
+        self.mainWindowHiddenByAppHide = NSApp.windows.first {
+            self.isMainWindow($0) && $0.isVisible && !$0.isMiniaturized
+        }
+    }
+
+    func applicationDidHide(_ notification: Notification) {
+        self.mainWindowHiddenByAppHide?.orderOut(nil)
+    }
+
     func applicationDidBecomeActive(_ notification: Notification) {
-        guard self.hasDeferredMLXUpgradeOffer else { return }
-        self.hasDeferredMLXUpgradeOffer = false
-        self.scheduleMLXUpgradeOffer()
+        if let mainWindow = self.mainWindowHiddenByAppHide {
+            self.mainWindowHiddenByAppHide = nil
+            mainWindow.orderFrontRegardless()
+            mainWindow.makeKeyAndOrderFront(nil)
+        }
+
+        if self.hasDeferredMLXUpgradeOffer {
+            self.hasDeferredMLXUpgradeOffer = false
+            self.scheduleMLXUpgradeOffer()
+        }
     }
 
     func userNotificationCenter(
