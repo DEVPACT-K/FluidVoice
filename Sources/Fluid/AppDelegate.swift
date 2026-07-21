@@ -125,13 +125,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        self.mainWindowHiddenByAppHide = nil
-        self.shouldSuppressMainWindowLaunchReveal = false
-
         if self.shouldSuppressNextReopenActivation {
             self.shouldSuppressNextReopenActivation = false
             return true
         }
+
+        self.mainWindowHiddenByAppHide = nil
+        self.shouldSuppressMainWindowLaunchReveal = false
 
         // Ensure dock-icon reopen always foregrounds FluidVoice.
         sender.activate(ignoringOtherApps: true)
@@ -243,6 +243,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
                         return
                     }
                 } else if self.bootMainWindowHiddenIfPresent() {
+                    if self.shouldSuppressMainWindowLaunchReveal,
+                       self.mainWindowHiddenByAppHide == nil
+                    {
+                        self.mainWindowHiddenByAppHide = NSApp.windows.first(where: self.isMainWindow)
+                    }
                     self.didRevealMainWindowOnLaunch = true
                     return
                 }
