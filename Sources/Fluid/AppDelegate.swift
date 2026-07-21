@@ -140,6 +140,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     }
 
     func applicationWillHide(_ notification: Notification) {
+        // A system-hidden login launch is not a user request to suppress its configured reveal.
+        if self.wasLaunchedAsLoginItem,
+           !self.didRevealMainWindowOnLaunch,
+           !NSApp.isActive
+        {
+            return
+        }
+
         // A nonactivating recording panel can make AppKit unhide the process. Remember
         // the visible main window so the panel does not restore it along with itself.
         self.shouldSuppressMainWindowLaunchReveal = true
