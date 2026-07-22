@@ -376,6 +376,32 @@ final class HotkeyShortcutTests: XCTestCase {
     }
 
     @MainActor
+    func testMicrophoneCoordinatorPreservesDefaultWhenManualPreferenceCannotBeApplied() throws {
+        try self.withRestoredDefaults(keys: [
+            self.microphoneSelectionModeKey,
+            self.preferredInputDeviceUIDKey,
+        ]) {
+            SettingsStore.shared.microphoneSelectionMode = .manual
+            SettingsStore.shared.preferredInputDeviceUID = "studio-mic"
+            let devices = FakeAudioDeviceManager(
+                inputs: [
+                    Self.device(uid: "internal", name: "MacBook Pro Microphone"),
+                    Self.device(uid: "studio-mic", name: "Studio Mic"),
+                ],
+                defaultInputUID: "internal",
+                setInputSucceeds: false
+            )
+            let coordinator = MicrophonePreferenceCoordinator(settings: .shared, devices: devices)
+
+            let result = coordinator.enforcePreferredInput(reason: "unit test")
+
+            XCTAssertEqual(result, .failed("studio-mic"))
+            XCTAssertEqual(devices.setInputCalls, ["studio-mic"])
+            XCTAssertEqual(devices.defaultInputUID, "internal")
+        }
+    }
+
+    @MainActor
     func testMicrophoneCoordinatorKeepsUnavailableManualPreference() throws {
         try self.withRestoredDefaults(keys: [
             self.microphoneSelectionModeKey,
@@ -480,11 +506,13 @@ final class HotkeyShortcutTests: XCTestCase {
 private final class FakeAudioDeviceManager: AudioDeviceManaging {
     let inputs: [AudioDevice.Device]
     var defaultInputUID: String?
+    private let setInputSucceeds: Bool
     private(set) var setInputCalls: [String] = []
 
-    init(inputs: [AudioDevice.Device], defaultInputUID: String?) {
+    init(inputs: [AudioDevice.Device], defaultInputUID: String?, setInputSucceeds: Bool = true) {
         self.inputs = inputs
         self.defaultInputUID = defaultInputUID
+        self.setInputSucceeds = setInputSucceeds
     }
 
     func listInputDevices() -> [AudioDevice.Device] {
@@ -498,7 +526,9 @@ private final class FakeAudioDeviceManager: AudioDeviceManaging {
 
     func setDefaultInputDevice(uid: String) -> Bool {
         self.setInputCalls.append(uid)
-        self.defaultInputUID = uid
-        return true
+        if self.setInputSucceeds {
+            self.defaultInputUID = uid
+        }
+        return self.setInputSucceeds
     }
 }

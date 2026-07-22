@@ -1372,9 +1372,15 @@ final class ASRService: ObservableObject {
         self.isDictionaryTrainingCaptureActive = false
 
         do {
-            if SettingsStore.shared.microphoneSelectionMode == .manual {
-                AppServices.shared.microphonePreferenceCoordinator.enforcePreferredInput(reason: "recording start")
-            }
+            let microphoneCoordinator = AppServices.shared.microphonePreferenceCoordinator
+            let enforcementResult = microphoneCoordinator.enforcePreferredInput(reason: "recording start")
+            let effectiveInput = AudioDevice.getDefaultInputDevice()
+            DebugLogger.shared.info(
+                "Microphone routing prepared: mode=\(SettingsStore.shared.microphoneSelectionMode.rawValue), " +
+                    "enforcement=\(String(describing: enforcementResult)), " +
+                    "effective=\(effectiveInput.map { "'\($0.name)' (uid: \($0.uid))" } ?? "unavailable")",
+                source: "ASRService"
+            )
 
             try await self.startPreferredAudioCapture()
             self.isDictionaryTrainingCaptureActive = forDictionaryTraining
@@ -1943,49 +1949,10 @@ final class ASRService: ObservableObject {
         _ = engine.outputNode
         DebugLogger.shared.debug("✅ Output node instantiated", source: "ASRService")
 
-        // NOTE: Device binding occurs in startEngine() BEFORE engine.prepare()
-        // Per CoreAudio docs, device must be set before AudioUnit initialization (prepare)
-        // Since sync mode is always ON, binding actually no-ops and uses system defaults
+        // AVAudioEngine follows the current macOS default input. Manual microphone mode
+        // reasserts the preferred device as that default before this engine is configured.
 
         DebugLogger.shared.debug("✅ configureSession() - COMPLETED", source: "ASRService")
-    }
-
-    /// In independent mode, attempt to bind AVAudioEngine's input to the user's preferred input device.
-    /// In sync-with-system mode, we intentionally do nothing so the engine follows macOS defaults.
-    /// Returns true if binding succeeded or if no binding was needed, false if binding failed completely.
-    @discardableResult
-    private func bindPreferredInputDeviceIfNeeded() -> Bool {
-        DebugLogger.shared.debug("bindPreferredInputDeviceIfNeeded() - Starting input device binding", source: "ASRService")
-
-        guard SettingsStore.shared.microphoneSelectionMode == .manual else {
-            DebugLogger.shared.info("Using current macOS default input device", source: "ASRService")
-            return true
-        }
-
-        guard let device = self.resolvedInputDeviceForCapture() else {
-            DebugLogger.shared.error(
-                "No input device available for manual microphone capture.",
-                source: "ASRService"
-            )
-            return false
-        }
-
-        DebugLogger.shared.debug(
-            "Attempting to bind AVAudioEngine input to capture device '\(device.name)' (uid: \(device.uid))",
-            source: "ASRService"
-        )
-
-        let ok = self.setEngineInputDevice(deviceID: device.id, deviceUID: device.uid, deviceName: device.name)
-        if ok == false {
-            DebugLogger.shared.warning(
-                "Failed to bind engine input to '\(device.name)' (uid: \(device.uid)). Trying system default input.",
-                source: "ASRService"
-            )
-            return self.tryBindToSystemDefaultInput()
-        }
-
-        DebugLogger.shared.info("✅ Bound AVAudioEngine input to '\(device.name)'", source: "ASRService")
-        return true
     }
 
     /// In independent mode, attempt to bind AVAudioEngine's output to the user's preferred output device.
@@ -1997,38 +1964,6 @@ final class ASRService: ObservableObject {
 
         DebugLogger.shared.info("Using current macOS default output device", source: "ASRService")
         return true
-    }
-
-    /// Attempts to bind to the system default input device as a fallback.
-    /// Returns true if binding succeeded, false otherwise.
-    private func tryBindToSystemDefaultInput() -> Bool {
-        guard let defaultDevice = AudioDevice.getDefaultInputDevice() else {
-            DebugLogger.shared.error(
-                "No system default input device available. Cannot start audio capture.",
-                source: "ASRService"
-            )
-            return false
-        }
-
-        DebugLogger.shared.info(
-            "Attempting to bind to system default input: '\(defaultDevice.name)' (uid: \(defaultDevice.uid))",
-            source: "ASRService"
-        )
-
-        let ok = self.setEngineInputDevice(
-            deviceID: defaultDevice.id,
-            deviceUID: defaultDevice.uid,
-            deviceName: defaultDevice.name
-        )
-
-        if !ok {
-            DebugLogger.shared.error(
-                "Failed to bind to system default input device '\(defaultDevice.name)'. Audio capture cannot proceed.",
-                source: "ASRService"
-            )
-        }
-
-        return ok
     }
 
     /// Attempts to bind to the system default output device as a fallback.
@@ -2063,55 +1998,6 @@ final class ASRService: ObservableObject {
         }
 
         return ok
-    }
-
-    /// Selects a specific CoreAudio device for AVAudioEngine's input node without changing system defaults.
-    /// This uses the AUHAL AudioUnit backing `engine.inputNode` on macOS.
-    @discardableResult
-    private func setEngineInputDevice(deviceID: AudioObjectID, deviceUID: String, deviceName: String) -> Bool {
-        DebugLogger.shared.debug("setEngineInputDevice() - Binding input to device ID: \(deviceID)", source: "ASRService")
-
-        let inputNode = self.engine.inputNode
-
-        // `AVAudioInputNode` is backed by an AudioUnit on macOS. Setting this property selects
-        // which physical device the node captures from.
-        guard let audioUnit = inputNode.audioUnit else {
-            DebugLogger.shared.error(
-                "Unable to access AudioUnit for AVAudioEngine.inputNode; cannot bind to '\(deviceName)' (uid: \(deviceUID))",
-                source: "ASRService"
-            )
-            return false
-        }
-
-        var mutableDeviceID = deviceID
-        let status = AudioUnitSetProperty(
-            audioUnit,
-            kAudioOutputUnitProperty_CurrentDevice,
-            kAudioUnitScope_Global,
-            0,
-            &mutableDeviceID,
-            UInt32(MemoryLayout<AudioObjectID>.size)
-        )
-
-        if status != noErr {
-            // OSStatus -10851 (kAudioUnitErr_InvalidPropertyValue) occurs for aggregate devices (Bluetooth, etc.)
-            // This is expected for certain device types - not a fatal error
-            if status == -10_851 {
-                DebugLogger.shared.warning(
-                    "Cannot bind INPUT to '\(deviceName)' - likely an aggregate device (OSStatus: \(status)). Will use system default.",
-                    source: "ASRService"
-                )
-            } else {
-                DebugLogger.shared.error(
-                    "AudioUnitSetProperty(CurrentDevice) failed for INPUT '\(deviceName)' (uid: \(deviceUID), id: \(deviceID)) with OSStatus: \(status)",
-                    source: "ASRService"
-                )
-            }
-            return false
-        }
-
-        DebugLogger.shared.info("✅ Bound ASR input to '\(deviceName)' (uid: \(deviceUID), id: \(deviceID))", source: "ASRService")
-        return true
     }
 
     /// Selects a specific CoreAudio device for AVAudioEngine's output node without changing system defaults.
@@ -2163,34 +2049,6 @@ final class ASRService: ObservableObject {
         return true
     }
 
-    /// Explicitly unbinds the input device from AVAudioEngine's AudioUnit
-    /// This is CRITICAL for releasing Bluetooth devices so macOS can switch back to high-quality A2DP mode
-    private func unbindInputDevice() {
-        DebugLogger.shared.debug("unbindInputDevice() - Releasing input device binding to restore Bluetooth quality", source: "ASRService")
-
-        guard let audioUnit = self.engine.inputNode.audioUnit else {
-            DebugLogger.shared.warning("No AudioUnit for input node - cannot unbind device", source: "ASRService")
-            return
-        }
-
-        // Set device to kAudioObjectUnknown (0) to explicitly release the device binding
-        var unknownDevice = AudioObjectID(kAudioObjectUnknown)
-        let status = AudioUnitSetProperty(
-            audioUnit,
-            kAudioOutputUnitProperty_CurrentDevice,
-            kAudioUnitScope_Global,
-            0,
-            &unknownDevice,
-            UInt32(MemoryLayout<AudioObjectID>.size)
-        )
-
-        if status == noErr {
-            DebugLogger.shared.info("✅ Input device unbound - Bluetooth can now return to high-quality mode", source: "ASRService")
-        } else {
-            DebugLogger.shared.error("❌ Failed to unbind input device: OSStatus \(status)", source: "ASRService")
-        }
-    }
-
     /// Explicitly unbinds the output device from AVAudioEngine's AudioUnit
     /// This ensures complete release of audio device resources
     private func unbindOutputDevice() {
@@ -2226,21 +2084,18 @@ final class ASRService: ObservableObject {
 
         while attempts < 3 {
             do {
-                // CRITICAL: Bind devices BEFORE prepare() - must be set before AudioUnit initialization
-                // Note: This may fail for aggregate devices (Bluetooth, etc.) with OSStatus -10851
-                // In that case, we fall back to system defaults (same as sync mode)
-                DebugLogger.shared.debug("🎚️ Binding input device (before prepare)...", source: "ASRService")
-                let inputBindOk = self.bindPreferredInputDeviceIfNeeded()
-                DebugLogger.shared.debug("✅ Input device binding result: \(inputBindOk)", source: "ASRService")
+                DebugLogger.shared.debug(
+                    "🎚️ AVAudioEngine following current macOS default input device",
+                    source: "ASRService"
+                )
 
                 DebugLogger.shared.debug("🔊 Binding output device (before prepare)...", source: "ASRService")
                 let outputBindOk = self.bindPreferredOutputDeviceIfNeeded()
                 DebugLogger.shared.debug("✅ Output device binding result: \(outputBindOk)", source: "ASRService")
 
-                // If binding failed (e.g., aggregate device), engine will use system defaults
-                if !inputBindOk || !outputBindOk {
+                if !outputBindOk {
                     DebugLogger.shared.info(
-                        "⚠️ Device binding failed (likely aggregate device). Engine will use system default devices.",
+                        "⚠️ Output binding failed. Engine will use the system default output device.",
                         source: "ASRService"
                     )
                 }
