@@ -227,6 +227,25 @@ actor PrivateAIIntegrationService {
 
     private init() {}
 
+    private var _idleUnloadCoordinator: PrivateAIIdleUnloadCoordinator?
+
+    /// Lazily-created idle/memory-pressure/sleep unload coordinator. Only
+    /// instantiated when the private provider is available (OSS builds keep it
+    /// nil so no timer or system monitor ever runs).
+    private var idleUnloadCoordinator: PrivateAIIdleUnloadCoordinator? {
+        if let coordinator = self._idleUnloadCoordinator {
+            return coordinator
+        }
+        guard PrivateFeatures.privateAIProvider else { return nil }
+        let coordinator = PrivateAIIdleUnloadCoordinator(
+            onUnload: { [weak self] reason in
+                await self?.unloadCachedRuntime(reason: reason)
+            }
+        )
+        self._idleUnloadCoordinator = coordinator
+        return coordinator
+    }
+
     private nonisolated static var provider: any PrivateAIIntegrationProviding {
         PrivateAIProviderFeature.shared.isAvailable
             ? PrivateAIProviderRegistry.integration
@@ -344,6 +363,10 @@ actor PrivateAIIntegrationService {
     }
 
     func loadModel(_ model: PrivateAIRegisteredModel) async throws -> PrivateAIStatus {
+        await self.idleUnloadCoordinator?.beginRequest()
+        self.idleUnloadCoordinator?.noteActivity()
+        defer { self.idleUnloadCoordinator?.endRequest() }
+
         let status = try await Self.provider.loadModel(model)
         guard status.state == .ready else { return status }
 
@@ -375,14 +398,21 @@ actor PrivateAIIntegrationService {
     }
 
     func prewarmDictation() async {
+        await self.idleUnloadCoordinator?.beginRequest()
+        self.idleUnloadCoordinator?.noteActivity()
+        defer { self.idleUnloadCoordinator?.endRequest() }
         await Self.provider.prewarmDictation()
     }
 
     func unloadCachedRuntime(reason: String = "manual") async {
+        // Cancel the coordinator first so an idle/memory-pressure fire cannot
+        // race with this explicit teardown.
+        self.idleUnloadCoordinator?.cancel()
         await Self.provider.unloadCachedRuntime(reason: reason)
     }
 
     func shutdownForTermination() async {
+        self.idleUnloadCoordinator?.cancel()
         await Self.provider.shutdownForTermination()
     }
 
@@ -391,7 +421,10 @@ actor PrivateAIIntegrationService {
         runtime: RuntimeConfiguration,
         context: AppContext
     ) async throws -> EnhancementResult {
-        try await Self.provider.enhanceDictation(inputText, runtime: runtime, context: context)
+        await self.idleUnloadCoordinator?.beginRequest()
+        self.idleUnloadCoordinator?.noteActivity()
+        defer { self.idleUnloadCoordinator?.endRequest() }
+        return try await Self.provider.enhanceDictation(inputText, runtime: runtime, context: context)
     }
 
     func enhanceDictation(
@@ -400,7 +433,10 @@ actor PrivateAIIntegrationService {
         context: AppContext,
         streamHandler: PrivateAIStreamHandler?
     ) async throws -> EnhancementResult {
-        try await Self.provider.enhanceDictation(
+        await self.idleUnloadCoordinator?.beginRequest()
+        self.idleUnloadCoordinator?.noteActivity()
+        defer { self.idleUnloadCoordinator?.endRequest() }
+        return try await Self.provider.enhanceDictation(
             inputText,
             runtime: runtime,
             context: context,

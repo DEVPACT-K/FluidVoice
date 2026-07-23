@@ -685,6 +685,7 @@ extension AIEnhancementSettingsView {
             if self.privateAIShowsBoostRow {
                 self.privateAIBoostRow(isBusy: isBusy)
             }
+            self.privateAIIdleUnloadRow(isBusy: isBusy)
 
             if self.viewModel.connectionStatus(for: PrivateAIProviderFeature.shared.providerID) == .failed,
                !self.viewModel.connectionErrorMessage.isEmpty
@@ -836,6 +837,34 @@ extension AIEnhancementSettingsView {
         }
     }
 
+    private func privateAIIdleUnloadRow(isBusy: Bool) -> some View {
+        HStack(alignment: .center, spacing: 8) {
+            Text("Unload after idle")
+                .font(.caption)
+                .frame(width: 124, alignment: .leading)
+
+            Picker("", selection: self.privateAIIdleUnloadBinding) {
+                ForEach(SettingsStore.PrivateAIIdleUnloadOption.allCases) { option in
+                    Text(option.displayName).tag(option.rawValue)
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .controlSize(.mini)
+            .frame(width: 190)
+            .disabled(isBusy)
+            .help("Reclaims Fluid-1's ~3.3 GB of memory after it sits idle.")
+            .accessibilityLabel("Unload Fluid-1 after idle")
+
+            Text("Frees memory when Fluid-1 is not in use.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+
+            Spacer(minLength: 0)
+        }
+    }
+
     private func privateAIModelStatusRow(
         status: PrivateAIProviderModelStatus,
         progress: PrivateAIModelDownloadProgress?,
@@ -916,6 +945,13 @@ extension AIEnhancementSettingsView {
                     self.viewModel.refreshProviderItems()
                 }
             }
+        )
+    }
+
+    private var privateAIIdleUnloadBinding: Binding<Int> {
+        Binding(
+            get: { self.settings.privateAIIdleUnloadMinutes },
+            set: { self.settings.privateAIIdleUnloadMinutes = $0 }
         )
     }
 

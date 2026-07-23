@@ -22,6 +22,8 @@ final class SettingsStore: ObservableObject {
     static let privateAIDictationMinimumOutputTokens = 256
     static let privateAIDictationRoundTripTokenCost = 2.75
     static let privateAIBackendPreferenceDefaultsKey = "FluidIntelligenceBackendPreference"
+    static let defaultPrivateAIIdleUnloadMinutes = 5
+    static let allowedPrivateAIIdleUnloadMinutes: [Int] = [0, 5, 15, 30]
     private static let forcedOnboardingResetIntroducedAt = Date(timeIntervalSince1970: 1_782_091_732)
     private let defaults = UserDefaults.standard
     private let keychain = KeychainService.shared
@@ -103,6 +105,25 @@ final class SettingsStore: ObservableObject {
                     : "Recommended compatibility backend for Intel Macs."
             case .mlx:
                 return "Recommended and faster than llama.cpp. Replaces it after verification."
+            }
+        }
+    }
+
+    /// Picker options for `privateAIIdleUnloadMinutes`. `0` = Never.
+    enum PrivateAIIdleUnloadOption: Int, CaseIterable, Identifiable {
+        case never = 0
+        case fiveMinutes = 5
+        case fifteenMinutes = 15
+        case thirtyMinutes = 30
+
+        var id: Int { self.rawValue }
+
+        var displayName: String {
+            switch self {
+            case .never: return "Never"
+            case .fiveMinutes: return "5 min"
+            case .fifteenMinutes: return "15 min"
+            case .thirtyMinutes: return "30 min"
             }
         }
     }
@@ -1559,6 +1580,30 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    /// Idle timeout (in minutes) after which the resident Fluid-1 runtime is
+    /// unloaded to reclaim its ~3.3 GB helper memory (issue #548). `0` means
+    /// Never. Deliberately not part of `verificationFingerprint` or any
+    /// verification-reset path — changing it never invalidates provider
+    /// verification.
+    var privateAIIdleUnloadMinutes: Int {
+        get {
+            guard self.defaults.object(forKey: Keys.privateAIIdleUnloadMinutes) != nil else {
+                return Self.defaultPrivateAIIdleUnloadMinutes
+            }
+            let stored = self.defaults.integer(forKey: Keys.privateAIIdleUnloadMinutes)
+            return Self.allowedPrivateAIIdleUnloadMinutes.contains(stored)
+                ? stored
+                : Self.defaultPrivateAIIdleUnloadMinutes
+        }
+        set {
+            objectWillChange.send()
+            let clamped = Self.allowedPrivateAIIdleUnloadMinutes.contains(newValue)
+                ? newValue
+                : Self.defaultPrivateAIIdleUnloadMinutes
+            self.defaults.set(clamped, forKey: Keys.privateAIIdleUnloadMinutes)
+        }
+    }
+
     var privateAIBackendPreference: PrivateAIBackendPreference {
         get {
             let rawValue = self.defaults.string(forKey: Keys.privateAIBackendPreference)?
@@ -3006,6 +3051,7 @@ final class SettingsStore: ObservableObject {
             privateAIBoostEnabled: self.privateAIBoostEnabled,
             privateAIBackendPreference: self.privateAIBackendPreference,
             privateAIContextTokenLimit: self.privateAIContextTokenLimit,
+            privateAIIdleUnloadMinutes: self.privateAIIdleUnloadMinutes,
             selectedSpeechModel: self.selectedSpeechModel,
             selectedCohereLanguage: self.selectedCohereLanguage,
             selectedNemotronLanguage: self.selectedNemotronLanguage,
@@ -3113,6 +3159,9 @@ final class SettingsStore: ObservableObject {
         }
         if let privateAIContextTokenLimit = payload.privateAIContextTokenLimit {
             self.privateAIContextTokenLimit = privateAIContextTokenLimit
+        }
+        if let privateAIIdleUnloadMinutes = payload.privateAIIdleUnloadMinutes {
+            self.privateAIIdleUnloadMinutes = privateAIIdleUnloadMinutes
         }
         self.selectedSpeechModel = payload.selectedSpeechModel
         self.selectedCohereLanguage = payload.selectedCohereLanguage
@@ -4886,6 +4935,7 @@ private extension SettingsStore {
         static let privateAIBackendPreference = SettingsStore.privateAIBackendPreferenceDefaultsKey
         static let privateAIContextTokenLimit = "PrivateAIProviderContextTokenLimit"
         static let privateAIContextDefaultMigratedTo4K = "PrivateAIProviderContextDefaultMigratedTo4K"
+        static let privateAIIdleUnloadMinutes = "PrivateAIIdleUnloadMinutes"
         static let providerAPIKeys = "ProviderAPIKeys"
         static let providerAPIKeyIdentifiers = "ProviderAPIKeyIdentifiers"
         static let savedProviders = "SavedProviders"

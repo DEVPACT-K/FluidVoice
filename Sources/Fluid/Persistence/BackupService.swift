@@ -16,6 +16,8 @@ struct SettingsBackupPayload: Codable, Equatable {
     let privateAIBoostEnabled: Bool?
     let privateAIBackendPreference: SettingsStore.PrivateAIBackendPreference?
     let privateAIContextTokenLimit: Int?
+    // Optional so older backup files (which predate this setting) still decode.
+    let privateAIIdleUnloadMinutes: Int?
     let selectedSpeechModel: SettingsStore.SpeechModel
     let selectedCohereLanguage: SettingsStore.CohereLanguage
     let selectedNemotronLanguage: SettingsStore.NemotronLanguage?
