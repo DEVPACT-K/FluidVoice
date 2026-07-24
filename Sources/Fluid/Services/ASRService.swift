@@ -3169,6 +3169,14 @@ final class ASRService: ObservableObject {
             if Task.isCancelled || Self.isModelPreparationCancellation(error) {
                 throw CancellationError()
             }
+            if Self.isRateLimitOrNetworkError(error) {
+                DebugLogger.shared.warning(
+                    "ASRService: Prepare failed for \(provider.name) due to rate limiting or a network error; " +
+                        "skipping cache-clear recovery so cached files stay resumable: \(error)",
+                    source: "ASRService"
+                )
+                throw error
+            }
             firstError = error
             DebugLogger.shared.error("ASRService: First prepare attempt for \(provider.name) failed after \(String(format: "%.2f", Date().timeIntervalSince(start)))s", source: "ASRService")
             DebugLogger.shared.warning(
@@ -3226,6 +3234,32 @@ final class ASRService: ObservableObject {
         if error is CancellationError { return true }
         let nsError = error as NSError
         return nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled
+    }
+
+    /// Rate-limit and transport failures must not trigger the cache-clear recovery: clearing the
+    /// cache forces a full re-download, which burns more of HuggingFace's fixed per-IP API window
+    /// and turns a transient 429 into a self-reinforcing failure loop (issue #683).
+    private nonisolated static func isRateLimitOrNetworkError(_ error: Error) -> Bool {
+        // Providers may rebox the download error, so walk the underlying-error chain.
+        var current: Error? = error
+        var depth = 0
+        while let candidate = current, depth < 5 {
+            if let hfError = candidate as? DownloadUtils.HuggingFaceDownloadError {
+                switch hfError {
+                case .rateLimited, .htmlErrorResponse:
+                    return true
+                case .invalidResponse, .downloadFailed, .modelNotFound:
+                    return false
+                }
+            }
+            let nsError = candidate as NSError
+            if nsError.domain == NSURLErrorDomain {
+                return nsError.code != NSURLErrorCancelled
+            }
+            current = nsError.userInfo[NSUnderlyingErrorKey] as? Error
+            depth += 1
+        }
+        return false
     }
 
     // MARK: - Model lifecycle helpers (parity with original API)
