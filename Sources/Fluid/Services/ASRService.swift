@@ -3258,6 +3258,12 @@ final class ASRService: ObservableObject {
             if nsError.domain == NSURLErrorDomain {
                 return nsError.code != NSURLErrorCancelled
             }
+            // The app's own HuggingFaceModelDownloader signals HTTP failures as
+            // NSError(domain: "HF", code: <status>) — treat its rate-limit statuses
+            // the same way so Nemotron/Cohere downloads never wipe cache on a 429.
+            if nsError.domain == "HF", nsError.code == 429 || nsError.code == 503 {
+                return true
+            }
             current = nsError.userInfo[NSUnderlyingErrorKey] as? Error
             depth += 1
         }
