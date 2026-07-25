@@ -3244,6 +3244,7 @@ final class ASRService: ObservableObject {
         var current: Error? = error
         var depth = 0
         while let candidate = current, depth < 5 {
+            #if arch(arm64)
             if let hfError = candidate as? DownloadUtils.HuggingFaceDownloadError {
                 switch hfError {
                 case .rateLimited, .htmlErrorResponse:
@@ -3252,6 +3253,7 @@ final class ASRService: ObservableObject {
                     return false
                 }
             }
+            #endif
             let nsError = candidate as NSError
             if nsError.domain == NSURLErrorDomain {
                 return nsError.code != NSURLErrorCancelled
