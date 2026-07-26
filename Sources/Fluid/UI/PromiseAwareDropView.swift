@@ -38,7 +38,7 @@ struct PromiseAwareDropView: NSViewRepresentable {
         /// (e.g. by sidebar navigation) mid-drop.
         private static let promiseQueue: OperationQueue = {
             let queue = OperationQueue()
-            queue.maxConcurrentOperationCount = 4
+            queue.maxConcurrentOperationCount = 1
             return queue
         }()
 
@@ -186,58 +186,59 @@ struct PromiseAwareDropView: NSViewRepresentable {
             Self.detachWorker {
                 defer { state.endInFlight() }
 
-                // Modern path: each NSFilePromiseReceiver writes into its own
-                // item directory via the shared background operation queue. A
-                // directory counts as delivered only after its completion
-                // callback fires — polling alone could hand over a file whose
-                // (e.g. iCloud) download stalled mid-write.
-                if let receivers = pasteboard.readObjects(forClasses: [NSFilePromiseReceiver.self], options: nil) as? [NSFilePromiseReceiver] {
-                    for receiver in receivers {
-                        guard let dir = try? session.makeItemDirectory() else { continue }
-                        state.registerReceiverDir(dir)
-                        receiver.receivePromisedFiles(atDestination: dir, options: [:], operationQueue: Self.promiseQueue) { url, error in
-                            if let error {
-                                DebugLogger.shared.debug(
-                                    "Modern promise receiver failed [\(url.lastPathComponent)]: \(error.localizedDescription)",
-                                    source: "PromiseAwareDropView"
-                                )
-                            } else {
-                                state.markCompleted(dir)
-                            }
-                        }
-                    }
-                }
+                // ORDERING MATTERS: NSPasteboard is not thread-safe, and
+                // receivePromisedFiles touches the pasteboard from its own
+                // queue. All of OUR pasteboard reads happen first, single-
+                // threaded, and only then do the receivers start — concurrent
+                // access crashed with an NSInternalInconsistencyException in
+                // NSPasteboard's type cache (verified live on a 3-memo drag).
+                // Every read is additionally wrapped in an ObjC exception
+                // catcher: a C++ terminate handler in the process turns any
+                // uncaught NSException into abort().
 
-                let suggestedName = pasteboard.string(
-                    forType: NSPasteboard.PasteboardType("com.apple.pasteboard.promised-suggested-file-name")
-                )
-                let promisedTypeID = pasteboard.string(
-                    forType: NSPasteboard.PasteboardType("com.apple.pasteboard.promised-file-content-type")
-                )
-                DebugLogger.shared.debug(
-                    "Promise drop [receivers=\(state.receiverDirsSnapshot().count), type=\(promisedTypeID ?? "?"), name=\(suggestedName ?? "?")]",
-                    source: "PromiseAwareDropView"
-                )
-
-                // Raw-data fallback: some providers (verified for Voice Memos)
-                // also put each item's complete file bytes on the pasteboard
-                // under the promised content type. Read PER ITEM — the
-                // pasteboard-level data(forType:) only returns the first item,
-                // which would silently drop the rest of a multi-memo drag.
-                // Memory-heavy for long recordings, so it is the last resort in
-                // the delivery priority order. Identically-named items get
-                // disambiguated file names within the shared data dir.
-                if let dataDir {
-                    var usedNames = Set<String>()
-                    for (index, item) in (pasteboard.pasteboardItems ?? []).enumerated() {
+                // 1. Snapshot the receiver objects and per-item metadata/bytes.
+                var receivers: [NSFilePromiseReceiver] = []
+                var suggestedName: String?
+                var promisedTypeID: String?
+                var itemPayloads: [(name: String?, data: Data)] = []
+                let readError = FluidCatchObjCException {
+                    receivers = (pasteboard.readObjects(forClasses: [NSFilePromiseReceiver.self], options: nil) as? [NSFilePromiseReceiver]) ?? []
+                    suggestedName = pasteboard.string(
+                        forType: NSPasteboard.PasteboardType("com.apple.pasteboard.promised-suggested-file-name")
+                    )
+                    promisedTypeID = pasteboard.string(
+                        forType: NSPasteboard.PasteboardType("com.apple.pasteboard.promised-file-content-type")
+                    )
+                    for item in pasteboard.pasteboardItems ?? [] {
                         guard let itemTypeID = item.string(
                             forType: NSPasteboard.PasteboardType("com.apple.pasteboard.promised-file-content-type")
                         ) ?? promisedTypeID else { continue }
                         guard let data = item.data(forType: NSPasteboard.PasteboardType(itemTypeID)),
                               !data.isEmpty else { continue }
-                        let itemName = item.string(
+                        let name = item.string(
                             forType: NSPasteboard.PasteboardType("com.apple.pasteboard.promised-suggested-file-name")
-                        ) ?? suggestedName ?? "Dropped Audio \(index + 1)"
+                        )
+                        itemPayloads.append((name: name, data: data))
+                    }
+                }
+                if let readError {
+                    DebugLogger.shared.warning(
+                        "Pasteboard read raised: \(readError)",
+                        source: "PromiseAwareDropView"
+                    )
+                }
+                DebugLogger.shared.debug(
+                    "Promise drop [receivers=\(receivers.count), items=\(itemPayloads.count), type=\(promisedTypeID ?? "?"), name=\(suggestedName ?? "?")]",
+                    source: "PromiseAwareDropView"
+                )
+
+                // 2. Raw-data fallback: write each item's bytes into the shared
+                // data dir (verified as the reliable path for Voice Memos).
+                // Identically-named items get disambiguated file names.
+                if let dataDir, !itemPayloads.isEmpty {
+                    var usedNames = Set<String>()
+                    for (index, payload) in itemPayloads.enumerated() {
+                        let itemName = payload.name ?? suggestedName ?? "Dropped Audio \(index + 1)"
                         var fileName = itemName
                         var counter = 2
                         while usedNames.contains(fileName) {
@@ -249,9 +250,9 @@ struct PromiseAwareDropView: NSViewRepresentable {
                         usedNames.insert(fileName)
                         let target = dataDir.appendingPathComponent(fileName)
                         do {
-                            try data.write(to: target)
+                            try payload.data.write(to: target)
                             DebugLogger.shared.debug(
-                                "Raw-data fallback wrote \(data.count) bytes to \(target.lastPathComponent)",
+                                "Raw-data fallback wrote \(payload.data.count) bytes to \(target.lastPathComponent)",
                                 source: "PromiseAwareDropView"
                             )
                         } catch {
@@ -263,7 +264,26 @@ struct PromiseAwareDropView: NSViewRepresentable {
                     }
                 }
 
-                // Legacy fallback (deprecated namesOfPromisedFilesDroppedAtDestination:),
+                // 3. Modern receivers, started only after our reads are done.
+                // Still required even when the raw-data path delivered: leaving
+                // a promise unresolved wedges the source app's drag machinery
+                // (Voice Memos refuses further drags until restarted).
+                for receiver in receivers {
+                    guard let dir = try? session.makeItemDirectory() else { continue }
+                    state.registerReceiverDir(dir)
+                    receiver.receivePromisedFiles(atDestination: dir, options: [:], operationQueue: Self.promiseQueue) { url, error in
+                        if let error {
+                            DebugLogger.shared.debug(
+                                "Modern promise receiver failed [\(url.lastPathComponent)]: \(error.localizedDescription)",
+                                source: "PromiseAwareDropView"
+                            )
+                        } else {
+                            state.markCompleted(dir)
+                        }
+                    }
+                }
+
+                // 4. Legacy fallback (deprecated namesOfPromisedFilesDroppedAtDestination:),
                 // strictly last resort. A pending legacy request freezes the
                 // source app's promise machinery until it answers (verified
                 // live: Voice Memos unresponsive for 35-80s, blocking further
@@ -288,9 +308,17 @@ struct PromiseAwareDropView: NSViewRepresentable {
                         state.beginInFlight()
                         Self.detachWorker {
                             defer { state.endInFlight() }
-                            let selector = Selector(("namesOfPromisedFilesDroppedAtDestination:"))
-                            let names = (sender.perform(selector, with: legacyDir)?
-                                .takeUnretainedValue() as? [String]) ?? []
+                            var names: [String] = []
+                            let legacyError = FluidCatchObjCException {
+                                names = (sender.perform(Selector(("namesOfPromisedFilesDroppedAtDestination:")), with: legacyDir)?
+                                    .takeUnretainedValue() as? [String]) ?? []
+                            }
+                            if let legacyError {
+                                DebugLogger.shared.warning(
+                                    "Legacy promise call raised: \(legacyError)",
+                                    source: "PromiseAwareDropView"
+                                )
+                            }
                             DebugLogger.shared.debug(
                                 "Legacy promise names: \(names)",
                                 source: "PromiseAwareDropView"
