@@ -1,16 +1,22 @@
+import Combine
 import SwiftUI
 import UniformTypeIdentifiers
 
 struct MeetingTranscriptionView: View {
     let asrService: ASRService
-    @StateObject private var transcriptionService: MeetingTranscriptionService
+    // Owned by FileTranscriptionSession (app-level) so in-flight transcriptions
+    // survive this view being destroyed by sidebar navigation.
+    @ObservedObject private var transcriptionService: MeetingTranscriptionService
+    @ObservedObject private var batchHolder: BatchCoordinatorHolder
     @ObservedObject private var fileHistoryStore = FileTranscriptionHistoryStore.shared
     @State private var selectedFileURL: URL?
     @Environment(\.theme) private var theme
 
     init(asrService: ASRService) {
         self.asrService = asrService
-        _transcriptionService = StateObject(wrappedValue: MeetingTranscriptionService(asrService: asrService))
+        let session = FileTranscriptionSession.shared
+        self.transcriptionService = session.service
+        self.batchHolder = session.batchHolder
     }
 
     @State private var showingFilePicker = false
@@ -58,24 +64,29 @@ struct MeetingTranscriptionView: View {
                     // File Selection Card
                     self.fileSelectionCard
 
-                    // Progress Card (only show when transcribing)
-                    if self.transcriptionService.isTranscribing {
+                    // Progress Card (only show when transcribing outside a batch)
+                    if self.transcriptionService.isTranscribing && !self.isBatchActive {
                         self.progressCard
                     }
 
-                    // Results Card (only show when we have results)
-                    if let result = transcriptionService.result {
+                    // Results Card (only show when we have results outside a batch)
+                    if let result = transcriptionService.result, !self.isBatchActive {
                         self.resultsCard(result: result)
                     }
 
-                    // Error Card (only show when we have an error)
-                    if let error = transcriptionService.error {
+                    // Error Card (only show when we have a single-file error)
+                    if let error = transcriptionService.error, !self.isBatchActive {
                         self.errorCard(error: error)
                     }
 
                     // Drop error (unsupported file type)
                     if let message = self.dropErrorMessage {
                         self.dropErrorCard(message: message)
+                    }
+
+                    // Batch transcription progress/results
+                    if self.isBatchActive {
+                        self.batchSection
                     }
 
                     // Recent transcriptions (persisted history)
@@ -89,6 +100,16 @@ struct MeetingTranscriptionView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Overlay, not background: AppKit's drag-target search walks views
+        // front-to-back, so the drop target must sit above the SwiftUI content.
+        // Its hitTest returns nil, so clicks pass through to the UI beneath.
+        .overlay(
+            PromiseAwareDropView(
+                onTargetedChange: { self.isDropTargeted = $0 },
+                onFiles: { self.handleIncomingFiles($0) },
+                onError: { self.dropErrorMessage = $0 }
+            )
+        )
         .background(self.theme.palette.windowBackground)
         .overlay(alignment: .topTrailing) {
             if self.showingCopyConfirmation {
@@ -178,7 +199,7 @@ struct MeetingTranscriptionView: View {
                     .padding(.vertical, 12)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(self.transcriptionService.isTranscribing)
+                .disabled(self.transcriptionService.isTranscribing || self.isBatchActive)
 
             } else {
                 // File picker button – whole area is tappable; supports drag-and-drop
@@ -214,22 +235,16 @@ struct MeetingTranscriptionView: View {
                         .strokeBorder(style: StrokeStyle(lineWidth: 2, dash: [8]))
                         .foregroundColor(Color.fluidGreen.opacity(self.isDropTargeted ? 0.7 : 0.3))
                 )
-                .onDrop(of: [.fileURL], isTargeted: self.$isDropTargeted) { providers in
-                    self.handleDrop(providers: providers)
-                }
             }
         }
         .fileImporter(
             isPresented: self.$showingFilePicker,
             allowedContentTypes: MeetingTranscriptionService.allowedContentTypes,
-            allowsMultipleSelection: false
+            allowsMultipleSelection: true
         ) { result in
             switch result {
             case let .success(urls):
-                if let url = urls.first {
-                    self.selectedFileURL = url
-                    self.transcriptionService.reset()
-                }
+                self.handleIncomingFiles(urls.map { (url: $0, stagingDir: nil) })
             case let .failure(error):
                 DebugLogger.shared.error("File picker error: \(error)", source: "MeetingTranscriptionView")
             }
@@ -535,34 +550,187 @@ struct MeetingTranscriptionView: View {
         )
     }
 
-    // MARK: - Helper Functions
+    // MARK: - Batch Transcription Section
 
-    private static let supportedFileExtensions = MeetingTranscriptionService.supportedFileExtensions
+    @ViewBuilder
+    private var batchSection: some View {
+        if let coordinator = self.batchHolder.coordinator, !coordinator.items.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text(self.batchHeader(coordinator: coordinator))
+                        .font(.headline)
 
-    private static let dropErrorCopy = MeetingTranscriptionService.dropErrorCopy
+                    Spacer()
 
-    private func handleDrop(providers: [NSItemProvider]) -> Bool {
-        guard let provider = providers.first else { return false }
-        provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
-            let url: URL? = (item as? URL) ?? (item as? Data).flatMap { URL(dataRepresentation: $0, relativeTo: nil) }
-            guard let url = url else { return }
-            let ext = url.pathExtension.lowercased()
-            guard Self.supportedFileExtensions.contains(ext) else {
-                DispatchQueue.main.async {
-                    self.dropErrorMessage = Self.dropErrorCopy
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                        self.dropErrorMessage = nil
+                    if coordinator.isRunning {
+                        // Pending items stop immediately; the in-flight file may
+                        // run to completion (native provider transcription has
+                        // no interruption point), hence the "Cancelling" state.
+                        if coordinator.isCancelRequested {
+                            Text("Cancelling…")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        } else {
+                            Button("Cancel") { coordinator.cancel() }
+                                .buttonStyle(.borderless)
+                                .foregroundColor(.red)
+                        }
+                    } else {
+                        Button("Done") { self.dismissBatch() }
+                            .buttonStyle(.borderless)
                     }
                 }
-                return
+
+                Divider()
+
+                VStack(spacing: 8) {
+                    ForEach(coordinator.items) { item in
+                        self.batchRow(item: item)
+                    }
+                }
             }
-            DispatchQueue.main.async {
-                self.selectedFileURL = url
-                self.transcriptionService.reset()
-                self.dropErrorMessage = nil
-            }
+            .padding()
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(self.theme.palette.cardBackground)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(self.theme.palette.cardBorder.opacity(0.45), lineWidth: 1)
+                    )
+            )
         }
-        return true
+    }
+
+    private func batchHeader(coordinator: BatchTranscriptionCoordinator) -> String {
+        if coordinator.isRunning {
+            return "Transcribing \(self.currentBatchPosition(in: coordinator)) of \(coordinator.items.count)"
+        }
+        return "Batch complete — \(coordinator.completedCount) transcribed, \(coordinator.failedCount) failed"
+    }
+
+    /// One-based position of the item currently being transcribed (or the next pending
+    /// item while between files), for the "Transcribing x of y" header.
+    private func currentBatchPosition(in coordinator: BatchTranscriptionCoordinator) -> Int {
+        let items = coordinator.items
+        if let index = items.firstIndex(where: { if case .transcribing = $0.status { return true }; return false }) {
+            return index + 1
+        }
+        if let index = items.firstIndex(where: { if case .pending = $0.status { return true }; return false }) {
+            return index + 1
+        }
+        return items.count
+    }
+
+    private func batchRow(item: BatchTranscriptionCoordinator.Item) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.url.lastPathComponent)
+                    .font(.system(size: 14, weight: .medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                self.batchDetailText(for: item.status)
+            }
+
+            Spacer()
+
+            self.batchStatusIcon(for: item.status)
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(self.theme.palette.contentBackground)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(self.theme.palette.cardBorder.opacity(0.3), lineWidth: 1)
+                )
+        )
+    }
+
+    @ViewBuilder
+    private func batchDetailText(for status: BatchTranscriptionCoordinator.Status) -> some View {
+        switch status {
+        case .failed(let message):
+            Text(message)
+                .font(.caption)
+                .foregroundColor(.red)
+                .lineLimit(2)
+                .truncationMode(.tail)
+        case .noSpeech:
+            Text("No speech detected")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        case .cancelled:
+            Text("Cancelled")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        default:
+            EmptyView()
+        }
+    }
+
+    @ViewBuilder
+    private func batchStatusIcon(for status: BatchTranscriptionCoordinator.Status) -> some View {
+        switch status {
+        case .pending:
+            Image(systemName: "clock")
+                .foregroundColor(.secondary)
+                .opacity(0.5)
+        case .transcribing:
+            ProgressView()
+                .controlSize(.small)
+                .fixedSize()
+        case .completed:
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundColor(Color.fluidGreen)
+        case .noSpeech:
+            Image(systemName: "speaker.slash.fill")
+                .foregroundColor(.secondary)
+        case .failed:
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundColor(.red)
+        case .cancelled:
+            Image(systemName: "xmark.circle.fill")
+                .foregroundColor(.secondary)
+        }
+    }
+
+    // MARK: - Helper Functions
+
+    /// True while a batch coordinator exists with any enqueued items (running or
+    /// finished-but-not-dismissed). Used to suppress the single-file cards while a
+    /// batch is in progress, since `transcribeFile` mutates the shared service state
+    /// for each batch item.
+    private var isBatchActive: Bool {
+        guard let coordinator = self.batchHolder.coordinator else { return false }
+        return !coordinator.items.isEmpty
+    }
+
+    /// Routes incoming files from a drop or the file picker.
+    ///
+    /// A single concrete file (no staging directory) follows the existing single-file
+    /// flow: select it and wait for the user to tap Transcribe. Everything else — two
+    /// or more files, or any staged (promised) file — is enqueued on the batch
+    /// coordinator so staged directories are reliably cleaned up after transcription.
+    private func handleIncomingFiles(_ files: [(url: URL, stagingDir: URL?)]) {
+        guard !files.isEmpty else { return }
+        self.dropErrorMessage = nil
+
+        let batchIsRunning = self.batchHolder.coordinator?.isRunning == true
+        if files.count == 1, let file = files.first, file.stagingDir == nil, !batchIsRunning {
+            self.selectedFileURL = file.url
+            self.transcriptionService.reset()
+            return
+        }
+
+        self.batchHolder.enqueue(files.map { .init(url: $0.url, stagingDir: $0.stagingDir) })
+    }
+
+    /// Clears the batch list and resets shared service state so a subsequent batch
+    /// starts fresh and no stale single-file result lingers.
+    private func dismissBatch() {
+        self.batchHolder.clear()
+        self.transcriptionService.reset()
     }
 
     private func transcribeFile() async {
@@ -602,6 +770,8 @@ struct MeetingTranscriptionView: View {
         }
     }
 }
+
+// MARK: - Batch Coordinator Ownership
 
 // MARK: - Document for Export
 

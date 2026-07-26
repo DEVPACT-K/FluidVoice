@@ -216,6 +216,7 @@ final class MeetingTranscriptionService: ObservableObject {
                     source: "MeetingTranscriptionService"
                 )
 
+                try Task.checkCancellation()
                 let nativeResult = try await provider.transcribeFile(at: fileURL)
                 let processingTime = Date().timeIntervalSince(startTime)
                 let result = TranscriptionResult(
@@ -284,6 +285,7 @@ final class MeetingTranscriptionService: ObservableObject {
             self.currentStatus = duration > 0 ? "Transcribing audio (\(Int(duration))s)..." : "Transcribing audio..."
 
             while currentFrame < audioFile.length {
+                try Task.checkCancellation()
                 let remainingFrames = AVAudioFrameCount(audioFile.length - currentFrame)
                 let framesToRead = min(sourceFramesPerChunk, remainingFrames)
 

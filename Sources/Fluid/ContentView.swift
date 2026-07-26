@@ -3074,6 +3074,15 @@ struct ContentView: View {
 
     /// Capture app context at start to avoid mismatches if the user switches apps mid-session
     private func startRecording() {
+        // File-transcription batches drive the same shared ASR model; starting
+        // dictation mid-batch would run concurrent inference through one model.
+        guard !FileTranscriptionSession.isBatchTranscribing else {
+            DebugLogger.shared.warning(
+                "Dictation blocked: batch file transcription in progress",
+                source: "ContentView"
+            )
+            return
+        }
         let model = SettingsStore.shared.selectedSpeechModel
         DebugLogger.shared.info(
             "ContentView: startRecording() for model=\(model.displayName), supportsStreaming=\(model.supportsStreaming)",
