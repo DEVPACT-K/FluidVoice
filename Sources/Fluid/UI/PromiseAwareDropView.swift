@@ -220,25 +220,46 @@ struct PromiseAwareDropView: NSViewRepresentable {
                 )
 
                 // Raw-data fallback: some providers (verified for Voice Memos)
-                // also put the complete file bytes on the pasteboard under the
-                // promised content type. Memory-heavy for long recordings, so
-                // it is the last resort in the delivery priority order.
-                if let dataDir, let typeID = promisedTypeID {
-                    let fileName = suggestedName ?? "Dropped Audio"
-                    guard let data = pasteboard.data(forType: NSPasteboard.PasteboardType(typeID)),
-                          !data.isEmpty else { return }
-                    let target = dataDir.appendingPathComponent(fileName)
-                    do {
-                        try data.write(to: target)
-                        DebugLogger.shared.debug(
-                            "Raw-data fallback wrote \(data.count) bytes to \(target.lastPathComponent)",
-                            source: "PromiseAwareDropView"
-                        )
-                    } catch {
-                        DebugLogger.shared.debug(
-                            "Raw-data fallback write failed: \(error.localizedDescription)",
-                            source: "PromiseAwareDropView"
-                        )
+                // also put each item's complete file bytes on the pasteboard
+                // under the promised content type. Read PER ITEM — the
+                // pasteboard-level data(forType:) only returns the first item,
+                // which would silently drop the rest of a multi-memo drag.
+                // Memory-heavy for long recordings, so it is the last resort in
+                // the delivery priority order. Identically-named items get
+                // disambiguated file names within the shared data dir.
+                if let dataDir {
+                    var usedNames = Set<String>()
+                    for (index, item) in (pasteboard.pasteboardItems ?? []).enumerated() {
+                        guard let itemTypeID = item.string(
+                            forType: NSPasteboard.PasteboardType("com.apple.pasteboard.promised-file-content-type")
+                        ) ?? promisedTypeID else { continue }
+                        guard let data = item.data(forType: NSPasteboard.PasteboardType(itemTypeID)),
+                              !data.isEmpty else { continue }
+                        let itemName = item.string(
+                            forType: NSPasteboard.PasteboardType("com.apple.pasteboard.promised-suggested-file-name")
+                        ) ?? suggestedName ?? "Dropped Audio \(index + 1)"
+                        var fileName = itemName
+                        var counter = 2
+                        while usedNames.contains(fileName) {
+                            let base = (itemName as NSString).deletingPathExtension
+                            let ext = (itemName as NSString).pathExtension
+                            fileName = ext.isEmpty ? "\(base) \(counter)" : "\(base) \(counter).\(ext)"
+                            counter += 1
+                        }
+                        usedNames.insert(fileName)
+                        let target = dataDir.appendingPathComponent(fileName)
+                        do {
+                            try data.write(to: target)
+                            DebugLogger.shared.debug(
+                                "Raw-data fallback wrote \(data.count) bytes to \(target.lastPathComponent)",
+                                source: "PromiseAwareDropView"
+                            )
+                        } catch {
+                            DebugLogger.shared.debug(
+                                "Raw-data fallback write failed: \(error.localizedDescription)",
+                                source: "PromiseAwareDropView"
+                            )
+                        }
                     }
                 }
 
@@ -410,7 +431,11 @@ struct PromiseAwareDropView: NSViewRepresentable {
                 // Modern produced nothing past the grace period but a fallback
                 // landed and its sizes are stable — use the fallback copies.
                 let modernProducedNothing = readyModernDirs.isEmpty && elapsed > modernGrace
+                // The worker must be done (no in-flight token) so a multi-item
+                // raw-data sweep that is still writing files 3..5 isn't
+                // delivered after only the first items stabilized.
                 let fallbackStable = !fallbackSizes.isEmpty && fallbackSizes == fallbackPrevSizes
+                    && !state.hasInFlightWork
                 if modernProducedNothing && fallbackStable {
                     self.deliver(modern: [], legacy: legacyFiles, data: dataFiles, context: makeContext())
                     return
