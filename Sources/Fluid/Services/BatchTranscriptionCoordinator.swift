@@ -153,17 +153,32 @@ final class BatchTranscriptionCoordinator: ObservableObject {
 
             self.isRunning = false
             self.batchTask = nil
-            self.resumeIdleWaiters()
+
+            // Self-draining: items enqueued while this batch was cancelling (or right as
+            // it finished) are still .pending and were never picked up above. Start a
+            // fresh run for them so they aren't stranded. cancel() already flips
+            // pre-existing .pending items to .cancelled, so only genuinely new items
+            // land here.
+            if self.items.contains(where: { if case .pending = $0.status { return true } else { return false } }) {
+                self.startBatch()
+            } else {
+                self.resumeIdleWaiters()
+            }
         }
     }
 
     private func processBatch() async {
-        var index = 0
-        while index < self.items.count {
+        while let index = self.nextPendingIndex() {
             if self.isCancelled { return }
             await self.processItem(at: index)
-            index += 1
         }
+    }
+
+    /// Finds the first item still awaiting processing. Completed/failed/cancelled items
+    /// are never revisited, so re-enqueuing after a finished-but-undismissed batch only
+    /// processes the newly appended items.
+    private func nextPendingIndex() -> Int? {
+        self.items.firstIndex { if case .pending = $0.status { return true } else { return false } }
     }
 
     private func processItem(at index: Int) async {

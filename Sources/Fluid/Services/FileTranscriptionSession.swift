@@ -22,6 +22,19 @@ final class FileTranscriptionSession {
         self.sharedIfCreated?.batchHolder.coordinator?.isRunning == true
     }
 
+    /// True from the moment a dictation/prompt/command/rewrite recording is about to
+    /// start until the session ends. This is the "intent to dictate" half of the
+    /// single-model arbiter shared with the batch transcribe closure below: it is set
+    /// synchronously on the main actor before any `await`, closing the TOCTOU window
+    /// where the batch closure's `AppServices.shared.asr.isRunning` check could pass
+    /// right before dictation flips `isRunning` true.
+    ///
+    /// Uses `sharedIfCreated` (not `shared`) so callers that only need to *read* the
+    /// flag never force-create the session/ASR service. `beginDictationIntent()` is the
+    /// one path allowed to force-create, since it's only called from the app's own
+    /// recording start path where creating the session is expected anyway.
+    private(set) var dictationIntent: Bool = false
+
     let service: MeetingTranscriptionService
     let batchHolder: BatchCoordinatorHolder
 
@@ -29,16 +42,32 @@ final class FileTranscriptionSession {
         let service = MeetingTranscriptionService(asrService: AppServices.shared.asr)
         self.service = service
         self.batchHolder = BatchCoordinatorHolder(transcribe: { url in
-            // Batch-vs-dictation arbitration: if the user is dictating, wait for
-            // the live session to finish before running this item through the
-            // shared model. Cancellation still interrupts the wait.
-            while AppServices.shared.asr.isRunning {
+            // Single-model arbitration: at most one of dictation, single-file
+            // transcription, and batch transcription may drive the shared ASR model at
+            // once. Wait for dictation intent (covers the TOCTOU window before
+            // AppServices.shared.asr.isRunning flips true), live dictation, and any
+            // in-flight single-file transcription. Cancellation still interrupts the wait.
+            while AppServices.shared.asr.isRunning
+                || FileTranscriptionSession.shared.dictationIntent
+                || service.isTranscribing {
                 try Task.checkCancellation()
                 try await Task.sleep(nanoseconds: 500_000_000)
             }
             return try await service.transcribeFile(url)
         })
         Self.sharedIfCreated = self
+    }
+
+    /// Signal that a dictation-family recording (dictate/prompt/command/rewrite) is
+    /// about to start. Must be called synchronously before any `await` in the caller.
+    func beginDictationIntent() {
+        self.dictationIntent = true
+    }
+
+    /// Signal that the dictation-family recording session has ended (stopped,
+    /// cancelled, or failed to start).
+    func endDictationIntent() {
+        self.dictationIntent = false
     }
 }
 

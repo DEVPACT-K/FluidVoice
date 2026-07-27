@@ -26,6 +26,7 @@ struct MeetingTranscriptionView: View {
     @State private var showingCopyConfirmation = false
     @State private var isDropTargeted = false
     @State private var dropErrorMessage: String?
+    @State private var dropErrorGeneration = 0
 
     enum ExportFormat: String, CaseIterable {
         case text = "Text (.txt)"
@@ -107,7 +108,7 @@ struct MeetingTranscriptionView: View {
             PromiseAwareDropView(
                 onTargetedChange: { self.isDropTargeted = $0 },
                 onFiles: { self.handleIncomingFiles($0) },
-                onError: { self.dropErrorMessage = $0 }
+                onError: { self.showDropError($0) }
             )
         )
         .background(self.theme.palette.windowBackground)
@@ -716,8 +717,13 @@ struct MeetingTranscriptionView: View {
         guard !files.isEmpty else { return }
         self.dropErrorMessage = nil
 
-        let batchIsRunning = self.batchHolder.coordinator?.isRunning == true
-        if files.count == 1, let file = files.first, file.stagingDir == nil, !batchIsRunning {
+        // Single concrete file goes through the fast path only when there's no batch
+        // (running or finished-but-undismissed — isBatchActive covers both) and no
+        // single-file transcription already in flight; otherwise it's routed into the
+        // coordinator, which either appends to the live batch or shows up as a fresh
+        // row so the self-draining batch picks it up.
+        if files.count == 1, let file = files.first, file.stagingDir == nil,
+           !self.isBatchActive, !self.transcriptionService.isTranscribing {
             self.selectedFileURL = file.url
             self.transcriptionService.reset()
             return
@@ -728,6 +734,22 @@ struct MeetingTranscriptionView: View {
 
     /// Clears the batch list and resets shared service state so a subsequent batch
     /// starts fresh and no stale single-file result lingers.
+    /// Shows a drop error and auto-dismisses it after a few seconds. Promise
+    /// resolution can report errors up to two minutes after the drop; without
+    /// auto-dismissal a stale red card would appear over an already-successful
+    /// batch and stick around until manually closed.
+    private func showDropError(_ message: String) {
+        self.dropErrorMessage = message
+        self.dropErrorGeneration += 1
+        let generation = self.dropErrorGeneration
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 6_000_000_000)
+            if self.dropErrorGeneration == generation {
+                self.dropErrorMessage = nil
+            }
+        }
+    }
+
     private func dismissBatch() {
         self.batchHolder.clear()
         self.transcriptionService.reset()

@@ -340,6 +340,141 @@ final class BatchTranscriptionCoordinatorTests: XCTestCase {
         XCTAssertEqual(endCount, 1, "the end hook must fire even when the batch is cancelled, or dictation stays blocked forever")
     }
 
+    // MARK: - Enqueue after a finished batch (F5/F15a)
+
+    func testEnqueueAfterFinishedBatchProcessesOnlyNewItems() async {
+        var transcribedPaths: [String] = []
+        let coordinator = BatchTranscriptionCoordinator(transcribe: { url in
+            transcribedPaths.append(url.lastPathComponent)
+            return self.makeResult(text: "ok", fileName: url.lastPathComponent)
+        })
+
+        coordinator.enqueue([.init(url: self.tempAudioURL(name: "first.m4a"))])
+        await coordinator.waitUntilIdle()
+        XCTAssertEqual(transcribedPaths, ["first.m4a"])
+        guard case .completed = coordinator.items[0].status else {
+            return XCTFail("first item should complete, got \(coordinator.items[0].status)")
+        }
+
+        // Batch finished but items weren't dismissed (dismissBatch/clear() wasn't
+        // called) — enqueue must not re-walk from index 0 and re-run "first.m4a".
+        coordinator.enqueue([.init(url: self.tempAudioURL(name: "second.m4a"))])
+        await coordinator.waitUntilIdle()
+
+        XCTAssertEqual(
+            transcribedPaths,
+            ["first.m4a", "second.m4a"],
+            "re-enqueueing after a finished-but-undismissed batch must not re-run completed items"
+        )
+        XCTAssertEqual(coordinator.items.count, 2)
+        guard case .completed = coordinator.items[0].status else {
+            return XCTFail("completed item must keep its status, got \(coordinator.items[0].status)")
+        }
+        guard case .completed = coordinator.items[1].status else {
+            return XCTFail("new item should complete, got \(coordinator.items[1].status)")
+        }
+    }
+
+    // MARK: - Enqueue during the cancel window (F6/F15b)
+
+    func testEnqueueDuringCancelWindowIsNotStranded() async {
+        let started = AsyncGate()
+        let releaseInFlight = AsyncGate()
+        var transcribedPaths: [String] = []
+
+        let coordinator = BatchTranscriptionCoordinator(transcribe: { url in
+            if url.lastPathComponent == "in-flight.m4a" {
+                started.open()
+                await releaseInFlight.wait()
+            }
+            transcribedPaths.append(url.lastPathComponent)
+            return self.makeResult(text: "ok", fileName: url.lastPathComponent)
+        })
+
+        coordinator.enqueue([.init(url: self.tempAudioURL(name: "in-flight.m4a"))])
+        await started.wait()
+
+        // Cancel while the in-flight item is still gated/running.
+        coordinator.cancel()
+
+        // Enqueue a new item while the cancelled batch's in-flight item hasn't
+        // finished yet — it must not be stranded.
+        coordinator.enqueue([.init(url: self.tempAudioURL(name: "after-cancel.m4a"))])
+
+        // Now let the in-flight (cancelled) item finish.
+        releaseInFlight.open()
+
+        await coordinator.waitUntilIdle()
+
+        guard case .cancelled = coordinator.items[0].status else {
+            return XCTFail("in-flight item must be .cancelled, got \(coordinator.items[0].status)")
+        }
+        guard case .completed = coordinator.items[1].status else {
+            return XCTFail("item enqueued during the cancel window must eventually process, got \(coordinator.items[1].status)")
+        }
+        XCTAssertEqual(transcribedPaths, ["in-flight.m4a", "after-cancel.m4a"])
+        XCTAssertFalse(coordinator.isRunning)
+    }
+
+    // MARK: - BatchCoordinatorHolder.clear() while running (F15c)
+
+    func testHolderClearWhileRunningCancelsAndFreshEnqueueWorksAfterward() async {
+        let started = AsyncGate()
+        var transcribedPaths: [String] = []
+
+        let holder = BatchCoordinatorHolder(transcribe: { url in
+            if url.lastPathComponent == "long-running.m4a" {
+                started.open()
+                try await Task.sleep(nanoseconds: 10_000_000_000)
+            }
+            transcribedPaths.append(url.lastPathComponent)
+            return self.makeResult(text: "ok", fileName: url.lastPathComponent)
+        })
+
+        holder.enqueue([.init(url: self.tempAudioURL(name: "long-running.m4a"))])
+        await started.wait()
+
+        guard let orphanedCoordinator = holder.coordinator else {
+            return XCTFail("coordinator must exist while a batch is running")
+        }
+        holder.clear()
+
+        XCTAssertNil(holder.coordinator, "clear() must drop the coordinator reference")
+        await orphanedCoordinator.waitUntilIdle()
+        XCTAssertFalse(orphanedCoordinator.isRunning, "clear() must cancel the orphaned batch, not leave it running")
+        guard case .cancelled = orphanedCoordinator.items[0].status else {
+            return XCTFail("orphaned in-flight item must be .cancelled, got \(orphanedCoordinator.items[0].status)")
+        }
+        XCTAssertFalse(transcribedPaths.contains("long-running.m4a"), "cancelled item must never reach a completed outcome")
+
+        // A subsequent enqueue must work on a fresh coordinator.
+        holder.enqueue([.init(url: self.tempAudioURL(name: "fresh.m4a"))])
+        await holder.coordinator?.waitUntilIdle()
+
+        guard case .completed = holder.coordinator?.items.first?.status else {
+            return XCTFail("fresh coordinator after clear() must process normally")
+        }
+    }
+
+    // MARK: - Cancellation surfaced from the transcribe closure's wait loop (F15d)
+
+    func testCancellationThrownFromTranscribeClosureMarksItemCancelled() async {
+        let coordinator = BatchTranscriptionCoordinator(transcribe: { _ in
+            // Simulates the dictation-arbitration wait loop observing cancellation
+            // (e.g. FileTranscriptionSession's `try Task.checkCancellation()` while
+            // waiting for dictation/single-file transcription to finish) before ever
+            // calling into the transcription service.
+            throw CancellationError()
+        })
+
+        coordinator.enqueue([.init(url: self.tempAudioURL(name: "gated.m4a"))])
+        await coordinator.waitUntilIdle()
+
+        guard case .cancelled = coordinator.items[0].status else {
+            return XCTFail("a CancellationError thrown while waiting must mark the item .cancelled, got \(coordinator.items[0].status)")
+        }
+    }
+
     // MARK: - Summary
 
     func testSummaryCountsReflectOutcomes() async {

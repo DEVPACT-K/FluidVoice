@@ -65,6 +65,20 @@ nonisolated enum PromiseDropSupport {
         return allDirs.filter { !deliveredDirPaths.contains($0.standardizedFileURL.path) }
     }
 
+    /// Staging dirs safe to delete right now: swept per `sweepableDirs`, minus
+    /// any dir whose receiver promise hasn't completed yet.
+    ///
+    /// Pending receiver dirs must never be removed while pending — the source
+    /// app (e.g. Voice Memos) may still be writing into them, and deleting the
+    /// destination out from under an in-flight `NSFilePromiseReceiver` wedges
+    /// its drag machinery until restart. Callers are expected to defer removal
+    /// of the excluded dirs until the pending promises resolve.
+    static func dirsSafeToRemoveNow(allDirs: [URL], deliveredFiles: [URL], pendingDirs: [URL]) -> [URL] {
+        let pendingPaths = Set(pendingDirs.map { $0.standardizedFileURL.path })
+        return sweepableDirs(allDirs: allDirs, deliveredFiles: deliveredFiles)
+            .filter { !pendingPaths.contains($0.standardizedFileURL.path) }
+    }
+
     /// Merges the three promise-delivery paths into the final file list.
     ///
     /// Every modern-receiver file is delivered: each receiver stages into its own

@@ -151,6 +151,48 @@ final class PromiseDropSupportTests: XCTestCase {
         XCTAssertEqual(PromiseDropSupport.sweepableDirs(allDirs: [dirA, dirB], deliveredFiles: []), [dirA, dirB])
     }
 
+    // MARK: - dirsSafeToRemoveNow (findings F1 / F9)
+
+    func testDirsSafeToRemoveNowExcludesPendingReceiverDirsEvenWhenNothingDelivered() {
+        // Regression for F1: an empty delivery result must not sweep a pending
+        // receiver's staging dir — deleting the destination out from under an
+        // in-flight NSFilePromiseReceiver wedges the source app's drag machinery.
+        let pendingDir = URL(fileURLWithPath: "/tmp/PromiseDrop-test/item-pending")
+        let deadDir = URL(fileURLWithPath: "/tmp/PromiseDrop-test/item-dead")
+
+        let safe = PromiseDropSupport.dirsSafeToRemoveNow(
+            allDirs: [pendingDir, deadDir],
+            deliveredFiles: [],
+            pendingDirs: [pendingDir]
+        )
+
+        XCTAssertEqual(safe, [deadDir], "a still-pending receiver dir must never be swept, even with an empty delivery")
+    }
+
+    func testDirsSafeToRemoveNowExcludesPendingDirsAlongsideDeliveredFiles() {
+        let deliveredFile = URL(fileURLWithPath: "/tmp/PromiseDrop-test/item-a/Memo.m4a")
+        let deliveredDir = URL(fileURLWithPath: "/tmp/PromiseDrop-test/item-a")
+        let pendingDir = URL(fileURLWithPath: "/tmp/PromiseDrop-test/item-pending")
+        let loserDir = URL(fileURLWithPath: "/tmp/PromiseDrop-test/item-loser")
+
+        let safe = PromiseDropSupport.dirsSafeToRemoveNow(
+            allDirs: [deliveredDir, pendingDir, loserDir],
+            deliveredFiles: [deliveredFile],
+            pendingDirs: [pendingDir]
+        )
+
+        XCTAssertEqual(safe, [loserDir])
+    }
+
+    func testDirsSafeToRemoveNowAllowsEverythingWhenNoPendingDirs() {
+        let dirA = URL(fileURLWithPath: "/tmp/PromiseDrop-test/item-a")
+        let dirB = URL(fileURLWithPath: "/tmp/PromiseDrop-test/item-b")
+
+        let safe = PromiseDropSupport.dirsSafeToRemoveNow(allDirs: [dirA, dirB], deliveredFiles: [], pendingDirs: [])
+
+        XCTAssertEqual(safe, [dirA, dirB])
+    }
+
     // MARK: - Supported-file filtering for multi-file drops
 
     func testFilterKeepsDecodableAudioAndRejectsJunk() {

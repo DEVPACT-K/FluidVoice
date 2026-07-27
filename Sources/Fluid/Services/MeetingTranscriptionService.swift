@@ -375,6 +375,11 @@ final class MeetingTranscriptionService: ObservableObject {
             FileTranscriptionHistoryStore.shared.addEntry(result)
             return result
 
+        } catch is CancellationError {
+            // Cooperative cancellation (batch cancel, app teardown, etc.) is not a
+            // transcription failure: don't surface it as an error or fire a false
+            // failure analytics event.
+            throw CancellationError()
         } catch let error as TranscriptionError {
             self.error = error.localizedDescription
             AnalyticsService.shared.capture(
