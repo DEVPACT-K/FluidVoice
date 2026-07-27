@@ -2,7 +2,9 @@
 import XCTest
 
 final class DictionaryTrainingStepModelTests: XCTestCase {
-    private let readyCoveredCount = 3
+    // Reference the production constant so a change to the ready threshold fails
+    // these tests instead of silently diverging from the view.
+    private var readyCoveredCount: Int { CustomDictionaryTrainingMerge.readyCoveredCount }
 
     private func derived(
         word: String = "FluidVoice",
@@ -318,5 +320,131 @@ final class DictionaryTrainingStepModelTests: XCTestCase {
             isWordFieldFocused: true
         )
         XCTAssertEqual(resolved, .record)
+    }
+
+    // MARK: - Latched post-ready-miss subtitle
+
+    /// Mirrors `CustomDictionaryView.trainingReadinessProgress` for the
+    /// non-pronunciation-matching branch, using the model's single-source predicates
+    /// so the test exercises the same progress the view would show.
+    private func readinessProgress(
+        consecutiveCoveredCaptures: Int,
+        lastTrainingOutputIsCovered: Bool,
+        pronunciationEnrollmentCount: Int = 0,
+        activePronunciationMatching: Bool = false,
+        trainingVariantsIsEmpty: Bool = true,
+        lastTrainingOutput: String = "FluidVoice",
+        normalizedWord: String = "FluidVoice"
+    ) -> Int {
+        let snapshot = DictionaryTrainingSnapshot(
+            normalizedWord: normalizedWord,
+            consecutiveCoveredCaptures: consecutiveCoveredCaptures,
+            pronunciationEnrollmentCount: pronunciationEnrollmentCount,
+            lastTrainingOutput: lastTrainingOutput,
+            lastTrainingOutputIsCovered: lastTrainingOutputIsCovered,
+            trainingVariantsIsEmpty: trainingVariantsIsEmpty,
+            activePronunciationMatching: activePronunciationMatching
+        )
+        let total = self.readyCoveredCount
+        if DictionaryTrainingStepModel.alreadyCorrectWithoutReplacement(snapshot, readyCoveredCount: total) {
+            return total
+        }
+        let covered = DictionaryTrainingStepModel.isOutputCovered(
+            lastTrainingOutputIsCovered: snapshot.lastTrainingOutputIsCovered,
+            pronunciationEnrollmentCount: snapshot.pronunciationEnrollmentCount,
+            activePronunciationMatching: snapshot.activePronunciationMatching
+        )
+        return covered ? min(snapshot.consecutiveCoveredCaptures, total) : 0
+    }
+
+    func testLatchedPostReadyMissDoesNotClaimRecognizedTotal() {
+        // Post-ready missed capture: the verify latch holds derivedStep at .verify
+        // while consecutive covered captures reset to 0 and the last output is no
+        // longer covered. The Record header subtitle must show the real progress
+        // (0/total) and must NOT claim "Recognized total/total".
+        let total = self.readyCoveredCount
+        let snapshot = DictionaryTrainingSnapshot(
+            normalizedWord: "FluidVoice",
+            consecutiveCoveredCaptures: 0,
+            pronunciationEnrollmentCount: 0,
+            lastTrainingOutput: "fluid voice",
+            lastTrainingOutputIsCovered: false,
+            trainingVariantsIsEmpty: false,
+            activePronunciationMatching: false
+        )
+
+        let step = DictionaryTrainingStepModel.derivedStep(
+            snapshot,
+            readyCoveredCount: total,
+            hasReachedVerify: true
+        )
+        XCTAssertEqual(step, .verify)
+
+        let resolved = DictionaryTrainingStepModel.resolveExpandedStep(
+            derived: step,
+            manualOverride: nil,
+            isRecordingLocked: false,
+            isWordFieldFocused: false
+        )
+        XCTAssertEqual(resolved, .verify)
+
+        let progress = self.readinessProgress(
+            consecutiveCoveredCaptures: snapshot.consecutiveCoveredCaptures,
+            lastTrainingOutputIsCovered: snapshot.lastTrainingOutputIsCovered,
+            trainingVariantsIsEmpty: snapshot.trainingVariantsIsEmpty,
+            lastTrainingOutput: snapshot.lastTrainingOutput
+        )
+        XCTAssertEqual(progress, 0, "latched post-ready-miss must read zero progress")
+
+        let subtitle = DictionaryTrainingStepCopy.recordStepSubtitle(
+            derivedStep: step,
+            preloadedCaptureCount: nil,
+            progress: progress,
+            total: total
+        )
+        XCTAssertNotEqual(subtitle, "✓ Recognized \(total)/\(total)")
+        XCTAssertTrue(subtitle.contains("0/\(total)"), "expected real progress, got: \(subtitle)")
+        XCTAssertTrue(subtitle.contains("record again"), "expected a record-again nudge, got: \(subtitle)")
+    }
+
+    func testGenuinelyReadyRecordSubtitleShowsRecognizedTotal() {
+        // Positive counterpart: when progress actually reaches total, the Record
+        // header subtitle shows the complete "✓ Recognized total/total".
+        let total = self.readyCoveredCount
+        let subtitle = DictionaryTrainingStepCopy.recordStepSubtitle(
+            derivedStep: .verify,
+            preloadedCaptureCount: nil,
+            progress: total,
+            total: total
+        )
+        XCTAssertEqual(subtitle, "✓ Recognized \(total)/\(total)")
+    }
+
+    // MARK: - Verify step subtitle copy
+
+    func testVerifySubtitleAlreadyCorrectSaysNoReplacementNeeded() {
+        // alreadyCorrectWithoutReplacement: Save is disabled ("Nothing to Save"), so
+        // the Verify header must not say "Ready to save".
+        let subtitle = DictionaryTrainingStepCopy.verifyStepSubtitle(
+            isReady: false,
+            isAlreadyCorrect: true
+        )
+        XCTAssertEqual(subtitle, "No replacement needed")
+    }
+
+    func testVerifySubtitleReadySaysReadyToSave() {
+        let subtitle = DictionaryTrainingStepCopy.verifyStepSubtitle(
+            isReady: true,
+            isAlreadyCorrect: false
+        )
+        XCTAssertEqual(subtitle, "Ready to save")
+    }
+
+    func testVerifySubtitleNotReadyShowsPlaceholder() {
+        let subtitle = DictionaryTrainingStepCopy.verifyStepSubtitle(
+            isReady: false,
+            isAlreadyCorrect: false
+        )
+        XCTAssertEqual(subtitle, "—")
     }
 }

@@ -28,8 +28,9 @@ struct DictionaryTrainingSnapshot: Equatable {
 }
 
 enum DictionaryTrainingStepModel {
-    /// Replicates `trainingOutputIsCovered` (CustomDictionaryView.swift ~141-146).
-    private static func isOutputCovered(
+    /// Single source of truth for whether the last training output counts as
+    /// "covered"; `CustomDictionaryView.trainingOutputIsCovered` delegates to this.
+    static func isOutputCovered(
         lastTrainingOutputIsCovered: Bool,
         pronunciationEnrollmentCount: Int,
         activePronunciationMatching: Bool
@@ -143,5 +144,44 @@ enum DictionaryTrainingStepModel {
             return manualOverride
         }
         return derived
+    }
+}
+
+/// Testable copy for the "Train by Voice" accordion step subtitles. Kept free of
+/// SwiftUI/@State so the latched post-ready-miss subtitle and the already-correct
+/// subtitle can be pinned by unit tests.
+enum DictionaryTrainingStepCopy {
+    /// Subtitle for the Record step header. When the derived step is `.verify` only
+    /// because of the post-ready-miss latch (`progress < total`), the real progress
+    /// is shown instead of a false "Recognized total/total".
+    static func recordStepSubtitle(
+        derivedStep: DictionaryTrainingStep,
+        preloadedCaptureCount: Int?,
+        progress: Int,
+        total: Int
+    ) -> String {
+        switch derivedStep {
+        case .word:
+            return "Waiting for word…"
+        case .verify:
+            if progress >= total {
+                return "✓ Recognized \(total)/\(total)"
+            }
+            return "Recognized \(progress)/\(total) — record again"
+        case .record:
+            if let preloadedCaptureCount {
+                return "Loaded \(preloadedCaptureCount) saved \(preloadedCaptureCount == 1 ? "capture" : "captures")"
+            }
+            return "Recorded \(progress)/\(total) — keep going"
+        }
+    }
+
+    /// Subtitle for the Verify step header. The already-correct-without-replacement
+    /// state (Save disabled, "Nothing to Save") is distinguished from ready-to-save.
+    static func verifyStepSubtitle(isReady: Bool, isAlreadyCorrect: Bool) -> String {
+        if isAlreadyCorrect {
+            return "No replacement needed"
+        }
+        return isReady ? "Ready to save" : "—"
     }
 }

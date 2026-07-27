@@ -97,7 +97,7 @@ struct CustomDictionaryView: View {
     }
 
     private var trainingRecorderIsStop: Bool {
-        self.isAutomaticTrainingEnabled || self.isTrainingRecording || self.isTrainingStarting
+        self.isTrainingRecordingLocked
     }
 
     private var trainingRecorderButtonTitle: String {
@@ -119,10 +119,11 @@ struct CustomDictionaryView: View {
     }
 
     private var trainingOutputIsCovered: Bool {
-        if self.activePronunciationMatching {
-            return !self.trainingPronunciationEnrollments.isEmpty
-        }
-        return self.lastTrainingOutputIsCovered
+        DictionaryTrainingStepModel.isOutputCovered(
+            lastTrainingOutputIsCovered: self.lastTrainingOutputIsCovered,
+            pronunciationEnrollmentCount: self.trainingPronunciationEnrollments.count,
+            activePronunciationMatching: self.activePronunciationMatching
+        )
     }
 
     // MARK: - Train by Voice accordion
@@ -728,12 +729,6 @@ struct CustomDictionaryView: View {
     private var trainingFooter: some View {
         if self.trainingHasError || self.isTrainingActive || !self.trainingVariants.isEmpty {
             HStack(spacing: self.theme.metrics.spacing.sm) {
-                if self.trainingHasError {
-                    Label(self.trainingStatusMessage, systemImage: "exclamationmark.triangle.fill")
-                        .font(self.theme.typography.caption)
-                        .foregroundStyle(self.theme.palette.warning)
-                }
-
                 if self.isTrainingActive || !self.trainingVariants.isEmpty || !self.normalizedTrainingReplacement.isEmpty {
                     Spacer()
 
@@ -1782,6 +1777,11 @@ struct CustomDictionaryView: View {
         await self.startTrainingSample()
     }
 
+    private func resetTrainingStepLatches() {
+        self.hasReachedVerifyStep = false
+        self.lastAnnouncedTrainingStep = .word
+    }
+
     private func resetTrainingVerificationAttempts() {
         self.trainingSampleCount = 0
         self.lastTrainingOutput = ""
@@ -1789,12 +1789,10 @@ struct CustomDictionaryView: View {
         self.consecutiveCoveredCaptures = 0
         self.trainingStatusMessage = ""
         self.trainingHasError = false
-        // Tearing down verification progress must drop the Verify latch, otherwise
-        // the accordion stays stuck on step ③ (Save disabled) after Try Again.
-        self.hasReachedVerifyStep = false
-        // Reset the announcement latch too, so the step-③ VoiceOver cue fires again
-        // when the user records enough to reach Verify a second time.
-        self.lastAnnouncedTrainingStep = .word
+        // Tearing down verification progress must drop the Verify + announcement
+        // latches, otherwise the accordion stays stuck on step ③ (Save disabled)
+        // after Try Again and the VoiceOver cue won't re-fire on a second run.
+        self.resetTrainingStepLatches()
     }
 
     private func addTrainingVariant(from transcript: String) {
@@ -1823,7 +1821,7 @@ struct CustomDictionaryView: View {
             self.trainingHasError = false
             if self.consecutiveCoveredCaptures >= CustomDictionaryTrainingMerge.readyCoveredCount {
                 self.trainingStatusMessage = self.trainingVariants.isEmpty
-                    ? "Looks good already. No replacement needed."
+                    ? DictionaryTrainingCopy.alreadyCorrectCaption
                     : "Looks ready. Add this replacement when you're ready."
             } else {
                 self.trainingStatusMessage = "Covered. Try a couple more."
@@ -1913,12 +1911,11 @@ struct CustomDictionaryView: View {
     private func removeTrainingVariant(_ variant: String) {
         self.trainingVariants.removeAll { $0 == variant }
         self.refreshLastTrainingCoverage()
-        // Removing a capture may drop us below ready; clear the latch so the derived
-        // step re-computes from live coverage instead of pinning Verify. If the
-        // remaining captures are still sufficient, `finalOutputIsReady` re-derives
-        // `.verify` on its own.
-        self.hasReachedVerifyStep = false
-        self.lastAnnouncedTrainingStep = .word
+        // Removing a capture may drop us below ready; clear the latches so the
+        // derived step re-computes from live coverage instead of pinning Verify. If
+        // the remaining captures are still sufficient, `finalOutputIsReady`
+        // re-derives `.verify` on its own.
+        self.resetTrainingStepLatches()
     }
 
     private func refreshLastTrainingCoverage() {
@@ -1958,9 +1955,8 @@ struct CustomDictionaryView: View {
         self.isTrainingRecording = false
         self.trainingStopRequestedDuringStart = false
         self.isTrainingProcessing = false
-        self.hasReachedVerifyStep = false
+        self.resetTrainingStepLatches()
         self.manualExpandedTrainingStep = nil
-        self.lastAnnouncedTrainingStep = .word
     }
 
     private func handleTrainingReplacementChange(oldValue: String, newValue: String) {
@@ -1975,8 +1971,7 @@ struct CustomDictionaryView: View {
         self.lastTrainingOutputIsCovered = false
         self.consecutiveCoveredCaptures = 0
         self.isTrainingActive = false
-        self.hasReachedVerifyStep = false
-        self.lastAnnouncedTrainingStep = .word
+        self.resetTrainingStepLatches()
         if newKey.isEmpty {
             self.trainingStatusMessage = "Type the correct text."
         } else if self.trainingVariants.isEmpty {
@@ -2303,7 +2298,16 @@ private extension CustomDictionaryView {
     func selectTrainingStep(_ step: DictionaryTrainingStep) {
         guard self.isTrainingStepInteractive(step) else { return }
         self.manualExpandedTrainingStep = step
-        self.isTrainingWordFieldFocused = step == .word
+        if step == .word {
+            // Defer focus until the expansion has been committed to the next runloop
+            // turn so the word TextField exists when the FocusState is written —
+            // programmatic focus to a not-yet-rendered field is unreliable on macOS.
+            Task { @MainActor in
+                self.isTrainingWordFieldFocused = true
+            }
+        } else {
+            self.isTrainingWordFieldFocused = false
+        }
     }
 
     var trainReplacementComposer: some View {
@@ -2321,6 +2325,15 @@ private extension CustomDictionaryView {
             self.trainingStepHeader(.verify)
             if self.expandedTrainingStep == .verify {
                 self.trainingVerifyStepBody
+            }
+
+            // Always-visible error label: rendered once outside the collapsible step
+            // bodies so a recording/processing failure is surfaced regardless of
+            // which step is expanded.
+            if self.trainingHasError {
+                Label(self.trainingStatusMessage, systemImage: "exclamationmark.triangle.fill")
+                    .font(self.theme.typography.caption)
+                    .foregroundStyle(self.theme.palette.warning)
             }
         }
         .animation(self.reduceMotion ? nil : .easeInOut(duration: 0.22), value: self.expandedTrainingStep)
@@ -2352,10 +2365,18 @@ private extension CustomDictionaryView {
     }
 
     func announceTrainingStepEdgeIfNeeded(from oldStep: DictionaryTrainingStep, to newStep: DictionaryTrainingStep) {
-        guard oldStep != newStep, self.lastAnnouncedTrainingStep != newStep else { return }
+        guard oldStep != newStep else { return }
+        // Backward transition (e.g. Verify → Record after a miss): lower the
+        // announcement latch so a later forward re-advance re-announces. Without
+        // this the latch stays pinned at the furthest step reached and a VoiceOver
+        // user who backtracks then re-advances hears nothing the second time.
+        if newStep.rawValue < self.lastAnnouncedTrainingStep.rawValue {
+            self.lastAnnouncedTrainingStep = newStep
+        }
         // Any advance in step order is a forward edge — including the word→verify jump
         // when captures are already sufficient (advanceFromWordStep resolving to .verify).
-        guard newStep.rawValue > oldStep.rawValue else { return }
+        // The same-step guard below keeps a step from announcing twice in a row.
+        guard newStep.rawValue > oldStep.rawValue, self.lastAnnouncedTrainingStep != newStep else { return }
         self.lastAnnouncedTrainingStep = newStep
         AccessibilityNotification.Announcement(DictionaryTrainingCopy.stepAnnouncement(for: newStep)).post()
     }
@@ -2377,6 +2398,12 @@ private extension CustomDictionaryView {
 
     func trainingStepStatus(_ step: DictionaryTrainingStep) -> DictionaryTrainingStepHeaderView.Status {
         if step.rawValue < self.derivedTrainingStep.rawValue {
+            // When Verify is derived only via the post-ready-miss latch (captures no
+            // longer sufficient), Record is still the active step — don't mark it
+            // complete based on the latch alone.
+            if step == .record, self.derivedTrainingStep == .verify, !self.isTrainingVerifyReady {
+                return .current
+            }
             return .complete
         }
         if step == self.derivedTrainingStep {
@@ -2394,14 +2421,17 @@ private extension CustomDictionaryView {
             )
         case .record:
             let isPreloaded = self.trainingSampleCount == 0 && !self.trainingVariants.isEmpty
-            return DictionaryTrainingCopy.recordStepSubtitle(
+            return DictionaryTrainingStepCopy.recordStepSubtitle(
                 derivedStep: self.derivedTrainingStep,
                 preloadedCaptureCount: isPreloaded ? self.trainingVariants.count : nil,
                 progress: self.trainingReadinessProgress,
                 total: CustomDictionaryTrainingMerge.readyCoveredCount
             )
         case .verify:
-            return DictionaryTrainingCopy.verifyStepSubtitle(isReady: self.isTrainingVerifyReady)
+            return DictionaryTrainingStepCopy.verifyStepSubtitle(
+                isReady: self.trainingFinalOutputIsReady,
+                isAlreadyCorrect: self.trainingAlreadyCorrectWithoutReplacement
+            )
         }
     }
 
@@ -2474,15 +2504,16 @@ private extension CustomDictionaryView {
 
     var trainingVerifyStepBody: some View {
         VStack(alignment: .leading, spacing: self.theme.metrics.spacing.sm) {
+            if !self.trainingVariants.isEmpty {
+                self.trainingHeardSection
+            }
+
             self.trainingFinalOutputPanel
 
-            // Surface save failures here too: addTrainedReplacement can fail on this
-            // step (e.g. voice-profile save), and the error footer only renders in
-            // the Record body.
-            if self.trainingHasError {
-                Label(self.trainingStatusMessage, systemImage: "exclamationmark.triangle.fill")
+            if self.trainingAlreadyCorrectWithoutReplacement {
+                Label(DictionaryTrainingCopy.alreadyCorrectCaption, systemImage: "checkmark.circle.fill")
                     .font(self.theme.typography.caption)
-                    .foregroundStyle(self.theme.palette.warning)
+                    .foregroundStyle(self.theme.palette.accent)
             }
 
             Button {
@@ -2804,33 +2835,11 @@ private enum DictionaryTrainingCopy {
         isPastWordStep ? normalizedWord : "Type the word to teach"
     }
 
-    static func recordStepSubtitle(
-        derivedStep: DictionaryTrainingStep,
-        preloadedCaptureCount: Int?,
-        progress: Int,
-        total: Int
-    ) -> String {
-        switch derivedStep {
-        case .word:
-            return "Waiting for word…"
-        case .verify:
-            return "✓ Recognized \(total)/\(total)"
-        case .record:
-            if let preloadedCaptureCount {
-                return "Loaded \(preloadedCaptureCount) saved \(preloadedCaptureCount == 1 ? "capture" : "captures")"
-            }
-            return "Recorded \(progress)/\(total) — keep going"
-        }
-    }
-
-    static func verifyStepSubtitle(isReady: Bool) -> String {
-        isReady ? "Ready to save" : "—"
-    }
-
     static let editingWordRestartsTrainingCaption = "Editing the word restarts voice training."
     static let dictationRunningCaption = "Dictation is running — stop dictating to train."
     static let trainingProcessingCaption = "Processing…"
     static let maxSamplesReachedCaption = "Max samples reached — press Try Again or Clear."
+    static let alreadyCorrectCaption = "Looks good already. No replacement needed."
 }
 
 private enum DictionaryComposerMode: CaseIterable, Identifiable {
