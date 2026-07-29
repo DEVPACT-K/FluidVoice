@@ -2842,7 +2842,7 @@ private extension SettingsView {
                             Text("Send Phrase")
                                 .font(self.theme.typography.bodyStrong)
                                 .foregroundStyle(self.settingsTitleText)
-                            Text("Matched only at the end. Say “literal \(self.settings.spokenSendPhrase)” to dictate it normally.")
+                            Text("Say it alone, or after punctuation, at the end. Say “literal \(self.settings.spokenSendPhrase)” to dictate it normally.")
                                 .font(self.theme.typography.bodySmall)
                                 .foregroundStyle(self.settingsSecondaryText)
                         }

@@ -13,21 +13,21 @@ final class SpokenSendTests: XCTestCase {
     func testTerminalPhraseIsRemovedAndArmsSend() {
         XCTAssertEqual(
             SpokenSendParser.parse("Hello there, send it.", phrase: "send it", enabled: true),
-            SpokenSendParseResult(text: "Hello there,", shouldSend: true)
+            SpokenSendParseResult(text: "Hello there.", shouldSend: true)
         )
     }
 
     func testCapitalizationAndFullStopDoNotAffectSend() {
         XCTAssertEqual(
             SpokenSendParser.parse("Ready to go, SEND IT.", phrase: "send it", enabled: true),
-            SpokenSendParseResult(text: "Ready to go,", shouldSend: true)
+            SpokenSendParseResult(text: "Ready to go.", shouldSend: true)
         )
     }
 
     func testNearbyTrailingPunctuationDoesNotAffectSend() {
         XCTAssertEqual(
             SpokenSendParser.parse(#"Ready to go — send it…")]"#, phrase: "send it", enabled: true),
-            SpokenSendParseResult(text: "Ready to go —", shouldSend: true)
+            SpokenSendParseResult(text: "Ready to go.", shouldSend: true)
         )
     }
 
@@ -35,6 +35,40 @@ final class SpokenSendTests: XCTestCase {
         XCTAssertEqual(
             SpokenSendParser.parse("Send it when you are ready", phrase: "send it", enabled: true),
             SpokenSendParseResult(text: "Send it when you are ready", shouldSend: false)
+        )
+    }
+
+    func testNaturalSentenceEndingWithPhraseDoesNotArmSend() {
+        XCTAssertEqual(
+            SpokenSendParser.parse("I wanna send it.", phrase: "send it", enabled: true),
+            SpokenSendParseResult(text: "I wanna send it.", shouldSend: false)
+        )
+    }
+
+    func testPunctuationBreakDisambiguatesTerminalCommand() {
+        XCTAssertEqual(
+            SpokenSendParser.parse("I wanna send it, send it.", phrase: "send it", enabled: true),
+            SpokenSendParseResult(text: "I wanna send it.", shouldSend: true)
+        )
+    }
+
+    func testOpeningPunctuationDoesNotDisambiguateTerminalCommand() {
+        for text in ["I wanna (send it.", #"I wanna "send it.""#, "I_wanna_send it."] {
+            XCTAssertEqual(
+                SpokenSendParser.parse(text, phrase: "send it", enabled: true),
+                SpokenSendParseResult(text: text, shouldSend: false)
+            )
+        }
+    }
+
+    func testFinalQuestionOrExclamationMarkIsPreserved() {
+        XCTAssertEqual(
+            SpokenSendParser.parse("Are we ready? send it.", phrase: "send it", enabled: true),
+            SpokenSendParseResult(text: "Are we ready?", shouldSend: true)
+        )
+        XCTAssertEqual(
+            SpokenSendParser.parse("Ship it! send it.", phrase: "send it", enabled: true),
+            SpokenSendParseResult(text: "Ship it!", shouldSend: true)
         )
     }
 
@@ -159,7 +193,17 @@ final class SpokenSendTests: XCTestCase {
         XCTAssertTrue(
             SpokenSendParser.shouldCancelCountdownForVoiceActivity(
                 countdownStartedAt: startedAt,
-                voiceActivityAt: startedAt + SpokenSendParser.immediateStopVoiceActivityGraceDuration
+                voiceActivityAt: startedAt + SpokenSendParser.immediateStopVoiceActivityGraceDuration + 0.001
+            )
+        )
+        XCTAssertFalse(
+            SpokenSendParser.isMeaningfulVoiceActivity(
+                SpokenSendParser.immediateStopVoiceActivityLevelThreshold.nextDown
+            )
+        )
+        XCTAssertTrue(
+            SpokenSendParser.isMeaningfulVoiceActivity(
+                SpokenSendParser.immediateStopVoiceActivityLevelThreshold
             )
         )
     }
@@ -180,8 +224,8 @@ final class SpokenSendTests: XCTestCase {
 
     func testCustomPhraseAllowsFlexibleWhitespaceAndCase() {
         XCTAssertEqual(
-            SpokenSendParser.parse("Looks good PLEASE   SUBMIT", phrase: "please submit", enabled: true),
-            SpokenSendParseResult(text: "Looks good", shouldSend: true)
+            SpokenSendParser.parse("Looks good. PLEASE   SUBMIT", phrase: "please submit", enabled: true),
+            SpokenSendParseResult(text: "Looks good.", shouldSend: true)
         )
     }
 

@@ -3026,13 +3026,17 @@ struct BottomOverlayView: View {
                     .opacity((appIcon != nil || showModelLoading || !self.layout.showsModeLabel) ? 1 : 0)
 
                     // Waveform visualization
-                    BottomWaveformView(color: self.modeColor, layout: self.layout)
-                        .frame(
-                            width: self.isPillSize && self.showsSpokenSendIndicator
-                                ? 34
-                                : self.layout.waveformWidth,
-                            height: self.layout.waveformHeight
-                        )
+                    BottomWaveformView(
+                        color: self.modeColor,
+                        layout: self.layout,
+                        visibleBarCount: self.isPillSize && self.showsSpokenSendIndicator ? 6 : nil
+                    )
+                    .frame(
+                        width: self.isPillSize && self.showsSpokenSendIndicator
+                            ? 32
+                            : self.layout.waveformWidth,
+                        height: self.layout.waveformHeight
+                    )
 
                     if self.isPillSize, self.showsSpokenSendIndicator {
                         SpokenSendIndicatorView(
@@ -3291,6 +3295,7 @@ struct BottomOverlayView: View {
 struct BottomWaveformView: View {
     let color: Color
     let layout: BottomOverlayView.LayoutConstants
+    let visibleBarCount: Int?
 
     @ObservedObject private var contentState = NotchContentState.shared
     // Initialize with max possible bar count (11 for large) to prevent index-out-of-range before onAppear
@@ -3298,7 +3303,7 @@ struct BottomWaveformView: View {
     @State private var noiseThreshold: CGFloat = .init(SettingsStore.shared.visualizerNoiseThreshold)
 
     private var barCount: Int {
-        self.layout.barCount
+        self.visibleBarCount ?? self.layout.barCount
     }
 
     private var barWidth: CGFloat {

@@ -9,7 +9,8 @@ enum SpokenSendParser {
     static let immediateStopSettleDuration: TimeInterval = 1.5
     static let immediateStopSettleNanoseconds: UInt64 = 1_500_000_000
     static let immediateStopRequiredSilenceDuration: TimeInterval = 0.35
-    static let immediateStopVoiceActivityGraceDuration: TimeInterval = 0.15
+    static let immediateStopVoiceActivityGraceDuration: TimeInterval = 0.35
+    static let immediateStopVoiceActivityLevelThreshold: CGFloat = 0.12
 
     static func shouldStopImmediately(
         _ text: String,
@@ -44,6 +45,10 @@ enum SpokenSendParser {
         voiceActivityAt: TimeInterval
     ) -> Bool {
         voiceActivityAt - countdownStartedAt >= self.immediateStopVoiceActivityGraceDuration
+    }
+
+    static func isMeaningfulVoiceActivity(_ level: CGFloat) -> Bool {
+        level >= self.immediateStopVoiceActivityLevelThreshold
     }
 
     static func parse(_ text: String, phrase: String, enabled: Bool) -> SpokenSendParseResult {
@@ -88,8 +93,28 @@ enum SpokenSendParser {
             return SpokenSendParseResult(text: text, shouldSend: false)
         }
 
-        let cleaned = String(text[..<commandRange.lowerBound])
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let commandPrefix = String(text[..<commandRange.lowerBound])
+        let trimmedPrefix = commandPrefix.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmedPrefix.isEmpty || Self.endsWithCommandSeparator(trimmedPrefix) else {
+            return SpokenSendParseResult(text: text, shouldSend: false)
+        }
+
+        let cleaned = Self.polishCommandPrefix(commandPrefix)
         return SpokenSendParseResult(text: cleaned, shouldSend: true)
+    }
+
+    private static func endsWithCommandSeparator(_ text: String) -> Bool {
+        guard let last = text.last else { return false }
+        return [".", ",", ";", ":", "?", "!", "…", "-", "–", "—"].contains(last)
+    }
+
+    private static func polishCommandPrefix(_ text: String) -> String {
+        var polished = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let last = polished.last, [",", ";", ":", "-", "–", "—"].contains(last) else {
+            return polished
+        }
+
+        polished.removeLast()
+        return polished.trimmingCharacters(in: .whitespacesAndNewlines) + "."
     }
 }

@@ -1279,12 +1279,13 @@ struct NotchCompactTrailingView: View {
     }
 
     var body: some View {
-        HStack(spacing: 3) {
+        HStack(spacing: self.showsSpokenSendIndicator ? 4 : 0) {
             CompactNotchWaveformView(
                 audioPublisher: self.audioPublisher,
-                color: self.contentState.mode.notchColor
+                color: self.contentState.mode.notchColor,
+                barCount: self.showsSpokenSendIndicator ? 4 : 8
             )
-            .frame(width: self.showsSpokenSendIndicator ? 18 : 34, height: 16)
+            .frame(width: self.showsSpokenSendIndicator ? 16 : 34, height: 16)
 
             if self.showsSpokenSendIndicator {
                 SpokenSendIndicatorView(
@@ -1851,14 +1852,19 @@ struct ExpandedModeWaveformView: View {
 }
 
 struct CompactNotchWaveformView: View {
+    private static let storedBarCount = 8
+
     let audioPublisher: AnyPublisher<CGFloat, Never>
     let color: Color
+    var barCount: Int = 8
 
     @StateObject private var data: AudioVisualizationData
     @ObservedObject private var contentState = NotchContentState.shared
-    @State private var barHeights: [CGFloat] = Array(repeating: 3, count: 8)
+    @State private var barHeights: [CGFloat] = Array(
+        repeating: 3,
+        count: CompactNotchWaveformView.storedBarCount
+    )
 
-    private let barCount = 8
     private let barWidth: CGFloat = 2.5
     private let barSpacing: CGFloat = 2
     private let minHeight: CGFloat = 3
@@ -1866,9 +1872,10 @@ struct CompactNotchWaveformView: View {
     private let noiseThreshold: CGFloat = 0.05
     private let processingFlatHeight: CGFloat = 3
 
-    init(audioPublisher: AnyPublisher<CGFloat, Never>, color: Color) {
+    init(audioPublisher: AnyPublisher<CGFloat, Never>, color: Color, barCount: Int = 8) {
         self.audioPublisher = audioPublisher
         self.color = color
+        self.barCount = min(max(barCount, 1), Self.storedBarCount)
         _data = StateObject(wrappedValue: AudioVisualizationData(audioLevelPublisher: audioPublisher))
     }
 
@@ -1950,7 +1957,7 @@ struct CompactNotchWaveformView: View {
 
     private func resetBarsToBaseline(animated: Bool) {
         let apply = {
-            self.barHeights = Array(repeating: self.minHeight, count: self.barCount)
+            self.barHeights = Array(repeating: self.minHeight, count: Self.storedBarCount)
         }
 
         if animated {

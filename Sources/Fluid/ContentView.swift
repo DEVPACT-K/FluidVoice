@@ -2696,7 +2696,7 @@ struct ContentView: View {
     }
 
     private func handleSpokenSendAudioLevel(_ level: CGFloat) {
-        guard level > 0 else { return }
+        guard SpokenSendParser.isMeaningfulVoiceActivity(level) else { return }
 
         let activityAt = ProcessInfo.processInfo.systemUptime
         self.spokenSendLastVoiceActivityAt = activityAt
