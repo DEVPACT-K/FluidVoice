@@ -871,6 +871,9 @@ struct SettingsView: View {
                                     }
                                     Divider().opacity(0.2)
 
+                                    self.spokenSendSettings
+                                    Divider().opacity(0.2)
+
                                     self.optionToggleRow(
                                         title: "Save Transcription History",
                                         description: "Save transcriptions for stats tracking. Disable for privacy.",
@@ -2808,6 +2811,82 @@ struct FlowLayout: Layout {
 
         cache.containerSize = CGSize(width: maxWidth, height: y + rowHeight)
         cache.lastWidth = maxWidth
+    }
+}
+
+private extension SettingsView {
+    var spokenSendSettings: some View {
+        Group {
+            self.optionToggleRow(
+                title: "Spoken Send",
+                description: "Say a phrase at the end of dictation to send with your chosen Enter command.",
+                isOn: Binding(
+                    get: { self.settings.spokenSendEnabled },
+                    set: { self.settings.spokenSendEnabled = $0 }
+                )
+            )
+
+            if self.settings.spokenSendEnabled {
+                VStack(spacing: 10) {
+                    self.optionToggleRow(
+                        title: "Send Immediately",
+                        description: "Stop listening and send as soon as the phrase is recognized. May not work with all voice models; Parakeet is recommended.",
+                        isOn: Binding(
+                            get: { self.settings.spokenSendImmediatelyEnabled },
+                            set: { self.settings.spokenSendImmediatelyEnabled = $0 }
+                        )
+                    )
+
+                    HStack(alignment: .center) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Send Phrase")
+                                .font(self.theme.typography.bodyStrong)
+                                .foregroundStyle(self.settingsTitleText)
+                            Text("Matched only at the end. Say “literal \(self.settings.spokenSendPhrase)” to dictate it normally.")
+                                .font(self.theme.typography.bodySmall)
+                                .foregroundStyle(self.settingsSecondaryText)
+                        }
+
+                        Spacer()
+
+                        TextField(
+                            "send it",
+                            text: Binding(
+                                get: { self.settings.spokenSendPhrase },
+                                set: { self.settings.spokenSendPhrase = $0 }
+                            )
+                        )
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 170)
+                    }
+
+                    HStack(alignment: .center) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Send Command")
+                                .font(self.theme.typography.bodyStrong)
+                                .foregroundStyle(self.settingsTitleText)
+                            Text("Choose the Enter behavior expected by the destination app.")
+                                .font(self.theme.typography.bodySmall)
+                                .foregroundStyle(self.settingsSecondaryText)
+                        }
+
+                        Spacer()
+
+                        Picker("", selection: Binding(
+                            get: { self.settings.spokenSendKey },
+                            set: { self.settings.spokenSendKey = $0 }
+                        )) {
+                            ForEach(SettingsStore.SpokenSendKey.allCases) { key in
+                                Text(key.displayName).tag(key)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .frame(width: 170, alignment: .trailing)
+                    }
+                }
+                .padding(.leading, 12)
+            }
+        }
     }
 }
 

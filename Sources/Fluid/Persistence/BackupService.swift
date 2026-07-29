@@ -62,6 +62,10 @@ struct SettingsBackupPayload: Codable, Equatable {
     let enableAIStreaming: Bool
     let copyTranscriptionToClipboard: Bool
     let textInsertionMode: SettingsStore.TextInsertionMode
+    let spokenSendEnabled: Bool?
+    let spokenSendImmediatelyEnabled: Bool?
+    let spokenSendPhrase: String?
+    let spokenSendKey: SettingsStore.SpokenSendKey?
     let preferredInputDeviceUID: String?
     // Optional so backups created before microphone priority ordering still decode.
     // swiftlint:disable:next discouraged_optional_collection

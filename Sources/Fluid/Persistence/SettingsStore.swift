@@ -3195,6 +3195,10 @@ final class SettingsStore: ObservableObject {
             enableAIStreaming: self.enableAIStreaming,
             copyTranscriptionToClipboard: self.copyTranscriptionToClipboard,
             textInsertionMode: self.textInsertionMode,
+            spokenSendEnabled: self.spokenSendEnabled,
+            spokenSendImmediatelyEnabled: self.spokenSendImmediatelyEnabled,
+            spokenSendPhrase: self.spokenSendPhrase,
+            spokenSendKey: self.spokenSendKey,
             preferredInputDeviceUID: self.preferredInputDeviceUID,
             microphonePriority: self.microphonePriority,
             suppressedMicrophoneUIDs: self.suppressedMicrophoneUIDs.sorted(),
@@ -3318,6 +3322,18 @@ final class SettingsStore: ObservableObject {
         self.enableAIStreaming = payload.enableAIStreaming
         self.copyTranscriptionToClipboard = payload.copyTranscriptionToClipboard
         self.textInsertionMode = payload.textInsertionMode
+        if let spokenSendEnabled = payload.spokenSendEnabled {
+            self.spokenSendEnabled = spokenSendEnabled
+        }
+        if let spokenSendImmediatelyEnabled = payload.spokenSendImmediatelyEnabled {
+            self.spokenSendImmediatelyEnabled = spokenSendImmediatelyEnabled
+        }
+        if let spokenSendPhrase = payload.spokenSendPhrase {
+            self.spokenSendPhrase = spokenSendPhrase
+        }
+        if let spokenSendKey = payload.spokenSendKey {
+            self.spokenSendKey = spokenSendKey
+        }
         self.preferredInputDeviceUID = payload.preferredInputDeviceUID
         self.suppressedMicrophoneUIDs = Set(payload.suppressedMicrophoneUIDs ?? [])
         if let microphonePriority = payload.microphonePriority {
@@ -5094,6 +5110,10 @@ private extension SettingsStore {
         static let enableAIStreaming = "EnableAIStreaming"
         static let copyTranscriptionToClipboard = "CopyTranscriptionToClipboard"
         static let textInsertionMode = "TextInsertionMode"
+        static let spokenSendEnabled = "SpokenSendEnabled"
+        static let spokenSendImmediatelyEnabled = "SpokenSendImmediatelyEnabled"
+        static let spokenSendPhrase = "SpokenSendPhrase"
+        static let spokenSendKey = "SpokenSendKey"
         static let autoUpdateCheckEnabled = "AutoUpdateCheckEnabled"
         static let betaReleasesEnabled = "BetaReleasesEnabled"
         static let lastUpdateCheckDate = "LastUpdateCheckDate"
@@ -5222,6 +5242,77 @@ private extension SettingsStore {
 }
 
 extension SettingsStore {
+    enum SpokenSendKey: String, CaseIterable, Identifiable, Codable {
+        case enter
+        case shiftEnter
+        case commandEnter
+
+        var id: String {
+            self.rawValue
+        }
+
+        var displayName: String {
+            switch self {
+            case .enter:
+                return "Enter"
+            case .shiftEnter:
+                return "Shift + Enter"
+            case .commandEnter:
+                return "Command + Enter"
+            }
+        }
+
+        var eventFlags: CGEventFlags {
+            switch self {
+            case .enter:
+                return []
+            case .shiftEnter:
+                return .maskShift
+            case .commandEnter:
+                return .maskCommand
+            }
+        }
+    }
+
+    var spokenSendEnabled: Bool {
+        get { self.defaults.object(forKey: Keys.spokenSendEnabled) as? Bool ?? false }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.spokenSendEnabled)
+        }
+    }
+
+    var spokenSendImmediatelyEnabled: Bool {
+        get { self.defaults.object(forKey: Keys.spokenSendImmediatelyEnabled) as? Bool ?? true }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.spokenSendImmediatelyEnabled)
+        }
+    }
+
+    var spokenSendPhrase: String {
+        get { self.defaults.string(forKey: Keys.spokenSendPhrase) ?? "send it" }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.spokenSendPhrase)
+        }
+    }
+
+    var spokenSendKey: SpokenSendKey {
+        get {
+            guard let raw = self.defaults.string(forKey: Keys.spokenSendKey),
+                  let key = SpokenSendKey(rawValue: raw)
+            else {
+                return .enter
+            }
+            return key
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue.rawValue, forKey: Keys.spokenSendKey)
+        }
+    }
+
     enum TextInsertionMode: String, CaseIterable, Identifiable, Codable {
         case standard
         case reliablePaste
