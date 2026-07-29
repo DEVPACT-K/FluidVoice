@@ -38,27 +38,41 @@ final class SpokenSendTests: XCTestCase {
         )
     }
 
-    func testNaturalSentenceEndingWithPhraseDoesNotArmSend() {
+    func testTerminalPhraseDoesNotRequireLeadingOrTrailingPunctuation() {
         XCTAssertEqual(
-            SpokenSendParser.parse("I wanna send it.", phrase: "send it", enabled: true),
-            SpokenSendParseResult(text: "I wanna send it.", shouldSend: false)
+            SpokenSendParser.parse("Ready to go send it", phrase: "send it", enabled: true),
+            SpokenSendParseResult(text: "Ready to go.", shouldSend: true)
         )
     }
 
-    func testPunctuationBreakDisambiguatesTerminalCommand() {
+    func testRepeatedTerminalPhrasesAreAllRemoved() {
         XCTAssertEqual(
             SpokenSendParser.parse("I wanna send it, send it.", phrase: "send it", enabled: true),
-            SpokenSendParseResult(text: "I wanna send it.", shouldSend: true)
+            SpokenSendParseResult(text: "I wanna.", shouldSend: true)
+        )
+        XCTAssertEqual(
+            SpokenSendParser.parse("Ready SEND IT send it", phrase: "send it", enabled: true),
+            SpokenSendParseResult(text: "Ready.", shouldSend: true)
+        )
+        XCTAssertEqual(
+            SpokenSendParser.parse("send it, send it.", phrase: "send it", enabled: true),
+            SpokenSendParseResult(text: "", shouldSend: true)
         )
     }
 
-    func testOpeningPunctuationDoesNotDisambiguateTerminalCommand() {
-        for text in ["I wanna (send it.", #"I wanna "send it.""#, "I_wanna_send it."] {
-            XCTAssertEqual(
-                SpokenSendParser.parse(text, phrase: "send it", enabled: true),
-                SpokenSendParseResult(text: text, shouldSend: false)
-            )
-        }
+    func testRepeatedTrailingSeparatorsCollapseToOneSentenceEnding() {
+        XCTAssertEqual(
+            SpokenSendParser.parse("Ready,,,,; — send it", phrase: "send it", enabled: true),
+            SpokenSendParseResult(text: "Ready.", shouldSend: true)
+        )
+        XCTAssertEqual(
+            SpokenSendParser.parse("Ready.,,,;— send it, send it.", phrase: "send it", enabled: true),
+            SpokenSendParseResult(text: "Ready.", shouldSend: true)
+        )
+        XCTAssertEqual(
+            SpokenSendParser.parse("Ready?,,, send it", phrase: "send it", enabled: true),
+            SpokenSendParseResult(text: "Ready?", shouldSend: true)
+        )
     }
 
     func testFinalQuestionOrExclamationMarkIsPreserved() {
@@ -212,6 +226,13 @@ final class SpokenSendTests: XCTestCase {
         XCTAssertEqual(
             SpokenSendParser.parse("Please type literal send it.", phrase: "send it", enabled: true),
             SpokenSendParseResult(text: "Please type send it", shouldSend: false)
+        )
+    }
+
+    func testLiteralEscapeBeforeRepeatedCommandKeepsOnePhraseAndSends() {
+        XCTAssertEqual(
+            SpokenSendParser.parse("Please type literal send it, send it.", phrase: "send it", enabled: true),
+            SpokenSendParseResult(text: "Please type send it.", shouldSend: true)
         )
     }
 

@@ -83,38 +83,51 @@ enum SpokenSendParser {
         }
 
         guard let commandRegex = try? NSRegularExpression(
-            pattern: #"(?i)(?<![\p{L}\p{N}_])"# + phrasePattern + trailingPunctuation
+            pattern: #"(?i)(?<![\p{L}\p{N}_])("# +
+                phrasePattern +
+                #")(?:[\s\p{P}]+"# +
+                phrasePattern +
+                #")*"# +
+                trailingPunctuation
         ), let match = commandRegex.firstMatch(
             in: text,
             range: NSRange(text.startIndex..., in: text)
         ), match.range.location != NSNotFound,
-        let commandRange = Range(match.range, in: text)
+        let commandRange = Range(match.range, in: text),
+        let firstPhraseRange = Range(match.range(at: 1), in: text)
         else {
             return SpokenSendParseResult(text: text, shouldSend: false)
         }
 
-        let commandPrefix = String(text[..<commandRange.lowerBound])
-        let trimmedPrefix = commandPrefix.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmedPrefix.isEmpty || Self.endsWithCommandSeparator(trimmedPrefix) else {
-            return SpokenSendParseResult(text: text, shouldSend: false)
+        var commandPrefix = String(text[..<commandRange.lowerBound])
+        if let literalPrefixRegex = try? NSRegularExpression(
+            pattern: #"(?i)(?<![\p{L}\p{N}_])literal\s*$"#
+        ), let literalMatch = literalPrefixRegex.firstMatch(
+            in: commandPrefix,
+            range: NSRange(commandPrefix.startIndex..., in: commandPrefix)
+        ), let literalRange = Range(literalMatch.range, in: commandPrefix) {
+            commandPrefix.replaceSubrange(literalRange, with: text[firstPhraseRange])
         }
 
         let cleaned = Self.polishCommandPrefix(commandPrefix)
         return SpokenSendParseResult(text: cleaned, shouldSend: true)
     }
 
-    private static func endsWithCommandSeparator(_ text: String) -> Bool {
-        guard let last = text.last else { return false }
-        return [".", ",", ";", ":", "?", "!", "…", "-", "–", "—"].contains(last)
-    }
-
     private static func polishCommandPrefix(_ text: String) -> String {
         var polished = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let last = polished.last, [",", ";", ":", "-", "–", "—"].contains(last) else {
-            return polished
+        while let last = polished.last, [",", ";", ":", "-", "–", "—"].contains(last) {
+            polished.removeLast()
+            while polished.last?.isWhitespace == true {
+                polished.removeLast()
+            }
         }
 
-        polished.removeLast()
-        return polished.trimmingCharacters(in: .whitespacesAndNewlines) + "."
+        guard let last = polished.last else {
+            return polished
+        }
+        if [".", "?", "!", "…"].contains(last) {
+            return polished
+        }
+        return polished + "."
     }
 }
