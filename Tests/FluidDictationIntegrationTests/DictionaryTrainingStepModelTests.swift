@@ -2,9 +2,11 @@
 import XCTest
 
 final class DictionaryTrainingStepModelTests: XCTestCase {
-    // Reference the production constant so a change to the ready threshold fails
-    // these tests instead of silently diverging from the view.
-    private var readyCoveredCount: Int { CustomDictionaryTrainingMerge.readyCoveredCount }
+    /// Reference the production constant so a change to the ready threshold fails
+    /// these tests instead of silently diverging from the view.
+    private var readyCoveredCount: Int {
+        CustomDictionaryTrainingMerge.readyCoveredCount
+    }
 
     private func derived(
         word: String = "FluidVoice",
@@ -206,7 +208,7 @@ final class DictionaryTrainingStepModelTests: XCTestCase {
     func testAlreadyCorrectImpliesFinalOutputNotReady() {
         // The Save-disabled invariant: when nothing needs saving, final output is not
         // "ready" (there is no replacement to add).
-        let args: (Int, String, Bool, Bool) = (3, "FluidVoice", true, true)
+        let args = (3, "FluidVoice", true, true)
         XCTAssertTrue(self.alreadyCorrect(
             consecutiveCoveredCaptures: args.0,
             lastTrainingOutput: args.1,
@@ -322,7 +324,63 @@ final class DictionaryTrainingStepModelTests: XCTestCase {
         XCTAssertEqual(resolved, .record)
     }
 
-    // MARK: - Latched post-ready-miss subtitle
+    // MARK: - isStepInteractive
+
+    func testVerifyHeaderIsNotTappableBeforeAnythingIsRecorded() {
+        // Word typed but nothing recorded yet: opening Verify would strand the user
+        // on an empty final output with Add Replacement disabled.
+        XCTAssertFalse(DictionaryTrainingStepModel.isStepInteractive(
+            .verify,
+            derived: .record,
+            isRecordingLocked: false,
+            wordIsEmpty: false
+        ))
+    }
+
+    func testVerifyHeaderIsTappableOnceDerivedStepReachesVerify() {
+        XCTAssertTrue(DictionaryTrainingStepModel.isStepInteractive(
+            .verify,
+            derived: .verify,
+            isRecordingLocked: false,
+            wordIsEmpty: false
+        ))
+    }
+
+    func testRecordAndVerifyHeadersAreLockedWhileWordIsEmpty() {
+        for step in [DictionaryTrainingStep.record, .verify] {
+            XCTAssertFalse(DictionaryTrainingStepModel.isStepInteractive(
+                step,
+                derived: .word,
+                isRecordingLocked: false,
+                wordIsEmpty: true
+            ))
+        }
+        XCTAssertTrue(DictionaryTrainingStepModel.isStepInteractive(
+            .word,
+            derived: .word,
+            isRecordingLocked: false,
+            wordIsEmpty: true
+        ))
+    }
+
+    func testRecordingLockLeavesOnlyRecordTappable() {
+        XCTAssertTrue(DictionaryTrainingStepModel.isStepInteractive(
+            .record,
+            derived: .verify,
+            isRecordingLocked: true,
+            wordIsEmpty: false
+        ))
+        for step in [DictionaryTrainingStep.word, .verify] {
+            XCTAssertFalse(DictionaryTrainingStepModel.isStepInteractive(
+                step,
+                derived: .verify,
+                isRecordingLocked: true,
+                wordIsEmpty: false
+            ))
+        }
+    }
+
+    // MARK: - Latched post-ready-miss progress
 
     /// Mirrors `CustomDictionaryView.trainingReadinessProgress` for the
     /// non-pronunciation-matching branch, using the model's single-source predicates
@@ -357,11 +415,10 @@ final class DictionaryTrainingStepModelTests: XCTestCase {
         return covered ? min(snapshot.consecutiveCoveredCaptures, total) : 0
     }
 
-    func testLatchedPostReadyMissDoesNotClaimRecognizedTotal() {
+    func testLatchedPostReadyMissKeepsVerifyExpandedButReadsZeroProgress() {
         // Post-ready missed capture: the verify latch holds derivedStep at .verify
         // while consecutive covered captures reset to 0 and the last output is no
-        // longer covered. The Record header subtitle must show the real progress
-        // (0/total) and must NOT claim "Recognized total/total".
+        // longer covered. The readiness ring must show the real progress (0/total).
         let total = self.readyCoveredCount
         let snapshot = DictionaryTrainingSnapshot(
             normalizedWord: "FluidVoice",
@@ -396,55 +453,13 @@ final class DictionaryTrainingStepModelTests: XCTestCase {
         )
         XCTAssertEqual(progress, 0, "latched post-ready-miss must read zero progress")
 
-        let subtitle = DictionaryTrainingStepCopy.recordStepSubtitle(
-            derivedStep: step,
-            preloadedCaptureCount: nil,
-            progress: progress,
-            total: total
-        )
-        XCTAssertNotEqual(subtitle, "✓ Recognized \(total)/\(total)")
-        XCTAssertTrue(subtitle.contains("0/\(total)"), "expected real progress, got: \(subtitle)")
-        XCTAssertTrue(subtitle.contains("record again"), "expected a record-again nudge, got: \(subtitle)")
-    }
-
-    func testGenuinelyReadyRecordSubtitleShowsRecognizedTotal() {
-        // Positive counterpart: when progress actually reaches total, the Record
-        // header subtitle shows the complete "✓ Recognized total/total".
-        let total = self.readyCoveredCount
-        let subtitle = DictionaryTrainingStepCopy.recordStepSubtitle(
-            derivedStep: .verify,
-            preloadedCaptureCount: nil,
-            progress: total,
-            total: total
-        )
-        XCTAssertEqual(subtitle, "✓ Recognized \(total)/\(total)")
-    }
-
-    // MARK: - Verify step subtitle copy
-
-    func testVerifySubtitleAlreadyCorrectSaysNoReplacementNeeded() {
-        // alreadyCorrectWithoutReplacement: Save is disabled ("Nothing to Save"), so
-        // the Verify header must not say "Ready to save".
-        let subtitle = DictionaryTrainingStepCopy.verifyStepSubtitle(
-            isReady: false,
-            isAlreadyCorrect: true
-        )
-        XCTAssertEqual(subtitle, "No replacement needed")
-    }
-
-    func testVerifySubtitleReadySaysReadyToSave() {
-        let subtitle = DictionaryTrainingStepCopy.verifyStepSubtitle(
-            isReady: true,
-            isAlreadyCorrect: false
-        )
-        XCTAssertEqual(subtitle, "Ready to save")
-    }
-
-    func testVerifySubtitleNotReadyShowsPlaceholder() {
-        let subtitle = DictionaryTrainingStepCopy.verifyStepSubtitle(
-            isReady: false,
-            isAlreadyCorrect: false
-        )
-        XCTAssertEqual(subtitle, "—")
+        // The Verify header stays tappable through the latched miss, so the user can
+        // still get back to the panel that holds Try Again.
+        XCTAssertTrue(DictionaryTrainingStepModel.isStepInteractive(
+            .verify,
+            derived: step,
+            isRecordingLocked: false,
+            wordIsEmpty: false
+        ))
     }
 }

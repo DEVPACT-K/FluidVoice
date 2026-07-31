@@ -80,12 +80,8 @@ struct CustomDictionaryView: View {
         )
     }
 
-    private var trainingTargetReference: String {
-        DictionaryTrainingCopy.target(for: self.normalizedTrainingReplacement)
-    }
-
     private var composerModeDetail: String {
-        DictionaryTrainingCopy.composerDetail(mode: self.composerMode, target: self.trainingTargetReference)
+        self.composerMode.detail
     }
 
     private var canUseTrainingRecorderButton: Bool {
@@ -553,41 +549,19 @@ struct CustomDictionaryView: View {
 
     private var trainingRecorderPanel: some View {
         VStack(alignment: .leading, spacing: self.theme.metrics.spacing.md) {
-            Text("Teach FluidVoice your pronunciation")
-                .font(self.theme.typography.bodySmallStrong)
-
-            if self.trainingAlreadyCorrectWithoutReplacement {
-                Label("\(self.trainingTargetReference) is already recognized correctly.", systemImage: "checkmark.circle.fill")
-                    .font(self.theme.typography.captionStrong)
-                    .foregroundStyle(self.theme.palette.accent)
-            } else if self.trainingFinalOutputIsReady {
-                Label(
-                    self.activePronunciationMatching
-                        ? "Voice profile for \(self.trainingTargetReference) captured 3 times."
-                        : "FluidVoice recognized \(self.trainingTargetReference) 3 times in a row.",
-                    systemImage: "checkmark.circle.fill"
-                )
-                .font(self.theme.typography.captionStrong)
-                .foregroundStyle(self.theme.palette.accent)
-            } else {
+            // The instructions drop out once training is ready or already correct —
+            // the ring and its caption carry the outcome from there.
+            if !self.trainingAlreadyCorrectWithoutReplacement, !self.trainingFinalOutputIsReady {
                 VStack(alignment: .leading, spacing: 7) {
                     self.trainingInstruction(
                         number: 1,
-                        text: "Type the correct word you want to teach in the box above."
+                        text: "Press Start, say the word naturally, then pause."
                     )
                     self.trainingInstruction(
                         number: 2,
-                        text: "Press Start once."
-                    )
-                    self.trainingInstruction(
-                        number: 3,
-                        text: "Say \(self.trainingTargetReference) naturally, then pause. FluidVoice records and listens again automatically."
-                    )
-                    self.trainingInstruction(
-                        number: 4,
                         text: self.activePronunciationMatching
-                            ? "Repeat 3 times to teach FluidVoice how your voice sounds."
-                            : "Keep repeating it until the circle reaches 3/3."
+                            ? "Repeat 3 times so FluidVoice learns how your voice sounds."
+                            : "Repeat until the ring reaches 3/3."
                     )
                 }
             }
@@ -641,7 +615,6 @@ struct CustomDictionaryView: View {
 
     private var trainingReadinessCaption: String {
         DictionaryTrainingCopy.readinessCaption(
-            target: self.trainingTargetReference,
             isAlreadyCorrect: self.trainingAlreadyCorrectWithoutReplacement,
             isReady: self.trainingFinalOutputIsReady,
             usesVoiceMatching: self.activePronunciationMatching
@@ -2286,13 +2259,13 @@ private extension CustomDictionaryView {
             (self.trainingSampleCount > 0 || !self.trainingPronunciationEnrollments.isEmpty)
     }
 
-    /// A step header is tappable unless the recording lock pins `.record`, or the
-    /// word is still empty (Record/Verify have nothing to act on and would strand
-    /// the user on a disabled panel with no caption).
     func isTrainingStepInteractive(_ step: DictionaryTrainingStep) -> Bool {
-        if self.isTrainingRecordingLocked && step != .record { return false }
-        if step != .word && self.normalizedTrainingReplacement.isEmpty { return false }
-        return true
+        DictionaryTrainingStepModel.isStepInteractive(
+            step,
+            derived: self.derivedTrainingStep,
+            isRecordingLocked: self.isTrainingRecordingLocked,
+            wordIsEmpty: self.normalizedTrainingReplacement.isEmpty
+        )
     }
 
     func selectTrainingStep(_ step: DictionaryTrainingStep) {
@@ -2388,7 +2361,6 @@ private extension CustomDictionaryView {
             step: step,
             status: self.trainingStepStatus(step),
             title: DictionaryTrainingCopy.stepTitle(step),
-            subtitle: self.trainingStepSubtitle(step),
             isExpanded: self.expandedTrainingStep == step,
             isInteractive: isInteractive
         ) {
@@ -2410,29 +2382,6 @@ private extension CustomDictionaryView {
             return .current
         }
         return .upcoming
-    }
-
-    func trainingStepSubtitle(_ step: DictionaryTrainingStep) -> String {
-        switch step {
-        case .word:
-            return DictionaryTrainingCopy.wordStepSubtitle(
-                normalizedWord: self.normalizedTrainingReplacement,
-                isPastWordStep: self.derivedTrainingStep != .word
-            )
-        case .record:
-            let isPreloaded = self.trainingSampleCount == 0 && !self.trainingVariants.isEmpty
-            return DictionaryTrainingStepCopy.recordStepSubtitle(
-                derivedStep: self.derivedTrainingStep,
-                preloadedCaptureCount: isPreloaded ? self.trainingVariants.count : nil,
-                progress: self.trainingReadinessProgress,
-                total: CustomDictionaryTrainingMerge.readyCoveredCount
-            )
-        case .verify:
-            return DictionaryTrainingStepCopy.verifyStepSubtitle(
-                isReady: self.trainingFinalOutputIsReady,
-                isAlreadyCorrect: self.trainingAlreadyCorrectWithoutReplacement
-            )
-        }
     }
 
     var trainingWordStepBody: some View {
@@ -2786,40 +2735,35 @@ private struct DictionaryFocusDismissMonitor: NSViewRepresentable {
 }
 
 private enum DictionaryTrainingCopy {
-    static func target(for normalizedTarget: String) -> String {
-        normalizedTarget.isEmpty ? "the word" : "“\(normalizedTarget)”"
-    }
-
-    static func composerDetail(mode: DictionaryComposerMode, target: String) -> String {
-        mode == .train && target != "the word" ? "Teach \(target) by speaking it." : mode.detail
-    }
-
+    /// Readiness copy deliberately avoids echoing the word back — the user just
+    /// typed it and it is already on screen in step ① and the final-output panel.
     static func readinessCaption(
-        target: String,
         isAlreadyCorrect: Bool,
         isReady: Bool,
         usesVoiceMatching: Bool
     ) -> String {
         if isAlreadyCorrect {
-            return "No replacement is needed for \(target)."
+            return "No replacement needed."
         }
         if isReady {
             return usesVoiceMatching
-                ? "Ready. FluidVoice learned how \(target) sounds in your voice."
-                : "Ready. FluidVoice got \(target) right 3 times in a row."
+                ? "Ready. FluidVoice learned how you say it."
+                : "Ready. Recognized 3 times in a row."
         }
         return usesVoiceMatching
-            ? "Say \(target) 3 times to unlock Add Replacement."
-            : "Keep trying until FluidVoice gets \(target) right 3 times in a row."
+            ? "Say it 3 times to unlock Add Replacement."
+            : "Keep going until it is recognized 3 times in a row."
     }
 
     // MARK: - Train by Voice accordion
 
+    /// Titles carry the "what do I do here" instruction so the accordion needs no
+    /// per-step subtitle line.
     static func stepTitle(_ step: DictionaryTrainingStep) -> String {
         switch step {
-        case .word: return "Word"
-        case .record: return "Record"
-        case .verify: return "Verify & Save"
+        case .word: return "Type the word to teach"
+        case .record: return "Say it 3 times"
+        case .verify: return "Verify & save"
         }
     }
 
@@ -2829,10 +2773,6 @@ private enum DictionaryTrainingCopy {
         case .record: return "Step 2, Record."
         case .verify: return "Step 3, Verify and Save."
         }
-    }
-
-    static func wordStepSubtitle(normalizedWord: String, isPastWordStep: Bool) -> String {
-        isPastWordStep ? normalizedWord : "Type the word to teach"
     }
 
     static let editingWordRestartsTrainingCaption = "Editing the word restarts voice training."
@@ -2955,7 +2895,6 @@ private struct DictionaryTrainingStepHeaderView: View {
     let step: DictionaryTrainingStep
     let status: Status
     let title: String
-    let subtitle: String
     let isExpanded: Bool
     let isInteractive: Bool
     let action: () -> Void
@@ -2969,16 +2908,10 @@ private struct DictionaryTrainingStepHeaderView: View {
             HStack(alignment: .center, spacing: self.theme.metrics.spacing.md) {
                 self.statusGlyph
 
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("\(self.step.rawValue + 1). \(self.title)")
-                        .font(self.theme.typography.bodySmallStrong)
-                        .foregroundStyle(self.theme.palette.primaryText)
-
-                    Text(self.subtitle)
-                        .font(self.theme.typography.caption)
-                        .foregroundStyle(self.theme.palette.secondaryText)
-                        .lineLimit(1)
-                }
+                Text("\(self.step.rawValue + 1). \(self.title)")
+                    .font(self.theme.typography.bodySmallStrong)
+                    .foregroundStyle(self.theme.palette.primaryText)
+                    .lineLimit(1)
 
                 Spacer(minLength: self.theme.metrics.spacing.sm)
 
@@ -3022,7 +2955,6 @@ private struct DictionaryTrainingStepHeaderView: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Step \(self.step.rawValue + 1), \(self.title), \(self.statusAccessibilityDescription)")
-        .accessibilityValue(self.subtitle)
         .accessibilityAddTraits(self.isExpanded ? .isSelected : [])
     }
 
