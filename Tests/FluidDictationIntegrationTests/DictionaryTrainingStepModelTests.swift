@@ -2,8 +2,7 @@
 import XCTest
 
 final class DictionaryTrainingStepModelTests: XCTestCase {
-    /// Reference the production constant so a change to the ready threshold fails
-    /// these tests instead of silently diverging from the view.
+    /// Pinned to the production constant so a threshold change fails these tests.
     private var readyCoveredCount: Int {
         CustomDictionaryTrainingMerge.readyCoveredCount
     }

@@ -28,8 +28,7 @@ struct DictionaryTrainingSnapshot: Equatable {
 }
 
 enum DictionaryTrainingStepModel {
-    /// Single source of truth for whether the last training output counts as
-    /// "covered"; `CustomDictionaryView.trainingOutputIsCovered` delegates to this.
+    /// Single source of truth for `CustomDictionaryView.trainingOutputIsCovered`.
     static func isOutputCovered(
         lastTrainingOutputIsCovered: Bool,
         pronunciationEnrollmentCount: Int,
@@ -41,8 +40,7 @@ enum DictionaryTrainingStepModel {
         return lastTrainingOutputIsCovered
     }
 
-    /// Single source of truth for `trainingAlreadyCorrectWithoutReplacement`;
-    /// CustomDictionaryView delegates to this.
+    /// Single source of truth for `trainingAlreadyCorrectWithoutReplacement`.
     static func alreadyCorrectWithoutReplacement(
         _ snapshot: DictionaryTrainingSnapshot,
         readyCoveredCount: Int
@@ -66,8 +64,7 @@ enum DictionaryTrainingStepModel {
             snapshot.consecutiveCoveredCaptures >= readyCoveredCount
     }
 
-    /// Single source of truth for `trainingFinalOutputIsReady`;
-    /// CustomDictionaryView delegates to this.
+    /// Single source of truth for `trainingFinalOutputIsReady`.
     static func finalOutputIsReady(
         _ snapshot: DictionaryTrainingSnapshot,
         readyCoveredCount: Int
@@ -89,14 +86,8 @@ enum DictionaryTrainingStepModel {
         return !alreadyCorrect && outputIsCovered && snapshot.consecutiveCoveredCaptures >= readyCoveredCount
     }
 
-    /// Pure derivation of which step the composer logically represents right now,
-    /// from primitive training state (not pre-derived booleans).
-    ///
-    /// - `.word` if the word is empty.
-    /// - `.verify` if the capture is ready, already-correct, or the verify lock
-    ///   (`hasReachedVerify`) has been latched (prevents a post-ready missed
-    ///   capture from snapping the accordion back to `.record`).
-    /// - `.record` otherwise.
+    /// Derives the step from primitive state: `.word` when empty, `.verify` when ready,
+    /// already-correct, or latched (a post-ready miss must not snap back), else `.record`.
     static func derivedStep(
         _ snapshot: DictionaryTrainingSnapshot,
         readyCoveredCount: Int,
@@ -119,15 +110,8 @@ enum DictionaryTrainingStepModel {
         return .record
     }
 
-    /// Pure resolution of which step's body should be expanded, given the derived
-    /// step and the accordion's interaction state. Priority order (highest first):
-    ///
-    /// 1. Recording lock (`isRecordingLocked`) always wins: `.record` is expanded,
-    ///    no matter what the derived step or manual override say.
-    /// 2. Word-field focus always wins next: `.word` stays expanded so typing is
-    ///    never interrupted.
-    /// 3. A manual header tap (`manualOverride`) wins over the derived step.
-    /// 4. Otherwise, the derived step is expanded.
+    /// Resolves the expanded step. Priority: recording lock, word-field focus, manual tap,
+    /// then the derived step.
     static func resolveExpandedStep(
         derived: DictionaryTrainingStep,
         manualOverride: DictionaryTrainingStep?,
@@ -146,13 +130,8 @@ enum DictionaryTrainingStepModel {
         return derived
     }
 
-    /// Pure predicate for whether a step header can be tapped.
-    ///
-    /// - The recording lock pins `.record`, so nothing else is tappable.
-    /// - `.record` and `.verify` have nothing to act on while the word is empty.
-    /// - `.verify` stays locked until the derived step actually reaches it, so the
-    ///   user can't open a panel with an empty output and a disabled Save button
-    ///   before recording anything.
+    /// Whether a header can be tapped. The lock pins `.record`; `.record`/`.verify` need a
+    /// word; `.verify` waits for the derived step, or it opens with Save disabled.
     static func isStepInteractive(
         _ step: DictionaryTrainingStep,
         derived: DictionaryTrainingStep,
