@@ -162,8 +162,11 @@ final class BatchTranscriptionCoordinatorTests: XCTestCase {
         coordinator.enqueue([.init(url: self.tempAudioURL(name: "after.m4a"))])
         await coordinator.waitUntilIdle()
 
-        guard case .completed = coordinator.items.last!.status else {
-            return XCTFail("batch must run normally after a cancel, got \(coordinator.items.last!.status)")
+        guard let last = coordinator.items.last else {
+            return XCTFail("enqueue after cancel must produce an item")
+        }
+        guard case .completed = last.status else {
+            return XCTFail("batch must run normally after a cancel, got \(last.status)")
         }
     }
 

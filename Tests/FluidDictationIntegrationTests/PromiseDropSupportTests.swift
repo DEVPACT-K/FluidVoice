@@ -76,6 +76,70 @@ final class PromiseDropSupportTests: XCTestCase {
         XCTAssertEqual(delivered, [modern], "legacy/data copies of an already-delivered name are the same dragged item")
     }
 
+    func testRenamedFallbackCopyOfSameNamedMemosIsNotDeliveredAsExtraItem() {
+        // The renamed fallback copy matches no modern name, so name-only dedup used to
+        // append it as a phantom third file.
+        let memoA = URL(fileURLWithPath: "/tmp/item-A/New Recording.m4a")
+        let memoB = URL(fileURLWithPath: "/tmp/item-B/New Recording.m4a")
+        let dataDupe = URL(fileURLWithPath: "/tmp/data/New Recording.m4a")
+        let dataRenamed = URL(fileURLWithPath: "/tmp/data/New Recording 2.m4a")
+        let delivered = PromiseDropSupport.selectDelivery(
+            modern: [memoA, memoB],
+            legacy: [],
+            data: [dataDupe, dataRenamed],
+            expectedItemCount: 2
+        )
+        XCTAssertEqual(delivered, [memoA, memoB], "alternates must not exceed the dragged item count")
+    }
+
+    func testFallbackStillFillsGapWhenAReceiverDoesNotDeliver() {
+        // One receiver didn't deliver, so the renamed copy is a real stand-in.
+        let memoA = URL(fileURLWithPath: "/tmp/item-A/New Recording.m4a")
+        let dataDupe = URL(fileURLWithPath: "/tmp/data/New Recording.m4a")
+        let dataRenamed = URL(fileURLWithPath: "/tmp/data/New Recording 2.m4a")
+        let delivered = PromiseDropSupport.selectDelivery(
+            modern: [memoA],
+            legacy: [],
+            data: [dataDupe, dataRenamed],
+            expectedItemCount: 2
+        )
+        XCTAssertEqual(delivered, [memoA, dataRenamed])
+    }
+
+    // MARK: - Promise-supplied file names
+
+    func testTraversalNamesAreReducedToASinglePathComponent() {
+        XCTAssertEqual(
+            PromiseDropSupport.sanitizedFileName("../../Library/LaunchAgents/evil.plist", fallback: "fallback.m4a"),
+            "evil.plist"
+        )
+        XCTAssertEqual(
+            PromiseDropSupport.sanitizedFileName("/etc/passwd", fallback: "fallback.m4a"),
+            "passwd"
+        )
+        XCTAssertEqual(
+            PromiseDropSupport.sanitizedFileName("Sub/Dir/Memo.m4a", fallback: "fallback.m4a"),
+            "Memo.m4a"
+        )
+    }
+
+    func testUnusableNamesFallBackToTheGeneratedName() {
+        for raw in [nil, "", "   ", ".", "..", "/", "../.."] {
+            XCTAssertEqual(
+                PromiseDropSupport.sanitizedFileName(raw, fallback: "Dropped Audio 1"),
+                "Dropped Audio 1",
+                "unusable name \(raw ?? "nil") must not become a file name"
+            )
+        }
+    }
+
+    func testOrdinaryNamesArePreserved() {
+        XCTAssertEqual(
+            PromiseDropSupport.sanitizedFileName("New Recording 2.m4a", fallback: "fallback.m4a"),
+            "New Recording 2.m4a"
+        )
+    }
+
     func testFallbackOnlyDeliveryUsesLegacyThenData() {
         let legacyFile = URL(fileURLWithPath: "/tmp/item-L/Memo.m4a")
         let dataDupe = URL(fileURLWithPath: "/tmp/item-D/Memo.m4a")

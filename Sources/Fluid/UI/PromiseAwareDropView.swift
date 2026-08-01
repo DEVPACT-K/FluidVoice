@@ -239,7 +239,12 @@ struct PromiseAwareDropView: NSViewRepresentable {
                 if let dataDir, !itemPayloads.isEmpty {
                     var usedNames = Set<String>()
                     for (index, payload) in itemPayloads.enumerated() {
-                        let itemName = payload.name ?? suggestedName ?? "Dropped Audio \(index + 1)"
+                        let fallbackName = "Dropped Audio \(index + 1)"
+                        // Provider-supplied, so untrusted: separators would escape staging.
+                        let itemName = PromiseDropSupport.sanitizedFileName(
+                            payload.name ?? suggestedName,
+                            fallback: fallbackName
+                        )
                         var fileName = itemName
                         var counter = 2
                         while usedNames.contains(fileName) {
@@ -572,7 +577,12 @@ struct PromiseAwareDropView: NSViewRepresentable {
                 "Promise delivery [modern=\(modern.count), legacy=\(legacy.count), data=\(data.count), expected=\(context.totalExpected)]",
                 source: "PromiseAwareDropView"
             )
-            let selected = PromiseDropSupport.selectDelivery(modern: modern, legacy: legacy, data: data)
+            let selected = PromiseDropSupport.selectDelivery(
+                modern: modern,
+                legacy: legacy,
+                data: data,
+                expectedItemCount: context.totalExpected
+            )
             let supported = PromiseDropSupport.filterSupported(selected)
             let result = supported.map { (url: $0, stagingDir: $0.deletingLastPathComponent()) }
 

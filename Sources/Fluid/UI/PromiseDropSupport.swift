@@ -79,17 +79,40 @@ nonisolated enum PromiseDropSupport {
             .filter { !pendingPaths.contains($0.standardizedFileURL.path) }
     }
 
+    /// Reduces a drag-source-supplied name to one safe path component; separators or
+    /// `..` would otherwise let `appendingPathComponent` write outside staging.
+    /// Unusable names (empty, `.`, `..`, all-separators) take the caller's fallback.
+    static func sanitizedFileName(_ rawName: String?, fallback: String) -> String {
+        guard let rawName else { return fallback }
+        let lastComponent = (rawName as NSString).lastPathComponent
+        let trimmed = lastComponent.trimmingCharacters(in: .whitespacesAndNewlines)
+        // ("/" as NSString).lastPathComponent is "/", so it survives the reduction.
+        guard !trimmed.isEmpty, trimmed != ".", trimmed != "..", !trimmed.contains("/") else {
+            return fallback
+        }
+        return trimmed
+    }
+
     /// Merges the three promise-delivery paths into the final file list.
     ///
     /// Every modern-receiver file is delivered: each receiver stages into its own
     /// directory, so two distinct memos that share a display name (e.g. two
     /// "New Recording.m4a") are distinct files and must never be collapsed.
-    /// Legacy and raw-data files are alternates of the same dragged items, so
-    /// they only contribute names the delivered set doesn't already contain.
-    static func selectDelivery(modern: [URL], legacy: [URL], data: [URL]) -> [URL] {
+    ///
+    /// Legacy and raw-data files are alternates of the same items, never extra ones, so
+    /// they only fill gaps. Names alone can't identify an alternate — the raw-data path
+    /// renames same-named items ("New Recording 2.m4a") — so `expectedItemCount` bounds
+    /// the result. Pass nil to keep name-only behavior.
+    static func selectDelivery(
+        modern: [URL],
+        legacy: [URL],
+        data: [URL],
+        expectedItemCount: Int? = nil
+    ) -> [URL] {
         var delivered = modern
         var names = Set(modern.map(\.lastPathComponent))
         for url in legacy + data where !names.contains(url.lastPathComponent) {
+            if let expectedItemCount, delivered.count >= expectedItemCount { break }
             delivered.append(url)
             names.insert(url.lastPathComponent)
         }
