@@ -69,6 +69,11 @@ final class FileTranscriptionSession {
     func endDictationIntent() {
         self.dictationIntent = false
     }
+
+    /// Releases the flag without force-creating the session, for teardown paths.
+    static func endDictationIntentIfCreated() {
+        self.sharedIfCreated?.endDictationIntent()
+    }
 }
 
 /// Wraps the batch coordinator so a finished batch can be cleared and a fresh

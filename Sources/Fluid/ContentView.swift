@@ -2012,9 +2012,8 @@ struct ContentView: View {
     // MARK: - Stop and Process Transcription
 
     private func stopAndProcessTranscription(route: DictationOutputRoute = .normal) async {
-        // Recording session is ending: release dictation intent so the batch arbiter
-        // (and any dictation restart) no longer sees dictation as active.
-        FileTranscriptionSession.shared.endDictationIntent()
+        // Released at the end: stop() clears isRunning before the final transcription pass.
+        defer { FileTranscriptionSession.shared.endDictationIntent() }
 
         DebugLogger.shared.debug("stopAndProcessTranscription called", source: "ContentView")
         DebugLogger.shared.info("Output route selected: \(route.rawValue)", source: "ContentView")
@@ -3085,12 +3084,6 @@ struct ContentView: View {
             return
         }
 
-        // Signal dictation intent synchronously, before any `await` below, so the
-        // batch transcribe closure's arbitration check (which also reads this flag)
-        // cannot race a window where neither isBatchTranscribing nor asr.isRunning
-        // is true yet.
-        FileTranscriptionSession.shared.beginDictationIntent()
-
         let model = SettingsStore.shared.selectedSpeechModel
         DebugLogger.shared.info(
             "ContentView: startRecording() for model=\(model.displayName), supportsStreaming=\(model.supportsStreaming)",
@@ -3100,6 +3093,9 @@ struct ContentView: View {
             DebugLogger.shared.debug("ContentView: start ignored because capture is already active", source: "ContentView")
             return
         }
+
+        // Synchronous, before any await; after the guard so an ignored start can't latch it.
+        FileTranscriptionSession.shared.beginDictationIntent()
 
         self.advanceOverlayLifecycle()
         self.setActiveRecordingMode(.dictate)
@@ -3371,12 +3367,12 @@ struct ContentView: View {
                 self.menuBarManager.setOverlayMode(.command)
 
                 guard !self.asr.isRunningOrStarting else { return }
-                // Command mode starts recording directly (it does not route through
-                // beginDictationRecording), so it needs its own batch guard.
+                // Bypasses beginDictationRecording, so it needs its own guard and claim.
                 guard !FileTranscriptionSession.isBatchTranscribing else {
                     self.notifyDictationBlockedByBatch()
                     return
                 }
+                FileTranscriptionSession.shared.beginDictationIntent()
 
                 self.advanceOverlayLifecycle()
 
@@ -3394,6 +3390,7 @@ struct ContentView: View {
                         self.menuBarManager.hideRecordingOverlayImmediately(
                             reason: "command_asr_start_failed"
                         )
+                        FileTranscriptionSession.shared.endDictationIntent()
                     }
                 }
             },
@@ -3426,12 +3423,13 @@ struct ContentView: View {
                 self.setActiveRecordingMode(.edit)
 
                 guard !self.asr.isRunningOrStarting else { return }
-                // Rewrite/edit mode starts recording directly (it does not route through
-                // beginDictationRecording), so it needs its own batch guard.
+                // Starts recording directly, bypassing beginDictationRecording, so it
+                // needs its own batch guard and intent claim.
                 guard !FileTranscriptionSession.isBatchTranscribing else {
                     self.notifyDictationBlockedByBatch()
                     return
                 }
+                FileTranscriptionSession.shared.beginDictationIntent()
 
                 self.advanceOverlayLifecycle()
 
@@ -3446,6 +3444,7 @@ struct ContentView: View {
                         self.menuBarManager.hideRecordingOverlayImmediately(
                             reason: "edit_asr_start_failed"
                         )
+                        FileTranscriptionSession.shared.endDictationIntent()
                     }
                 }
             },
@@ -3781,6 +3780,8 @@ extension ContentView {
             self.appBench("asr_start_skipped reason=already_running_or_starting")
             return
         }
+        // Claimed before the async start: isRunning hasn't flipped yet.
+        FileTranscriptionSession.shared.beginDictationIntent()
         self.advanceOverlayLifecycle()
         if self.asr.micStatus == .authorized {
             self.appBench("overlay_mode_request mode=Dictation")
@@ -3802,6 +3803,7 @@ extension ContentView {
             })
             if startOutcome == .failed {
                 self.menuBarManager.hideRecordingOverlayImmediately(reason: "asr_start_failed")
+                FileTranscriptionSession.shared.endDictationIntent()
             }
             DebugLogger.shared.benchmark(
                 "APP_BENCH",

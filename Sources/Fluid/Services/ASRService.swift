@@ -2161,6 +2161,9 @@ final class ASRService: ObservableObject {
     }
 
     func stopWithoutTranscription() async {
+        // Cancel paths skip stop-and-process; above the guard to cover the starting phase.
+        defer { FileTranscriptionSession.endDictationIntentIfCreated() }
+
         if self.isStarting, self.isRunning == false {
             await self.cancelPendingAudioCaptureStart(reason: "stop_without_transcription")
         }
