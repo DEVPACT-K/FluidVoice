@@ -155,15 +155,17 @@ nonisolated enum CohereTranscribeCppLongFormProcessor {
         let rightScalars = Array(right.unicodeScalars)
         let indexedRightScalars = rightScalars.enumerated()
             .filter { CharacterSet.alphanumerics.contains($0.element) }
-        let maximum = min(48, leftScalars.count, indexedRightScalars.count)
-        guard maximum >= 2 else { return left + right }
+        let maximumLeftCount = min(48, leftScalars.count)
+        let maximumRightCount = min(48, indexedRightScalars.count)
+        guard maximumLeftCount >= 2, maximumRightCount >= 2 else { return left + right }
 
-        for leftCount in stride(from: maximum, through: 2, by: -1) {
+        for leftCount in stride(from: maximumLeftCount, through: 2, by: -1) {
             let leftPhrase = String(String.UnicodeScalarView(leftScalars.suffix(leftCount)))
             let distanceLimit = leftCount >= 4 ? max(1, leftCount / 6) : 0
             let minimumRightCount = max(2, leftCount - distanceLimit)
-            let maximumRightCount = min(maximum, leftCount + distanceLimit)
-            for rightCount in stride(from: maximumRightCount, through: minimumRightCount, by: -1) {
+            let allowedRightCount = min(maximumRightCount, leftCount + distanceLimit)
+            guard allowedRightCount >= minimumRightCount else { continue }
+            for rightCount in stride(from: allowedRightCount, through: minimumRightCount, by: -1) {
                 let rightPhrase = String(String.UnicodeScalarView(indexedRightScalars.prefix(rightCount).map(\.element)))
                 guard self.editDistance(leftPhrase, rightPhrase, limit: distanceLimit) <= distanceLimit else { continue }
                 let endIndex = indexedRightScalars[rightCount - 1].offset + 1
