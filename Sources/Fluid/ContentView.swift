@@ -3355,20 +3355,18 @@ struct ContentView: View {
             },
             commandModeCallback: {
                 DebugLogger.shared.info("Command mode triggered", source: "ContentView")
-                self.captureRecordingContext()
-
-                // Set flag so stopAndProcessTranscription knows to process as command
-                self.setActiveRecordingMode(.command)
-
-                // Set overlay mode to command
-                self.menuBarManager.setOverlayMode(.command)
-
-                guard !self.asr.isRunningOrStarting else { return }
-                // bypasses beginDictationRecording; needs its own guard
+                // Bypasses beginDictationRecording, so it needs its own batch guard — and before the mode
+                // flip, which would otherwise leave the overlay in command mode with nothing recording.
                 guard !FileTranscriptionSession.isBatchTranscribing else {
                     self.notifyDictationBlockedByBatch()
                     return
                 }
+
+                self.captureRecordingContext()
+                self.setActiveRecordingMode(.command) // tells stopAndProcessTranscription to process as command
+                self.menuBarManager.setOverlayMode(.command)
+
+                guard !self.asr.isRunningOrStarting else { return } // mid-recording mode switch ends here: no restart
                 FileTranscriptionSession.shared.beginDictationIntent()
 
                 self.advanceOverlayLifecycle()
@@ -3393,6 +3391,12 @@ struct ContentView: View {
             },
             rewriteModeCallback: {
                 guard !self.showPrivateAIEditModeUnavailableIfNeeded() else { return }
+
+                // Ahead of the capture and mode flip, which would otherwise strand the overlay in edit mode.
+                guard !FileTranscriptionSession.isBatchTranscribing else {
+                    self.notifyDictationBlockedByBatch()
+                    return
+                }
 
                 self.captureRecordingContext()
 
@@ -3419,11 +3423,7 @@ struct ContentView: View {
                 // Set flag so stopAndProcessTranscription knows to process as rewrite
                 self.setActiveRecordingMode(.edit)
 
-                guard !self.asr.isRunningOrStarting else { return }
-                guard !FileTranscriptionSession.isBatchTranscribing else {
-                    self.notifyDictationBlockedByBatch()
-                    return
-                }
+                guard !self.asr.isRunningOrStarting else { return } // mid-recording mode switch ends here: no restart
                 FileTranscriptionSession.shared.beginDictationIntent()
 
                 self.advanceOverlayLifecycle()
