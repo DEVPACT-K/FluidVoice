@@ -64,12 +64,27 @@ final class CohereCppLongFormTests: XCTestCase {
             CohereTranscribeCppLongFormProcessor.merge(["这是一个测试结果", "测试结果非常准确"]),
             "这是一个测试结果非常准确"
         )
+        XCTAssertEqual(
+            CohereTranscribeCppLongFormProcessor.merge(["这是一个测试，结果", "测试结果非常准确"]),
+            "这是一个测试，结果非常准确"
+        )
+    }
+
+    func testMergeToleratesMinorCJKRecognitionDrift() {
+        XCTAssertEqual(
+            CohereTranscribeCppLongFormProcessor.merge(["这是一个测试结果", "测试结杲非常准确"]),
+            "这是一个测试结果非常准确"
+        )
     }
 
     func testEarlierCJKDoesNotBreakEnglishBoundarySpacing() {
         XCTAssertEqual(
             CohereTranscribeCppLongFormProcessor.merge(["中文结束. English starts", "starts here"]),
             "中文结束. English starts here"
+        )
+        XCTAssertEqual(
+            CohereTranscribeCppLongFormProcessor.merge(["中", "a"]),
+            "中 a"
         )
     }
 

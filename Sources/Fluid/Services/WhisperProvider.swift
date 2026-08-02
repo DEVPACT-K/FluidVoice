@@ -29,26 +29,28 @@ nonisolated enum CohereTranscribeCppLongFormProcessor {
     }
 
     static func merge(_ texts: [String]) -> String {
-        texts.reduce(into: "") { result, text in
+        var result = ""
+        for text in texts {
             let next = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !next.isEmpty else { return }
-            guard !result.isEmpty else {
+            guard !next.isEmpty else { continue }
+            if result.isEmpty {
                 result = next
-                return
+                continue
             }
 
             if let merged = self.mergeCJK(left: result, right: next) {
                 result = merged
-                return
+                continue
             }
 
             let leftTokens = result.split(whereSeparator: \.isWhitespace).map(String.init)
             let rightTokens = next.split(whereSeparator: \.isWhitespace).map(String.init)
             let overlap = self.wordOverlap(left: leftTokens, right: rightTokens)
             let remaining = rightTokens.dropFirst(overlap)
-            guard !remaining.isEmpty else { return }
+            guard !remaining.isEmpty else { continue }
             result += " " + remaining.joined(separator: " ")
         }
+        return result
     }
 
     private static func wordOverlap(left: [String], right: [String]) -> Int {
@@ -69,6 +71,7 @@ nonisolated enum CohereTranscribeCppLongFormProcessor {
             }
         }
 
+        guard maximum >= 2 else { return 0 }
         for count in stride(from: maximum, through: 2, by: -1) {
             let leftStart = normalizedLeft.count - count
             let similarCount = (0..<count).reduce(into: 0) { total, index in
@@ -148,13 +151,24 @@ nonisolated enum CohereTranscribeCppLongFormProcessor {
         guard self.containsCJK(String(left.suffix(32))),
               self.containsCJK(String(right.prefix(32)))
         else { return nil }
-        let leftScalars = Array(left.unicodeScalars)
+        let leftScalars = left.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }
         let rightScalars = Array(right.unicodeScalars)
-        let maximum = min(48, leftScalars.count, rightScalars.count)
-        for count in stride(from: maximum, through: 1, by: -1)
-            where leftScalars.suffix(count).elementsEqual(rightScalars.prefix(count))
-        {
-            return left + String(String.UnicodeScalarView(rightScalars.dropFirst(count)))
+        let indexedRightScalars = rightScalars.enumerated()
+            .filter { CharacterSet.alphanumerics.contains($0.element) }
+        let maximum = min(48, leftScalars.count, indexedRightScalars.count)
+        guard maximum >= 2 else { return left + right }
+
+        for leftCount in stride(from: maximum, through: 2, by: -1) {
+            let leftPhrase = String(String.UnicodeScalarView(leftScalars.suffix(leftCount)))
+            let distanceLimit = leftCount >= 4 ? max(1, leftCount / 6) : 0
+            let minimumRightCount = max(2, leftCount - distanceLimit)
+            let maximumRightCount = min(maximum, leftCount + distanceLimit)
+            for rightCount in stride(from: maximumRightCount, through: minimumRightCount, by: -1) {
+                let rightPhrase = String(String.UnicodeScalarView(indexedRightScalars.prefix(rightCount).map(\.element)))
+                guard self.editDistance(leftPhrase, rightPhrase, limit: distanceLimit) <= distanceLimit else { continue }
+                let endIndex = indexedRightScalars[rightCount - 1].offset + 1
+                return left + String(String.UnicodeScalarView(rightScalars.dropFirst(endIndex)))
+            }
         }
         return left + right
     }
