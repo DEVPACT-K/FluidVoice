@@ -2,6 +2,10 @@
 import XCTest
 
 final class CohereCppLongFormTests: XCTestCase {
+    func testCohereDisablesGrowingPrefixStreamingPreviews() {
+        XCTAssertFalse(SettingsStore.SpeechModel.cohereTranscribeSixBit.supportsStreaming)
+    }
+
     func testRangesStayBoundedAndOverlap() {
         XCTAssertEqual(
             CohereTranscribeCppLongFormProcessor.ranges(

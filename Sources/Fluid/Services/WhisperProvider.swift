@@ -420,19 +420,24 @@ final class WhisperProvider: TranscriptionProvider {
         }
 
         let requiredMemoryGB = targetModel.requiredMemoryGB
-        let availableMemoryGB = Self.availableMemoryGB()
+        let checksSystemMemory = targetModel == .cohereTranscribeSixBit
+        let measuredMemoryGB = checksSystemMemory ? Self.totalMemoryGB() : Self.availableMemoryGB()
+        let measuredMemoryLabel = checksSystemMemory ? "System" : "Available"
         DebugLogger.shared.info(
-            "WhisperProvider: Memory check - Required: \(String(format: "%.1f", requiredMemoryGB))GB, Available: \(String(format: "%.1f", availableMemoryGB))GB",
+            "WhisperProvider: Memory check - Required: \(String(format: "%.1f", requiredMemoryGB))GB, \(measuredMemoryLabel): \(String(format: "%.1f", measuredMemoryGB))GB",
             source: "WhisperProvider"
         )
 
-        if availableMemoryGB < requiredMemoryGB {
+        if measuredMemoryGB < requiredMemoryGB {
+            let recoverySuggestion = checksSystemMemory
+                ? "Please choose a model with a lower memory requirement."
+                : "Please try a smaller model or close other applications to free up memory."
             let errorMessage = """
             Insufficient memory for \(targetModel.displayName).
             Required: \(String(format: "%.1f", requiredMemoryGB)) GB
-            Available: \(String(format: "%.1f", availableMemoryGB)) GB
+            \(measuredMemoryLabel): \(String(format: "%.1f", measuredMemoryGB)) GB
 
-            Please try a smaller model or close other applications to free up memory.
+            \(recoverySuggestion)
             """
             DebugLogger.shared.error("WhisperProvider: \(errorMessage)", source: "WhisperProvider")
             throw NSError(
@@ -487,6 +492,10 @@ final class WhisperProvider: TranscriptionProvider {
                 userInfo: [NSLocalizedDescriptionKey: "Whisper CPU backend is unavailable on this Mac."]
             )
         }
+    }
+
+    private static func totalMemoryGB() -> Double {
+        Double(ProcessInfo.processInfo.physicalMemory) / (1024 * 1024 * 1024)
     }
 
     private static func availableMemoryGB() -> Double {
