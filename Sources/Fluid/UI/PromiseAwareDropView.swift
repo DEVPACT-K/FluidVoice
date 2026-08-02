@@ -530,7 +530,6 @@ struct PromiseAwareDropView: NSViewRepresentable {
             while true {
                 let elapsed = Date().timeIntervalSince(start)
                 if elapsed >= hardTimeout { break }
-                if elapsed >= softTimeout, !state.hasInFlightWork { break }
 
                 let receiverDirs = state.receiverDirsSnapshot() // a receiver dir only counts once its completion callback fired, never just from a stable size
                 let readyModernDirs = state.completedSnapshot()
@@ -539,6 +538,12 @@ struct PromiseAwareDropView: NSViewRepresentable {
                 let legacyFiles = self.listFiles(in: [legacyDir].compactMap(\.self))
                 let dataFiles = self.listFiles(in: [dataDir].compactMap(\.self))
                 let fallbackSizes = self.sizeMap(for: legacyFiles + dataFiles)
+
+                // Receivers aren't counted as in-flight work (an uncancelled one never releases), so a slow
+                // provider — 80s has been seen — is kept alive by its files instead, not by a token.
+                let unresolvedDirs = receiverDirs.filter { !readyModernDirs.contains($0) && !failedModernDirs.contains($0) }
+                let receiversProducing = unresolvedDirs.contains { !self.listFiles(in: [$0]).isEmpty }
+                if elapsed >= softTimeout, !state.hasInFlightWork, !receiversProducing { break }
 
                 let resolvedCount = readyModernDirs.count + failedModernDirs.count
                 let allReceiversResolved = !receiverDirs.isEmpty && resolvedCount >= receiverDirs.count
@@ -551,9 +556,7 @@ struct PromiseAwareDropView: NSViewRepresentable {
 
                 // Voice Memos only cancels a receiver when the NEXT drag starts, so a lone drop's stays unresolved
                 // forever. One that has written nothing past the grace is non-producing; mid-transfer still holds.
-                let unresolvedDirs = receiverDirs.filter { !readyModernDirs.contains($0) && !failedModernDirs.contains($0) }
-                let receiversStalled = elapsed > modernGrace
-                    && unresolvedDirs.allSatisfy { self.listFiles(in: [$0]).isEmpty }
+                let receiversStalled = elapsed > modernGrace && !receiversProducing
 
                 let modernExhaustedWithNoWins = receiverDirs.isEmpty
                     || ((allReceiversResolved || receiversStalled) && readyModernDirs.isEmpty)
