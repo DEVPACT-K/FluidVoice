@@ -267,7 +267,10 @@ struct PromiseAwareDropView: NSViewRepresentable {
                                 )
                             }
                             guard completion.recordFile(failed: error != nil) else { return }
-                            if completion.anyFailed {
+                            // A receiver promising several files can fail on one and still have written the rest;
+                            // only a dir that produced nothing counts as failed, since failed dirs are never delivered.
+                            let produced = !(((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []).isEmpty)
+                            if completion.anyFailed, !produced {
                                 state.markFailed(dir)
                             } else {
                                 state.markCompleted(dir)
@@ -324,6 +327,7 @@ struct PromiseAwareDropView: NSViewRepresentable {
                                 "Legacy promise names: \(names)",
                                 source: "PromiseAwareDropView"
                             )
+                            state.setLegacyNameCount(names.count) // on a legacy-only drop this is the sole record of how many files to expect
                         }
                     }
                 }
@@ -374,6 +378,7 @@ struct PromiseAwareDropView: NSViewRepresentable {
             private var receiverInFlightCount = 0
             private var payloadCount = 0
             private var promisedFileCount = 0
+            private var legacyNameCount = 0
 
             /// One receiver can promise several files, so the name count — not the dir
             /// count — is how many items the drop is expected to yield.
@@ -434,6 +439,18 @@ struct PromiseAwareDropView: NSViewRepresentable {
                 self.lock.lock()
                 defer { self.lock.unlock() }
                 return self.raised
+            }
+
+            func setLegacyNameCount(_ count: Int) {
+                self.lock.lock()
+                defer { self.lock.unlock() }
+                self.legacyNameCount = count
+            }
+
+            func legacyNameCountValue() -> Int {
+                self.lock.lock()
+                defer { self.lock.unlock() }
+                return self.legacyNameCount
             }
 
             /// lets a receiver-less multi-item drop still detect a partial delivery
@@ -514,7 +531,7 @@ struct PromiseAwareDropView: NSViewRepresentable {
                     allDirs: receiverDirs + [legacyDir, dataDir].compactMap(\.self),
                     pendingReceiverDirs: receiverDirs.filter { !completed.contains($0) && (!failed.contains($0) || raised.contains($0)) },
                     pendingFallbackDirs: state.hasInFlightWork ? [legacyDir].compactMap(\.self) : [], // relocation empties the legacy dir, so a sweep would see it as undelivered and delete a destination still being written
-                    totalExpected: max(state.promisedFileCountValue(), state.payloadCountValue(), 1),
+                    totalExpected: max(state.promisedFileCountValue(), state.payloadCountValue(), state.legacyNameCountValue(), 1),
                     session: session,
                     onFiles: onFiles,
                     onError: onError
