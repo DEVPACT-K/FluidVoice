@@ -11,14 +11,14 @@ nonisolated enum PromiseDropSupport {
 
     private static let concreteFileURLType = "public.file-url"
 
-    // Pasteboard types signaling a file-promise drop; Voice Memos emits a mix of these, any one is sufficient.
+    // Voice Memos emits a mix of these; any one is sufficient.
     private static let filePromiseTypes: Set<String> = [
         "com.apple.NSFilePromiseItemMetaData",
         "com.apple.pasteboard.promised-file-content-type",
         "Apple files promise pasteboard type",
     ]
 
-    // Concrete file URLs win when both are present; a promise is only accepted alongside advertised audio/movie content, so an image promise from Photos is rejected up front.
+    // Concrete URLs win; a promise needs advertised audio/movie content, so a Photos image promise is rejected.
     static func strategy(forPasteboardTypes types: [String]) -> Strategy? {
         if types.contains(concreteFileURLType) {
             return .concreteFileURLs
@@ -33,7 +33,7 @@ nonisolated enum PromiseDropSupport {
         return promisesAudioVisualContent ? .filePromise : nil
     }
 
-    // Staging dirs holding no delivered file. Compares standardized *paths*, not URLs — trailing-slash differences once made equal dirs compare unequal.
+    // Compares standardized *paths*: trailing-slash differences once made equal dirs compare unequal.
     static func sweepableDirs(allDirs: [URL], deliveredFiles: [URL]) -> [URL] {
         let deliveredDirPaths = Set(deliveredFiles.map {
             $0.deletingLastPathComponent().standardizedFileURL.path
@@ -41,14 +41,14 @@ nonisolated enum PromiseDropSupport {
         return allDirs.filter { !deliveredDirPaths.contains($0.standardizedFileURL.path) }
     }
 
-    // `sweepableDirs` minus any dir whose receiver promise hasn't completed: deleting an in-flight promise's destination wedges the source app's drag machinery until restart.
+    // Deleting an in-flight promise's destination wedges the source app's drag machinery until restart.
     static func dirsSafeToRemoveNow(allDirs: [URL], deliveredFiles: [URL], pendingDirs: [URL]) -> [URL] {
         let pendingPaths = Set(pendingDirs.map { $0.standardizedFileURL.path })
         return sweepableDirs(allDirs: allDirs, deliveredFiles: deliveredFiles)
             .filter { !pendingPaths.contains($0.standardizedFileURL.path) }
     }
 
-    // Reduces a drag-source-supplied name to one safe path component; separators or `..` would otherwise let `appendingPathComponent` write outside staging.
+    // Separators or `..` would let `appendingPathComponent` write outside staging.
     static func sanitizedFileName(_ rawName: String?, fallback: String) -> String {
         guard let rawName else { return fallback }
         let lastComponent = (rawName as NSString).lastPathComponent
@@ -77,7 +77,7 @@ nonisolated enum PromiseDropSupport {
         return delivered
     }
 
-    // Gives each delivered file its own dir, since the coordinator deletes an item's dir the moment it finishes. Order-preserving.
+    // The coordinator deletes an item's dir the moment it finishes, so each file needs its own.
     static func relocateForExclusiveOwnership(
         _ files: [URL],
         session: StagingSession,
@@ -96,7 +96,6 @@ nonisolated enum PromiseDropSupport {
         }
     }
 
-    // audio/movie extensions the OS can decode, callable from any isolation
     private static let supportedExtensions: Set<String> = {
         let avTypes = AVURLAsset.audiovisualTypes()
         let extensions = avTypes.compactMap { fileType -> String? in
@@ -117,7 +116,7 @@ nonisolated enum PromiseDropSupport {
     // Prefix of every staging root; the batch coordinator uses it to prune empty roots once its item dir is gone.
     static let stagingRootPrefix = "PromiseDrop-"
 
-    // Scratch tree under the user temp dir; each promised file gets its own subdirectory so identically-named files never collide.
+    // Each promised file gets its own subdirectory so identically-named files never collide.
     final class StagingSession: Sendable {
         private let root: URL
 

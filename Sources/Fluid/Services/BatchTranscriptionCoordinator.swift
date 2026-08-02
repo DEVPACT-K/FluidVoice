@@ -1,8 +1,7 @@
 import Combine
 import Foundation
 
-/// Sequentially transcribes a batch of audio files, with per-item outcomes, cooperative
-/// cancellation, and staging-dir cleanup. All stored closures run on the main actor.
+/// Sequentially transcribes a batch of audio files. All stored closures run on the main actor.
 @MainActor
 final class BatchTranscriptionCoordinator: ObservableObject {
     struct Request {
@@ -156,7 +155,6 @@ final class BatchTranscriptionCoordinator: ObservableObject {
         }
     }
 
-    /// finished items are never revisited, so this only sees newly appended ones
     private func nextPendingIndex() -> Int? {
         self.items.firstIndex { if case .pending = $0.status { return true } else { return false } }
     }

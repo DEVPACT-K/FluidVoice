@@ -141,9 +141,8 @@ struct PromiseAwareDropView: NSViewRepresentable {
             let onFiles = self.onFiles // captured by value: resolution must outlive this view if destroyed mid-drop
             let onError = self.onError
 
-            // A main-thread pasteboard read can block indefinitely and freeze the system-wide drag session, so this
-            // returns immediately and ALL pasteboard reads happen on background threads (outside documented AppKit
-            // lifetime, but the only arrangement that doesn't deadlock or lose the drop against Voice Memos).
+            // A main-thread pasteboard read can freeze the system-wide drag session, so this returns
+            // immediately and every read happens on a background thread.
             let state = ResolutionState()
             state.beginInFlight() // outer worker token, released when it finishes
 
@@ -161,10 +160,8 @@ struct PromiseAwareDropView: NSViewRepresentable {
             Self.detachWorker {
                 defer { state.endInFlight() }
 
-                // NSPasteboard isn't thread-safe and receivePromisedFiles touches it from its own queue, so all our
-                // reads must finish, single-threaded, before any receiver starts — concurrent access previously
-                // crashed NSPasteboard's type cache. Wrapped in an ObjC exception catcher since an uncaught
-                // NSException aborts the process. Step 1: snapshot the receiver objects and per-item metadata/bytes.
+                // Step 1: snapshot receivers and per-item bytes. NSPasteboard isn't thread-safe and
+                // receivePromisedFiles touches it from its own queue, so every read must finish first.
                 var receivers: [NSFilePromiseReceiver] = []
                 var suggestedName: String?
                 var promisedTypeID: String?
@@ -201,8 +198,7 @@ struct PromiseAwareDropView: NSViewRepresentable {
                 )
                 state.setPayloadCount(itemPayloads.count)
 
-                // Step 2: raw-data fallback (the reliable path for Voice Memos) — write each item's bytes into the
-                // shared data dir, disambiguating identically-named items.
+                // Step 2: raw-data fallback (the reliable path for Voice Memos), disambiguating same-named items.
                 if let dataDir, !itemPayloads.isEmpty {
                     var usedNames = Set<String>()
                     for (index, payload) in itemPayloads.enumerated() {
@@ -236,14 +232,12 @@ struct PromiseAwareDropView: NSViewRepresentable {
                     }
                 }
 
-                // Step 3: modern receivers, started only after our reads are done — still required even when
-                // raw-data delivered, since an unresolved promise wedges Voice Memos's drag machinery until restart.
+                // Step 3: modern receivers. Still required once raw-data delivered — an unresolved promise
+                // wedges Voice Memos's drag machinery until restart.
                 for receiver in receivers {
                     guard let dir = try? session.makeItemDirectory() else { continue }
-                    // Both `fileNames` and starting the receiver decode promise metadata and can raise (the OS
-                    // refuses the NSCalendarDate in a Voice Memos promise). Uncaught, that aborts the process,
-                    // so a bad promise must degrade to the fallbacks. Register the dir either way, otherwise
-                    // the failed one is never swept.
+                    // Both decode promise metadata and can raise (the OS refuses a Voice Memos NSCalendarDate);
+                    // uncaught, that aborts the process, so a bad promise must degrade to the fallbacks.
                     var promisedFiles = 0
                     let nameError = FluidCatchObjCException { promisedFiles = receiver.fileNames.count }
                     if let nameError {
@@ -267,8 +261,7 @@ struct PromiseAwareDropView: NSViewRepresentable {
                                 )
                             }
                             guard completion.recordFile(failed: error != nil) else { return }
-                            // A receiver promising several files can fail on one and still have written the rest;
-                            // only a dir that produced nothing counts as failed, since failed dirs are never delivered.
+                            // Failed dirs are never delivered, so only one that produced nothing counts as failed.
                             let produced = !(((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []).isEmpty)
                             if completion.anyFailed, !produced {
                                 state.markFailed(dir)
@@ -290,9 +283,8 @@ struct PromiseAwareDropView: NSViewRepresentable {
                     }
                 }
 
-                // Step 4: legacy fallback (deprecated namesOfPromisedFilesDroppedAtDestination:, called via a string
-                // selector to dodge the deprecation warning) is strictly last resort — an eager call blocks Voice
-                // Memos's drag machinery for 35-80s — so it only fires if modern/raw-data produced nothing in time.
+                // Step 4: legacy fallback, last resort only — an eager call blocks Voice Memos for 35-80s.
+                // Called by string selector to dodge the deprecation warning.
                 if let legacyDir {
                     let waitDeadline = Date().addingTimeInterval(3)
                     var otherPathDelivered = false
@@ -355,7 +347,6 @@ struct PromiseAwareDropView: NSViewRepresentable {
                 return self.remaining <= 0
             }
 
-            /// true only if the countdown hadn't already finished, so the token is released exactly once
             func abort() -> Bool {
                 self.lock.lock()
                 defer { self.lock.unlock() }
@@ -366,8 +357,7 @@ struct PromiseAwareDropView: NSViewRepresentable {
             }
         }
 
-        /// Shared between background delivery threads and the main-actor poller: which receiver dirs completed, and
-        /// whether legacy/raw-data reads are still in flight (a provider can take 60s+ under load).
+        /// Shared between the delivery threads and the main-actor poller: which dirs resolved, what is in flight.
         private final class ResolutionState: @unchecked Sendable {
             private let lock = NSLock()
             private var receiverDirs: [URL] = []
@@ -380,8 +370,7 @@ struct PromiseAwareDropView: NSViewRepresentable {
             private var promisedFileCount = 0
             private var legacyNameCount = 0
 
-            /// One receiver can promise several files, so the name count — not the dir
-            /// count — is how many items the drop is expected to yield.
+            /// One receiver can promise several files, so the name count — not the dir count — is what the drop yields.
             func registerReceiverDir(_ dir: URL, promisedFileCount: Int) {
                 self.lock.lock()
                 defer { self.lock.unlock() }
@@ -420,8 +409,7 @@ struct PromiseAwareDropView: NSViewRepresentable {
                 self.failed.insert(dir)
             }
 
-            /// Resolved for liveness, but the receiver raised mid-flight and may still be writing here,
-            /// so this dir must go through the deferred cleanup rather than the immediate sweep.
+            /// Resolved, but the receiver raised mid-flight and may still be writing: defer the cleanup.
             func markRaised(_ dir: URL) {
                 self.lock.lock()
                 defer { self.lock.unlock() }
@@ -466,8 +454,7 @@ struct PromiseAwareDropView: NSViewRepresentable {
                 return self.payloadCount
             }
 
-            /// Tracks only the threads writing into the fallback dirs. Receivers are counted separately:
-            /// an uncancelled one never releases, and it must not hold the fallback delivery open.
+            /// Fallback writers only — an uncancelled receiver never releases, so it must not gate delivery.
             func beginInFlight() {
                 self.lock.lock()
                 defer { self.lock.unlock() }
@@ -553,7 +540,6 @@ struct PromiseAwareDropView: NSViewRepresentable {
                 let dataFiles = self.listFiles(in: [dataDir].compactMap(\.self))
                 let fallbackSizes = self.sizeMap(for: legacyFiles + dataFiles)
 
-                // "Resolved" = completed OR failed, since a failed promise can never later flip to completed.
                 let resolvedCount = readyModernDirs.count + failedModernDirs.count
                 let allReceiversResolved = !receiverDirs.isEmpty && resolvedCount >= receiverDirs.count
 
@@ -563,10 +549,8 @@ struct PromiseAwareDropView: NSViewRepresentable {
                     return
                 }
 
-                // Voice Memos only cancels a receiver when the NEXT drag starts, so a lone drop's receiver
-                // stays unresolved indefinitely. An unresolved receiver that has written nothing well past
-                // the grace is treated as non-producing; one mid-transfer keeps its files growing, so it
-                // still holds delivery open.
+                // Voice Memos only cancels a receiver when the NEXT drag starts, so a lone drop's stays unresolved
+                // forever. One that has written nothing past the grace is non-producing; mid-transfer still holds.
                 let unresolvedDirs = receiverDirs.filter { !readyModernDirs.contains($0) && !failedModernDirs.contains($0) }
                 let receiversStalled = elapsed > modernGrace
                     && unresolvedDirs.allSatisfy { self.listFiles(in: [$0]).isEmpty }
@@ -595,11 +579,9 @@ struct PromiseAwareDropView: NSViewRepresentable {
             )
         }
 
-        /// Everything `deliver` needs besides the per-path file lists.
         private struct DeliveryContext {
             let allDirs: [URL]
-            // Receiver/fallback dirs not yet completed; must NOT be swept at delivery — deleting an in-flight
-            // promise's destination wedges Voice Memos until restart. Cleaned up later via `cleanUpLater`.
+            // Never swept at delivery: deleting an in-flight promise's destination wedges Voice Memos.
             let pendingReceiverDirs: [URL]
             let pendingFallbackDirs: [URL]
             let totalExpected: Int
@@ -647,8 +629,7 @@ struct PromiseAwareDropView: NSViewRepresentable {
                 return
             }
 
-            // Dirs holding no delivered file are dead weight; deleting them may race still-running writer threads,
-            // harmless since the losers' files are throwaway copies.
+            // Dirs holding no delivered file are dead weight; racing a writer here is harmless, they're copies.
             for dir in PromiseDropSupport.dirsSafeToRemoveNow(
                 allDirs: context.allDirs,
                 deliveredFiles: result.map(\.url),
@@ -665,7 +646,6 @@ struct PromiseAwareDropView: NSViewRepresentable {
             self.cleanUpLater(pendingDirs: context.pendingReceiverDirs + context.pendingFallbackDirs)
         }
 
-        /// removes dirs once their promise has had time to finish, then prunes the empty session root
         private static func cleanUpLater(pendingDirs: [URL]) {
             guard !pendingDirs.isEmpty else { return }
             Task { @MainActor in

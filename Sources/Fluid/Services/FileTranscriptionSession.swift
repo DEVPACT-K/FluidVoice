@@ -12,8 +12,7 @@ final class FileTranscriptionSession {
         self.sharedIfCreated?.batchHolder.coordinator?.isRunning == true // both paths drive the same shared ASR model; concurrent inference corrupts output
     }
 
-    /// True from just before a dictation-family recording starts until it ends. Set
-    /// synchronously before any `await`, closing the TOCTOU window where the batch's check could pass right before dictation flips this true.
+    /// Set synchronously before any `await`, closing the window where the batch's check passes just as dictation starts.
     private(set) var dictationIntent: Bool = false
 
     let service: MeetingTranscriptionService
@@ -23,7 +22,7 @@ final class FileTranscriptionSession {
         let service = MeetingTranscriptionService(asrService: AppServices.shared.asr)
         self.service = service
         self.batchHolder = BatchCoordinatorHolder(transcribe: { url in
-            // At most one of dictation, single-file, and batch transcription may drive the shared ASR model at once.
+            // Only one of dictation, single-file, and batch may drive the shared ASR model.
             while AppServices.shared.asr.isRunning
                 || FileTranscriptionSession.shared.dictationIntent
                 || service.isTranscribing {
@@ -49,7 +48,6 @@ final class FileTranscriptionSession {
     }
 }
 
-// Wraps the batch coordinator so a finished batch can be cleared and a fresh one lazily created, republishing its changes.
 @MainActor
 final class BatchCoordinatorHolder: ObservableObject {
     @Published var coordinator: BatchTranscriptionCoordinator?
