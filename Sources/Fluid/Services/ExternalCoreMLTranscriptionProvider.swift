@@ -11,8 +11,6 @@ final class ExternalCoreMLTranscriptionProvider: TranscriptionProvider {
     private(set) var isReady: Bool = false
     var prefersNativeFileTranscription: Bool { true }
     private let streamingPreviewMaxSeconds: Double = 12
-    private let safeFinalChunkMaxSeconds: Double = 8
-    private let safeFinalChunkBoundarySearchSeconds: Double = 2
 
     private var cohereManager: CohereTranscribeAsrManager?
     private let modelOverride: SettingsStore.SpeechModel?
@@ -129,13 +127,9 @@ final class ExternalCoreMLTranscriptionProvider: TranscriptionProvider {
             source: "ExternalCoreML"
         )
         let promptIDs = self.coherePromptIDsForCurrentLanguage()
-        let sampleRate = self.loadedManifest?.sampleRate ?? 16_000
-        let audioConverter = AudioConverter(sampleRate: Double(sampleRate))
-        let samples = try audioConverter.resampleAudioFile(fileURL)
-        let text = try await self.transcribeFinalChunks(
-            samples,
-            manager: manager,
-            promptIDs: promptIDs
+        let text = try await manager.transcribe(
+            audioFileAt: fileURL,
+            promptIDs: promptIDs.isEmpty ? nil : promptIDs
         )
         let elapsed = Date().timeIntervalSince(startedAt)
         DebugLogger.shared.info(
@@ -161,10 +155,9 @@ final class ExternalCoreMLTranscriptionProvider: TranscriptionProvider {
             source: "ExternalCoreML"
         )
         let promptIDs = self.coherePromptIDsForCurrentLanguage()
-        let text = try await self.transcribeFinalChunks(
-            samples,
-            manager: manager,
-            promptIDs: promptIDs
+        let text = try await manager.transcribe(
+            audioSamples: samples,
+            promptIDs: promptIDs.isEmpty ? nil : promptIDs
         )
         let elapsed = Date().timeIntervalSince(startedAt)
         let rtf = audioSeconds > 0 ? elapsed / audioSeconds : 0
@@ -435,120 +428,6 @@ final class ExternalCoreMLTranscriptionProvider: TranscriptionProvider {
         let maxPreviewSamples = Int(Double(sampleRate) * self.streamingPreviewMaxSeconds)
         guard samples.count > maxPreviewSamples else { return samples }
         return Array(samples.suffix(maxPreviewSamples))
-    }
-
-    private func transcribeFinalChunks(
-        _ samples: [Float],
-        manager: CohereTranscribeAsrManager,
-        promptIDs: [Int]
-    ) async throws -> String {
-        let chunks = self.safeFinalChunkRanges(for: samples)
-        let runtimePromptIDs = promptIDs.isEmpty ? nil : promptIDs
-        var texts: [String] = []
-        texts.reserveCapacity(chunks.count)
-
-        for chunk in chunks {
-            try Task.checkCancellation()
-            let text = try await manager.transcribe(
-                audioSamples: Array(samples[chunk]),
-                promptIDs: runtimePromptIDs
-            ).trimmingCharacters(in: .whitespacesAndNewlines)
-            if !text.isEmpty {
-                texts.append(text)
-            }
-        }
-
-        DebugLogger.shared.info(
-            "ExternalCoreML: Cohere final transcription used \(chunks.count) token-safe chunk(s)",
-            source: "ExternalCoreML"
-        )
-        return self.joinFinalChunkTexts(texts)
-    }
-
-    private func joinFinalChunkTexts(_ texts: [String]) -> String {
-        texts.dropFirst().reduce(texts.first ?? "") { result, next in
-            guard
-                let previous = result.unicodeScalars.last,
-                let current = next.unicodeScalars.first
-            else { return result + next }
-
-            let needsSpace = !CharacterSet.whitespacesAndNewlines.contains(previous)
-                && !CharacterSet.punctuationCharacters.contains(current)
-                && !self.isCJK(previous)
-                && !self.isCJK(current)
-            return result + (needsSpace ? " " : "") + next
-        }
-    }
-
-    private func isCJK(_ scalar: UnicodeScalar) -> Bool {
-        switch scalar.value {
-        case 0x3040...0x30ff, 0x3400...0x4dbf, 0x4e00...0x9fff, 0xf900...0xfaff:
-            return true
-        default:
-            return false
-        }
-    }
-
-    private func safeFinalChunkRanges(for samples: [Float]) -> [Range<Int>] {
-        guard !samples.isEmpty else { return [] }
-
-        let sampleRate = self.loadedManifest?.sampleRate ?? 16_000
-        let maxChunkSamples = max(1, Int(Double(sampleRate) * self.safeFinalChunkMaxSeconds))
-        guard samples.count > maxChunkSamples else { return [samples.indices] }
-
-        let searchSamples = min(
-            maxChunkSamples - 1,
-            max(1, Int(Double(sampleRate) * self.safeFinalChunkBoundarySearchSeconds))
-        )
-        let energyWindowSamples = max(1, sampleRate / 10)
-        var chunks: [Range<Int>] = []
-        var start = 0
-
-        while start < samples.count {
-            let maximumEnd = min(start + maxChunkSamples, samples.count)
-            guard maximumEnd < samples.count else {
-                chunks.append(start..<samples.count)
-                break
-            }
-
-            let searchStart = max(start + 1, maximumEnd - searchSamples)
-            let split = self.quietestBoundary(
-                in: samples,
-                searchRange: searchStart..<maximumEnd,
-                windowSamples: energyWindowSamples
-            )
-            chunks.append(start..<split)
-            start = split
-        }
-
-        return chunks
-    }
-
-    private func quietestBoundary(
-        in samples: [Float],
-        searchRange: Range<Int>,
-        windowSamples: Int
-    ) -> Int {
-        let window = min(windowSamples, searchRange.count)
-        guard window > 0 else { return searchRange.upperBound }
-
-        var quietestStart = searchRange.lowerBound
-        var quietestEnergy = Float.greatestFiniteMagnitude
-        var windowStart = searchRange.lowerBound
-
-        while windowStart + window <= searchRange.upperBound {
-            var energy: Float = 0
-            for sample in samples[windowStart..<(windowStart + window)] {
-                energy += sample * sample
-            }
-            if energy < quietestEnergy {
-                quietestEnergy = energy
-                quietestStart = windowStart
-            }
-            windowStart += window
-        }
-
-        return max(searchRange.lowerBound, quietestStart + window / 2)
     }
 
     private func paddedSamplesToModelLimit(_ samples: [Float]) -> [Float] {

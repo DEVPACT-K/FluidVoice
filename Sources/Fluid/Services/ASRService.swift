@@ -353,7 +353,7 @@ final class ASRService: ObservableObject {
         case .parakeetRealtime:
             return self.getParakeetRealtimeProvider()
         case .cohereTranscribeSixBit:
-            return self.getExternalCoreMLProvider()
+            return self.getWhisperProvider()
         case .nemotronOffline, .nemotronStreaming, .nemotronStreaming320:
             return self.getNemotronProvider(mode: model.nemotronProviderMode)
         case .qwen3Asr:
@@ -554,7 +554,7 @@ final class ASRService: ObservableObject {
         case .parakeetRealtime:
             return ParakeetRealtimeProvider()
         case .cohereTranscribeSixBit:
-            return ExternalCoreMLTranscriptionProvider(modelOverride: model)
+            return WhisperProvider(modelOverride: model)
         case .nemotronOffline, .nemotronStreaming, .nemotronStreaming320:
             return NemotronProvider(mode: model.nemotronProviderMode)
         case .qwen3Asr:

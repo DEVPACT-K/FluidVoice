@@ -206,30 +206,8 @@ struct ExternalCoreMLASRModelSpec {
 }
 
 enum ExternalCoreMLModelRegistry {
-    static func spec(for model: SettingsStore.SpeechModel) -> ExternalCoreMLASRModelSpec? {
-        switch model {
-        case .cohereTranscribeSixBit:
-            return ExternalCoreMLASRModelSpec(
-                backend: .cohereTranscribe,
-                artifactFolderHint: "cohere-transcribe-03-2026-CoreML-6bit",
-                manifestFileName: "coreml_manifest.json",
-                frontendFileName: "cohere_frontend.mlpackage",
-                encoderFileName: "cohere_encoder.mlpackage",
-                crossKVProjectorFileName: "cohere_cross_kv_projector.mlpackage",
-                decoderFileName: "cohere_decoder_fullseq_masked.mlpackage",
-                cachedDecoderFileName: "cohere_decoder_cached.mlpackage",
-                expectedModelID: "CohereLabs/cohere-transcribe-03-2026",
-                expectedSampleRate: 16_000,
-                computeConfiguration: .aneSmall,
-                sourceURL: URL(string: "https://huggingface.co/BarathwajAnandan/cohere-transcribe-03-2026-CoreML-6bit"),
-                repositoryOwner: "BarathwajAnandan",
-                repositoryName: "cohere-transcribe-03-2026-CoreML-6bit",
-                repositoryRevision: "main",
-                artifactBundleVersion: "2026-04-02-cohere-refresh-1"
-            )
-        default:
-            return nil
-        }
+    static func spec(for _: SettingsStore.SpeechModel) -> ExternalCoreMLASRModelSpec? {
+        nil
     }
 }
 
