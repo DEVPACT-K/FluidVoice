@@ -1,19 +1,16 @@
 import Combine
 import Foundation
 
-/// Coordinates sequential transcription of a batch of audio files (issue #219).
-///
-/// The coordinator owns per-item state for multi-file transcription: strict sequential
-/// processing in enqueue order, per-item success/failure/no-speech outcomes, cooperative
-/// cancellation of the in-flight file, staging-directory cleanup after each item finishes,
-/// and batch start/end hooks for dictation arbitration. All stored closures are invoked on
-/// the main actor.
+/// Sequentially transcribes a batch of audio files: strict enqueue-order processing,
+/// per-item success/failure/no-speech outcomes, cooperative cancellation, staging-dir
+/// cleanup per item, and batch start/end hooks for dictation arbitration. All stored
+/// closures run on the main actor.
 @MainActor
 final class BatchTranscriptionCoordinator: ObservableObject {
     /// A transcription request for a single audio file.
     struct Request {
         let url: URL
-        /// Exclusively owned by this item; deleted once the item finishes — producers must never hand the same dir to two items.
+        /// Exclusively owned by this item; deleted when it finishes. Never share across items.
         let stagingDir: URL?
 
         init(url: URL, stagingDir: URL? = nil) {
@@ -36,7 +33,7 @@ final class BatchTranscriptionCoordinator: ObservableObject {
     struct Item: Identifiable {
         let id: UUID
         let url: URL
-        /// Exclusively owned by this item; deleted once the item finishes — producers must never hand the same dir to two items.
+        /// Exclusively owned by this item; deleted when it finishes. Never share across items.
         let stagingDir: URL?
         var status: Status
     }
@@ -49,9 +46,8 @@ final class BatchTranscriptionCoordinator: ObservableObject {
     private let onBatchEnd: @MainActor () -> Void
 
     private var batchTask: Task<Void, Never>?
-    /// Published so the UI can show a "Cancelling…" state: pending items stop
-    /// immediately, but the in-flight item may run to completion (the native
-    /// provider transcription has no interruption point).
+    /// Drives a "Cancelling…" UI state: the in-flight item may still run to completion
+    /// (no interruption point), even though pending items stop immediately.
     @Published private(set) var isCancelRequested: Bool = false
 
     private var isCancelled: Bool = false
@@ -156,11 +152,9 @@ final class BatchTranscriptionCoordinator: ObservableObject {
             self.isRunning = false
             self.batchTask = nil
 
-            // Self-draining: items enqueued while this batch was cancelling (or right as
-            // it finished) are still .pending and were never picked up above. Start a
-            // fresh run for them so they aren't stranded. cancel() already flips
-            // pre-existing .pending items to .cancelled, so only genuinely new items
-            // land here.
+            // Self-draining: items enqueued during cancellation/finish are still .pending
+            // and were missed above, so start a fresh run. cancel() already flips
+            // pre-existing pending items to .cancelled, so only new ones land here.
             if self.items.contains(where: { if case .pending = $0.status { return true } else { return false } }) {
                 self.startBatch()
             } else {
@@ -176,9 +170,8 @@ final class BatchTranscriptionCoordinator: ObservableObject {
         }
     }
 
-    /// Finds the first item still awaiting processing. Completed/failed/cancelled items
-    /// are never revisited, so re-enqueuing after a finished-but-undismissed batch only
-    /// processes the newly appended items.
+    /// Completed/failed/cancelled items are never revisited, so re-enqueuing after a
+    /// finished-but-undismissed batch only processes newly appended items.
     private func nextPendingIndex() -> Int? {
         self.items.firstIndex { if case .pending = $0.status { return true } else { return false } }
     }
@@ -208,8 +201,7 @@ final class BatchTranscriptionCoordinator: ObservableObject {
             }
         }
 
-        // Staging dirs are owned by the coordinator and removed only after the item has
-        // finished transcribing (success, failure, or cancellation) — never before/during.
+        // Removed only after the item finishes (success, failure, or cancellation).
         self.removeStagingDir(for: index)
     }
 
@@ -217,9 +209,8 @@ final class BatchTranscriptionCoordinator: ObservableObject {
         guard let stagingDir = self.items[index].stagingDir else { return }
         try? FileManager.default.removeItem(at: stagingDir)
 
-        // Per-item staging dirs live inside a drop-session root (see
-        // PromiseDropSupport.StagingSession). Once the last item dir is gone,
-        // remove the now-empty session root so drops don't leak temp shells.
+        // Prune the now-empty drop-session root (PromiseDropSupport.StagingSession)
+        // once its last item dir is gone, so drops don't leak temp shells.
         let parent = stagingDir.deletingLastPathComponent()
         guard parent.lastPathComponent.hasPrefix(PromiseDropSupport.stagingRootPrefix),
               let remaining = try? FileManager.default.contentsOfDirectory(atPath: parent.path),

@@ -2,10 +2,8 @@
 import Foundation
 import XCTest
 
-/// Contract tests for BatchTranscriptionCoordinator (issue #219 batch transcription).
-/// The coordinator owns per-item state for multi-file transcription: sequential
-/// processing, per-item success/failure, cancellation, staging-dir cleanup, and
-/// batch start/end hooks for dictation arbitration.
+/// Contract tests for BatchTranscriptionCoordinator: sequential processing, per-item
+/// success/failure, cancellation, staging-dir cleanup, and dictation-arbitration hooks.
 @MainActor
 final class BatchTranscriptionCoordinatorTests: XCTestCase {
     private func makeResult(text: String, fileName: String = "test.m4a") -> TranscriptionResult {
@@ -270,7 +268,7 @@ final class BatchTranscriptionCoordinatorTests: XCTestCase {
         XCTAssertTrue(fm.fileExists(atPath: audioURL.path), "files without a stagingDir belong to the user and must never be deleted")
     }
 
-    // MARK: - Shared staging dir regression (issue #219 batch drop)
+    // MARK: - Shared staging dir regression
 
     func testEachItemFileStillExistsWhenItsOwnTranscriptionRuns() async throws {
         // A shared dir deleted after the first item destroyed files later items needed.
@@ -409,7 +407,7 @@ final class BatchTranscriptionCoordinatorTests: XCTestCase {
         XCTAssertEqual(endCount, 1, "the end hook must fire even when the batch is cancelled, or dictation stays blocked forever")
     }
 
-    // MARK: - Enqueue after a finished batch (F5/F15a)
+    // MARK: - Enqueue after a finished batch
 
     func testEnqueueAfterFinishedBatchProcessesOnlyNewItems() async {
         var transcribedPaths: [String] = []
@@ -425,8 +423,7 @@ final class BatchTranscriptionCoordinatorTests: XCTestCase {
             return XCTFail("first item should complete, got \(coordinator.items[0].status)")
         }
 
-        // Batch finished but items weren't dismissed (dismissBatch/clear() wasn't
-        // called) — enqueue must not re-walk from index 0 and re-run "first.m4a".
+        // Finished but undismissed: enqueue must not re-walk from index 0 and re-run "first.m4a".
         coordinator.enqueue([.init(url: self.tempAudioURL(name: "second.m4a"))])
         await coordinator.waitUntilIdle()
 
@@ -444,7 +441,7 @@ final class BatchTranscriptionCoordinatorTests: XCTestCase {
         }
     }
 
-    // MARK: - Enqueue during the cancel window (F6/F15b)
+    // MARK: - Enqueue during the cancel window
 
     func testEnqueueDuringCancelWindowIsNotStranded() async {
         let started = AsyncGate()
@@ -463,15 +460,12 @@ final class BatchTranscriptionCoordinatorTests: XCTestCase {
         coordinator.enqueue([.init(url: self.tempAudioURL(name: "in-flight.m4a"))])
         await started.wait()
 
-        // Cancel while the in-flight item is still gated/running.
-        coordinator.cancel()
+        coordinator.cancel() // while the in-flight item is still gated/running
 
-        // Enqueue a new item while the cancelled batch's in-flight item hasn't
-        // finished yet — it must not be stranded.
+        // Enqueued while the cancelled item is still finishing — must not be stranded.
         coordinator.enqueue([.init(url: self.tempAudioURL(name: "after-cancel.m4a"))])
 
-        // Now let the in-flight (cancelled) item finish.
-        releaseInFlight.open()
+        releaseInFlight.open() // let the in-flight (cancelled) item finish
 
         await coordinator.waitUntilIdle()
 
@@ -485,7 +479,7 @@ final class BatchTranscriptionCoordinatorTests: XCTestCase {
         XCTAssertFalse(coordinator.isRunning)
     }
 
-    // MARK: - BatchCoordinatorHolder.clear() while running (F15c)
+    // MARK: - BatchCoordinatorHolder.clear() while running
 
     func testHolderClearWhileRunningCancelsAndFreshEnqueueWorksAfterward() async {
         let started = AsyncGate()
@@ -516,8 +510,7 @@ final class BatchTranscriptionCoordinatorTests: XCTestCase {
         }
         XCTAssertFalse(transcribedPaths.contains("long-running.m4a"), "cancelled item must never reach a completed outcome")
 
-        // A subsequent enqueue must work on a fresh coordinator.
-        holder.enqueue([.init(url: self.tempAudioURL(name: "fresh.m4a"))])
+        holder.enqueue([.init(url: self.tempAudioURL(name: "fresh.m4a"))]) // must work on a fresh coordinator
         await holder.coordinator?.waitUntilIdle()
 
         guard case .completed = holder.coordinator?.items.first?.status else {
@@ -525,14 +518,12 @@ final class BatchTranscriptionCoordinatorTests: XCTestCase {
         }
     }
 
-    // MARK: - Cancellation surfaced from the transcribe closure's wait loop (F15d)
+    // MARK: - Cancellation surfaced from the transcribe closure's wait loop
 
     func testCancellationThrownFromTranscribeClosureMarksItemCancelled() async {
         let coordinator = BatchTranscriptionCoordinator(transcribe: { _ in
-            // Simulates the dictation-arbitration wait loop observing cancellation
-            // (e.g. FileTranscriptionSession's `try Task.checkCancellation()` while
-            // waiting for dictation/single-file transcription to finish) before ever
-            // calling into the transcription service.
+            // Simulates the arbitration wait loop's checkCancellation() firing before
+            // ever calling into the transcription service.
             throw CancellationError()
         })
 

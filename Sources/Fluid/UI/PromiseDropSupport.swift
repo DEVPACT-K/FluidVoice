@@ -2,14 +2,10 @@ import AVFoundation
 import Foundation
 import UniformTypeIdentifiers
 
-/// Testable, nonisolated core logic for the promise-aware drop path (issue #219).
-///
-/// The AppKit drop view (`PromiseAwareDropView`) needs a live drag session, so it
-/// delegates the pure pieces here: deciding whether a pasteboard carries concrete
-/// file URLs or file promises, staging promised files into collision-free per-item
-/// directories, and filtering drops to formats AVFoundation can actually decode.
-/// Everything is `nonisolated` so it can be unit-tested from a nonisolated test
-/// context despite the app target's `MainActor` default actor isolation.
+/// Testable, nonisolated core logic for the promise-aware drop path: pasteboard strategy
+/// detection, collision-free per-item staging, and AVFoundation format filtering.
+/// `PromiseAwareDropView` owns the live drag session and delegates the pure pieces here.
+/// `nonisolated` so it's unit-testable despite the app target's `MainActor` default.
 nonisolated enum PromiseDropSupport {
     /// How a given pasteboard should be interpreted.
     enum Strategy: Equatable {
@@ -22,22 +18,18 @@ nonisolated enum PromiseDropSupport {
     /// The pasteboard type that carries a concrete file URL.
     private static let concreteFileURLType = "public.file-url"
 
-    /// Pasteboard type identifiers that signal a file-promise drop. Voice Memos
-    /// emits a mix of these (verified live 2026-07-25); any one is sufficient.
+    /// Pasteboard types signaling a file-promise drop. Voice Memos emits a mix of these;
+    /// any one is sufficient.
     private static let filePromiseTypes: Set<String> = [
         "com.apple.NSFilePromiseItemMetaData",
         "com.apple.pasteboard.promised-file-content-type",
         "Apple files promise pasteboard type",
     ]
 
-    /// Decides the drop strategy from raw pasteboard type strings.
-    ///
-    /// Concrete file URLs win over promises when both are present. Promises are
-    /// only accepted when the pasteboard also advertises an audio/movie content
-    /// type (Voice Memos exposes e.g. `com.apple.m4a-audio` directly in the
-    /// type list) — so an image promise from Photos is rejected up front rather
-    /// than staged and failed later. Returns `nil` for pasteboards that carry
-    /// neither file URLs nor decodable promises.
+    /// Concrete file URLs win when both are present. Promises are only accepted when the
+    /// pasteboard also advertises audio/movie content (Voice Memos exposes e.g.
+    /// `com.apple.m4a-audio` directly), so an image promise from Photos is rejected up
+    /// front instead of staged and failed later. `nil` if neither is present.
     static func strategy(forPasteboardTypes types: [String]) -> Strategy? {
         if types.contains(concreteFileURLType) {
             return .concreteFileURLs
@@ -52,12 +44,9 @@ nonisolated enum PromiseDropSupport {
         return promisesAudioVisualContent ? .filePromise : nil
     }
 
-    /// Staging dirs that hold no delivered file and should be swept.
-    ///
-    /// Compares standardized *paths*, not URLs: a directory built via
-    /// `appendingPathComponent` and the same directory derived from a file via
-    /// `deletingLastPathComponent()` differ in trailing-slash form and compare
-    /// unequal as URLs — which once made the sweep delete a delivered file.
+    /// Staging dirs that hold no delivered file and should be swept. Compares standardized
+    /// *paths*, not URLs — trailing-slash differences between `appendingPathComponent` and
+    /// `deletingLastPathComponent()` once made two equal dirs compare unequal as URLs.
     static func sweepableDirs(allDirs: [URL], deliveredFiles: [URL]) -> [URL] {
         let deliveredDirPaths = Set(deliveredFiles.map {
             $0.deletingLastPathComponent().standardizedFileURL.path
@@ -65,14 +54,10 @@ nonisolated enum PromiseDropSupport {
         return allDirs.filter { !deliveredDirPaths.contains($0.standardizedFileURL.path) }
     }
 
-    /// Staging dirs safe to delete right now: swept per `sweepableDirs`, minus
-    /// any dir whose receiver promise hasn't completed yet.
-    ///
-    /// Pending receiver dirs must never be removed while pending — the source
-    /// app (e.g. Voice Memos) may still be writing into them, and deleting the
-    /// destination out from under an in-flight `NSFilePromiseReceiver` wedges
-    /// its drag machinery until restart. Callers are expected to defer removal
-    /// of the excluded dirs until the pending promises resolve.
+    /// Dirs safe to delete now: `sweepableDirs` minus any dir whose receiver promise
+    /// hasn't completed. Deleting an in-flight `NSFilePromiseReceiver`'s destination
+    /// wedges the source app's drag machinery until restart; callers defer removal
+    /// of excluded dirs until the pending promise resolves.
     static func dirsSafeToRemoveNow(allDirs: [URL], deliveredFiles: [URL], pendingDirs: [URL]) -> [URL] {
         let pendingPaths = Set(pendingDirs.map { $0.standardizedFileURL.path })
         return sweepableDirs(allDirs: allDirs, deliveredFiles: deliveredFiles)
@@ -93,16 +78,11 @@ nonisolated enum PromiseDropSupport {
         return trimmed
     }
 
-    /// Merges the three promise-delivery paths into the final file list.
-    ///
-    /// Every modern-receiver file is delivered: each receiver stages into its own
-    /// directory, so two distinct memos that share a display name (e.g. two
-    /// "New Recording.m4a") are distinct files and must never be collapsed.
-    ///
-    /// Legacy and raw-data files are alternates of the same items, never extra ones, so
-    /// they only fill gaps. Names alone can't identify an alternate — the raw-data path
-    /// renames same-named items ("New Recording 2.m4a") — so `expectedItemCount` bounds
-    /// the result. Pass nil to keep name-only behavior.
+    /// Merges the three promise-delivery paths. Every modern-receiver file is delivered
+    /// (each stages into its own dir, so same-named memos are distinct files, never
+    /// collapsed). Legacy/raw-data files are alternates, not extras, so they only fill
+    /// gaps; since the raw-data path renames same-named items, names alone can't identify
+    /// an alternate, so `expectedItemCount` bounds the result (nil keeps name-only behavior).
     static func selectDelivery(
         modern: [URL],
         legacy: [URL],
@@ -140,9 +120,8 @@ nonisolated enum PromiseDropSupport {
         }
     }
 
-    /// Audio/movie file extensions the OS can decode, queried nonisolated from
-    /// AVFoundation. Mirrors `MeetingTranscriptionService.supportedFileExtensions`
-    /// but is safe to call from any isolation context.
+    /// Audio/movie extensions the OS can decode. Mirrors
+    /// `MeetingTranscriptionService.supportedFileExtensions` but callable from any isolation.
     private static let supportedExtensions: Set<String> = {
         let avTypes = AVURLAsset.audiovisualTypes()
         let extensions = avTypes.compactMap { fileType -> String? in
@@ -153,8 +132,7 @@ nonisolated enum PromiseDropSupport {
         return Set(extensions)
     }()
 
-    /// Keeps only URLs whose (lowercased) extension is a decodable audio/movie
-    /// format. Order-preserving.
+    /// Keeps only URLs with a decodable audio/movie extension. Order-preserving.
     static func filterSupported(_ urls: [URL]) -> [URL] {
         return urls.filter { url in
             let ext = url.pathExtension.lowercased()
@@ -162,14 +140,10 @@ nonisolated enum PromiseDropSupport {
         }
     }
 
-    /// A scratch directory tree under the user temp dir that gives each promised
-    /// file its own subdirectory, so identically-named files (e.g. several Voice
-    /// Memos drops named "New Recording.m4a") never collide.
-    ///
-    /// All state is immutable, so the session is `Sendable` and safe to share
-    /// across the main actor and the background queue that resolves promises.
-    /// Prefix of every drop-session staging root; the batch coordinator uses it
-    /// to recognize (and prune) empty session roots after item cleanup.
+    /// Scratch directory tree under the user temp dir; each promised file gets its own
+    /// subdirectory so identically-named files never collide. Immutable state makes the
+    /// session `Sendable`, safe to share between the main actor and the resolution queue.
+    /// Prefix of every staging root; the batch coordinator uses it to prune empty roots.
     static let stagingRootPrefix = "PromiseDrop-"
 
     final class StagingSession: Sendable {

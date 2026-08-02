@@ -3077,8 +3077,8 @@ struct ContentView: View {
 
     /// Capture app context at start to avoid mismatches if the user switches apps mid-session
     private func startRecording() {
-        // File-transcription batches drive the same shared ASR model; starting
-        // dictation mid-batch would run concurrent inference through one model.
+        // Batches drive the same shared ASR model; starting dictation mid-batch would
+        // run concurrent inference through one model.
         guard !FileTranscriptionSession.isBatchTranscribing else {
             self.notifyDictationBlockedByBatch()
             return
@@ -3423,8 +3423,7 @@ struct ContentView: View {
                 self.setActiveRecordingMode(.edit)
 
                 guard !self.asr.isRunningOrStarting else { return }
-                // Starts recording directly, bypassing beginDictationRecording, so it
-                // needs its own batch guard and intent claim.
+                // Bypasses beginDictationRecording, so needs its own batch guard and intent claim.
                 guard !FileTranscriptionSession.isBatchTranscribing else {
                     self.notifyDictationBlockedByBatch()
                     return
@@ -3756,9 +3755,8 @@ extension ContentView {
     }
 
     private func beginDictationRecording(for slot: SettingsStore.DictationShortcutSlot, mode: ActiveRecordingMode) {
-        // Common chokepoint for dictate/prompt/command/rewrite hotkeys: file-transcription
-        // batches drive the same shared ASR model, so none of these modes may start
-        // while a batch is running.
+        // Common chokepoint for dictate/prompt/command/rewrite hotkeys: batches drive
+        // the same shared ASR model, so none may start while one is running.
         guard !FileTranscriptionSession.isBatchTranscribing else {
             self.notifyDictationBlockedByBatch()
             return
@@ -3819,10 +3817,8 @@ extension ContentView {
         self.beginDictationRecording(for: .secondary, mode: mode)
     }
 
-    /// Feedback when a dictation-family hotkey (dictate/prompt/command/rewrite) is
-    /// rejected because a file-transcription batch is running. Reuses the existing
-    /// stop cue rather than building new UI, so the user gets an audible signal that
-    /// the hotkey press had no effect instead of silence.
+    /// Rejection feedback when a dictation-family hotkey fires during a batch. Reuses the
+    /// stop cue rather than new UI, so the user hears the press had no effect.
     private func notifyDictationBlockedByBatch() {
         DebugLogger.shared.warning(
             "Dictation blocked: batch file transcription in progress",

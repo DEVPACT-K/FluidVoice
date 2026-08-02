@@ -2,10 +2,8 @@
 import Foundation
 import XCTest
 
-/// Contract tests for the testable core of the promise-aware drop path (issue #219).
-/// The AppKit drop view itself needs a live drag session; these tests pin down the
-/// pure logic it delegates to: strategy selection from pasteboard types, and
-/// per-item staging directories that cannot collide.
+/// Contract tests for the testable core of the promise-aware drop path: strategy
+/// selection from pasteboard types, and per-item staging dirs that cannot collide.
 final class PromiseDropSupportTests: XCTestCase {
     // MARK: - Strategy selection
 
@@ -15,7 +13,7 @@ final class PromiseDropSupportTests: XCTestCase {
     }
 
     func testPromiseTypesSelectFilePromiseStrategy() {
-        // Exactly what Voice Memos puts on the pasteboard (verified live 2026-07-25).
+        // Exactly what Voice Memos puts on the pasteboard.
         let voiceMemosTypes = [
             "com.apple.NSFilePromiseItemMetaData",
             "com.apple.pasteboard.promised-file-name",
@@ -37,8 +35,7 @@ final class PromiseDropSupportTests: XCTestCase {
     }
 
     func testNonAudioVisualPromiseIsRejected() {
-        // A Photos-style image promise must not be accepted: staging a JPEG only
-        // to fail it later is worse than refusing the drag affordance up front.
+        // Staging a JPEG only to fail it later is worse than refusing up front.
         let photosLikeTypes = [
             "com.apple.NSFilePromiseItemMetaData",
             "com.apple.pasteboard.promised-file-content-type",
@@ -59,9 +56,8 @@ final class PromiseDropSupportTests: XCTestCase {
     // MARK: - Delivery selection
 
     func testTwoDistinctSameNamedModernFilesAreBothDelivered() {
-        // Voice Memos are commonly all titled "New Recording": two different
-        // memos in one drag stage into two receiver dirs with the same file
-        // name. Both are real files — neither may be collapsed as a duplicate.
+        // Voice Memos commonly titles memos "New Recording"; same-named files from two
+        // receiver dirs are still two real files, neither may be collapsed as a duplicate.
         let memoA = URL(fileURLWithPath: "/tmp/item-A/New Recording.m4a")
         let memoB = URL(fileURLWithPath: "/tmp/item-B/New Recording.m4a")
         let delivered = PromiseDropSupport.selectDelivery(modern: [memoA, memoB], legacy: [], data: [])
@@ -77,8 +73,8 @@ final class PromiseDropSupportTests: XCTestCase {
     }
 
     func testRenamedFallbackCopyOfSameNamedMemosIsNotDeliveredAsExtraItem() {
-        // The renamed fallback copy matches no modern name, so name-only dedup used to
-        // append it as a phantom third file.
+        // Renamed fallback copy matches no modern name, so name-only dedup would append it
+        // as a phantom third file.
         let memoA = URL(fileURLWithPath: "/tmp/item-A/New Recording.m4a")
         let memoB = URL(fileURLWithPath: "/tmp/item-B/New Recording.m4a")
         let dataDupe = URL(fileURLWithPath: "/tmp/data/New Recording.m4a")
@@ -192,7 +188,7 @@ final class PromiseDropSupportTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: dirB.path))
     }
 
-    // MARK: - Relocation for exclusive ownership (issue #219 batch drop)
+    // MARK: - Relocation for exclusive ownership
 
     func testRelocationGivesEachFileFromASharedDirItsOwnStagingDirInOrder() throws {
         let session = try PromiseDropSupport.StagingSession()
@@ -268,9 +264,8 @@ final class PromiseDropSupportTests: XCTestCase {
     // MARK: - Sweep selection
 
     func testSweepNeverIncludesADeliveredFilesDirectoryDespiteTrailingSlashDifferences() {
-        // Regression: dirs built with appendingPathComponent (no trailing slash)
-        // vs. deletingLastPathComponent() of a delivered file (trailing slash)
-        // compare unequal as URLs — the sweep once deleted a delivered file.
+        // appendingPathComponent (no trailing slash) vs. deletingLastPathComponent() of a
+        // delivered file (trailing slash) compare unequal as URLs — once deleted a delivered file.
         let base = URL(fileURLWithPath: "/tmp/PromiseDrop-test")
         let dataDir = base.appendingPathComponent("item-data")
         let legacyDir = base.appendingPathComponent("item-legacy")
@@ -288,12 +283,11 @@ final class PromiseDropSupportTests: XCTestCase {
         XCTAssertEqual(PromiseDropSupport.sweepableDirs(allDirs: [dirA, dirB], deliveredFiles: []), [dirA, dirB])
     }
 
-    // MARK: - dirsSafeToRemoveNow (findings F1 / F9)
+    // MARK: - dirsSafeToRemoveNow
 
     func testDirsSafeToRemoveNowExcludesPendingReceiverDirsEvenWhenNothingDelivered() {
-        // Regression for F1: an empty delivery result must not sweep a pending
-        // receiver's staging dir — deleting the destination out from under an
-        // in-flight NSFilePromiseReceiver wedges the source app's drag machinery.
+        // An empty delivery result must not sweep a pending receiver's staging dir —
+        // deleting it out from under an in-flight NSFilePromiseReceiver wedges the drag machinery.
         let pendingDir = URL(fileURLWithPath: "/tmp/PromiseDrop-test/item-pending")
         let deadDir = URL(fileURLWithPath: "/tmp/PromiseDrop-test/item-dead")
 

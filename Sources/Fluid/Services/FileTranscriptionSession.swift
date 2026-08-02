@@ -1,38 +1,31 @@
 import Combine
 import Foundation
 
-/// App-level owner of file-transcription state (issue #219).
-///
-/// The transcription service and batch coordinator used to be `@StateObject`s
-/// of `MeetingTranscriptionView`, so switching sidebar pages destroyed the view
-/// and silently killed any in-flight transcription. Owning them here keeps
-/// batches running while the user navigates; the view re-attaches on return.
+/// App-level owner of file-transcription state, so switching sidebar pages (which
+/// destroys `MeetingTranscriptionView`) doesn't silently kill an in-flight batch;
+/// the view re-attaches on return.
 @MainActor
 final class FileTranscriptionSession {
     static let shared = FileTranscriptionSession()
 
-    /// Set once `shared` is first touched. Lets the dictation path check batch
-    /// state without lazily constructing the session (and the ASR service).
+    /// Set once `shared` is first touched, so the dictation path can check batch state
+    /// without force-creating the session (and the ASR service).
     private static var sharedIfCreated: FileTranscriptionSession?
 
-    /// True while a batch is actively transcribing. Dictation must not start
-    /// concurrently: both paths drive the same shared ASR model, and
-    /// concurrent inference corrupts output.
+    /// Dictation must not start while true: both paths drive the same shared ASR model,
+    /// and concurrent inference corrupts output.
     static var isBatchTranscribing: Bool {
         self.sharedIfCreated?.batchHolder.coordinator?.isRunning == true
     }
 
-    /// True from the moment a dictation/prompt/command/rewrite recording is about to
-    /// start until the session ends. This is the "intent to dictate" half of the
-    /// single-model arbiter shared with the batch transcribe closure below: it is set
-    /// synchronously on the main actor before any `await`, closing the TOCTOU window
-    /// where the batch closure's `AppServices.shared.asr.isRunning` check could pass
-    /// right before dictation flips `isRunning` true.
+    /// True from just before a dictation/prompt/command/rewrite recording starts until
+    /// the session ends. The "intent to dictate" half of the single-model arbiter shared
+    /// with the batch transcribe closure: set synchronously before any `await`, closing
+    /// the TOCTOU window where the batch's `asr.isRunning` check could pass right before
+    /// dictation flips `isRunning` true.
     ///
-    /// Uses `sharedIfCreated` (not `shared`) so callers that only need to *read* the
-    /// flag never force-create the session/ASR service. `beginDictationIntent()` is the
-    /// one path allowed to force-create, since it's only called from the app's own
-    /// recording start path where creating the session is expected anyway.
+    /// Readers use `sharedIfCreated` to avoid force-creating the session/ASR service;
+    /// `beginDictationIntent()` is the one path allowed to force-create.
     private(set) var dictationIntent: Bool = false
 
     let service: MeetingTranscriptionService
@@ -42,11 +35,10 @@ final class FileTranscriptionSession {
         let service = MeetingTranscriptionService(asrService: AppServices.shared.asr)
         self.service = service
         self.batchHolder = BatchCoordinatorHolder(transcribe: { url in
-            // Single-model arbitration: at most one of dictation, single-file
-            // transcription, and batch transcription may drive the shared ASR model at
-            // once. Wait for dictation intent (covers the TOCTOU window before
-            // AppServices.shared.asr.isRunning flips true), live dictation, and any
-            // in-flight single-file transcription. Cancellation still interrupts the wait.
+            // Single-model arbitration: at most one of dictation, single-file, and batch
+            // transcription may drive the shared ASR model at once. Waits on dictation
+            // intent, live dictation, and any in-flight single-file transcription;
+            // cancellation still interrupts the wait.
             while AppServices.shared.asr.isRunning
                 || FileTranscriptionSession.shared.dictationIntent
                 || service.isTranscribing {
@@ -76,8 +68,8 @@ final class FileTranscriptionSession {
     }
 }
 
-/// Wraps the batch coordinator so a finished batch can be cleared and a fresh
-/// one lazily created, while republshing the inner coordinator's changes.
+/// Wraps the batch coordinator so a finished batch can be cleared and a fresh one lazily
+/// created, republishing the inner coordinator's changes.
 @MainActor
 final class BatchCoordinatorHolder: ObservableObject {
     @Published var coordinator: BatchTranscriptionCoordinator?
@@ -100,8 +92,8 @@ final class BatchCoordinatorHolder: ObservableObject {
     }
 
     func clear() {
-        // Never orphan a running batch: without this, dropping the coordinator
-        // would leave it transcribing invisibly with no way to reach it.
+        // Never orphan a running batch: dropping it without cancelling would leave it
+        // transcribing invisibly with no way to reach it.
         self.coordinator?.cancel()
         self.forwarder?.cancel()
         self.forwarder = nil

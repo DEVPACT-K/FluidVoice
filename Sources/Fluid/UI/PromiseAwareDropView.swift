@@ -1,12 +1,9 @@
 import AppKit
 import SwiftUI
 
-/// A drop target that accepts both concrete file URLs and file-promise drags
-/// (e.g. from Voice Memos), and resolves promised files into per-item staging
-/// directories before reporting them via callbacks.
-///
-/// The pure strategy/staging/filtering logic lives in `PromiseDropSupport`;
-/// this view only owns AppKit drag plumbing and the async resolution poll.
+/// Accepts concrete file URLs and file-promise drags (e.g. Voice Memos), resolving promises
+/// into per-item staging dirs. Strategy/staging/filtering logic lives in `PromiseDropSupport`;
+/// this view owns only AppKit drag plumbing and the async resolution poll.
 struct PromiseAwareDropView: NSViewRepresentable {
     let onTargetedChange: (Bool) -> Void
     let onFiles: ([(url: URL, stagingDir: URL?)]) -> Void
@@ -33,9 +30,7 @@ struct PromiseAwareDropView: NSViewRepresentable {
         var onFiles: ([(url: URL, stagingDir: URL?)]) -> Void = { _ in }
         var onError: (String) -> Void = { _ in }
 
-        /// Shared background queue for `NSFilePromiseReceiver` resolution. Static
-        /// so in-flight promise resolution survives the view being destroyed
-        /// (e.g. by sidebar navigation) mid-drop.
+        /// Static so in-flight promise resolution survives the view being destroyed mid-drop.
         private static let promiseQueue: OperationQueue = {
             let queue = OperationQueue()
             queue.maxConcurrentOperationCount = 1
@@ -57,10 +52,8 @@ struct PromiseAwareDropView: NSViewRepresentable {
             self.registerForDraggedTypes([.fileURL] + promiseTypes)
         }
 
-        /// The view sits in an `.overlay` so AppKit's front-to-back drag-target
-        /// search finds it above the SwiftUI content; returning nil here lets
-        /// every normal mouse event fall through to the UI beneath. Drag
-        /// dispatch does not consult `hitTest`, so drops still arrive.
+        /// Sits in `.overlay` for drag-target search; returns nil so mouse events pass through
+        /// (drag dispatch doesn't consult hitTest, so drops still arrive).
         override func hitTest(_ point: NSPoint) -> NSView? {
             nil
         }
@@ -147,31 +140,19 @@ struct PromiseAwareDropView: NSViewRepresentable {
             }
             let legacyDir = try? session.makeItemDirectory()
             let dataDir = try? session.makeItemDirectory()
-            // Captured by value so resolution keeps working (and can still hand
-            // files to the app-level batch session) if this view is destroyed
-            // by navigation while the drop is resolving.
+            // Captured by value: resolution must outlive this view if destroyed by navigation mid-drop.
             let onFiles = self.onFiles
             let onError = self.onError
 
-            // Every pasteboard read can block indefinitely (verified: the same
-            // read is instant on one drop and deadlocks on the next), and a
-            // block inside performDragOperation freezes the system-wide drag
-            // session. So performDragOperation returns immediately and ALL
-            // pasteboard interaction happens on throwaway background threads;
-            // the main thread only ever polls the staging directories.
-            //
-            // NOTE: using `sender`/`pasteboard` after performDragOperation has
-            // returned, from another thread, is outside AppKit's documented
-            // lifetime contract. It is the only arrangement that neither
-            // deadlocks nor loses the drop (verified live against Voice Memos);
-            // if a provider stops answering, the reads fail harmlessly on their
-            // background threads and the poll timeout reports the failure.
+            // A pasteboard read can block indefinitely, and blocking inside performDragOperation
+            // freezes the system-wide drag session — so it returns immediately and ALL pasteboard
+            // reads happen on background threads; using sender/pasteboard after return is outside
+            // AppKit's documented lifetime but is the only arrangement that doesn't deadlock or
+            // lose the drop against Voice Memos. A dead provider just fails on its own thread.
             let state = ResolutionState()
             state.beginInFlight() // outer worker token, released when it finishes
 
-            // The poller starts before any pasteboard read, so even a worker
-            // thread that hangs on its first read cannot leave the drop without
-            // a timeout/error path. Deliberately not tied to the view lifetime.
+            // Poller starts before any pasteboard read so a hung first read still hits a timeout.
             Task { @MainActor in
                 await DropTargetView.resolvePromises(
                     session: session,
@@ -186,15 +167,11 @@ struct PromiseAwareDropView: NSViewRepresentable {
             Self.detachWorker {
                 defer { state.endInFlight() }
 
-                // ORDERING MATTERS: NSPasteboard is not thread-safe, and
-                // receivePromisedFiles touches the pasteboard from its own
-                // queue. All of OUR pasteboard reads happen first, single-
-                // threaded, and only then do the receivers start — concurrent
-                // access crashed with an NSInternalInconsistencyException in
-                // NSPasteboard's type cache (verified live on a 3-memo drag).
-                // Every read is additionally wrapped in an ObjC exception
-                // catcher: a C++ terminate handler in the process turns any
-                // uncaught NSException into abort().
+                // Ordering matters: NSPasteboard isn't thread-safe and receivePromisedFiles
+                // touches it from its own queue, so all our reads finish, single-threaded,
+                // before any receiver starts — concurrent access crashed NSPasteboard's type
+                // cache. Reads are wrapped in an ObjC exception catcher since an uncaught
+                // NSException aborts the process.
 
                 // 1. Snapshot the receiver objects and per-item metadata/bytes.
                 var receivers: [NSFilePromiseReceiver] = []
@@ -233,14 +210,13 @@ struct PromiseAwareDropView: NSViewRepresentable {
                 )
                 state.setPayloadCount(itemPayloads.count)
 
-                // 2. Raw-data fallback: write each item's bytes into the shared
-                // data dir (verified as the reliable path for Voice Memos).
-                // Identically-named items get disambiguated file names.
+                // 2. Raw-data fallback: write each item's bytes into the shared data dir
+                // (the reliable path for Voice Memos). Disambiguate identically-named items.
                 if let dataDir, !itemPayloads.isEmpty {
                     var usedNames = Set<String>()
                     for (index, payload) in itemPayloads.enumerated() {
                         let fallbackName = "Dropped Audio \(index + 1)"
-                        // Provider-supplied, so untrusted: separators would escape staging.
+                        // Provider-supplied name is untrusted: separators would escape staging.
                         let itemName = PromiseDropSupport.sanitizedFileName(
                             payload.name ?? suggestedName,
                             fallback: fallbackName
@@ -270,18 +246,15 @@ struct PromiseAwareDropView: NSViewRepresentable {
                     }
                 }
 
-                // 3. Modern receivers, started only after our reads are done.
-                // Still required even when the raw-data path delivered: leaving
-                // a promise unresolved wedges the source app's drag machinery
-                // (Voice Memos refuses further drags until restarted).
+                // 3. Modern receivers, started only after our reads are done. Still required
+                // even when raw-data delivered: leaving a promise unresolved wedges the
+                // source app's drag machinery (Voice Memos refuses further drags until restart).
                 for receiver in receivers {
                     guard let dir = try? session.makeItemDirectory() else { continue }
                     state.registerReceiverDir(dir)
-                    // A per-receiver token: the soft timeout must not abandon a
-                    // promise that is still downloading (e.g. iCloud taking 45s)
-                    // just because the outer worker thread already finished
-                    // (finding F8). Released once, after the receiver's LAST
-                    // file callback — receivePromisedFiles fires once per name.
+                    // Per-receiver token: soft timeout must not abandon a promise still
+                    // downloading (e.g. iCloud) just because the outer worker finished.
+                    // Released once, after the receiver's LAST file callback.
                     state.beginInFlight()
                     let completion = ReceiverCompletion(fileCount: receiver.fileNames.count)
                     receiver.receivePromisedFiles(atDestination: dir, options: [:], operationQueue: Self.promiseQueue) { url, error in
@@ -302,13 +275,10 @@ struct PromiseAwareDropView: NSViewRepresentable {
                 }
 
                 // 4. Legacy fallback (deprecated namesOfPromisedFilesDroppedAtDestination:),
-                // strictly last resort. A pending legacy request freezes the
-                // source app's promise machinery until it answers (verified
-                // live: Voice Memos unresponsive for 35-80s, blocking further
-                // drags), so it only fires if neither the modern receiver nor
-                // the raw-data path has produced anything within a short
-                // window. Invoked via perform(_:) with a string selector so no
-                // deprecation warning is emitted.
+                // strictly last resort: an eager call blocks Voice Memos's drag machinery
+                // for 35-80s, so it only fires if modern/raw-data produced nothing within
+                // a short window. Invoked via perform(_:) with a string selector to avoid
+                // the deprecation warning.
                 if let legacyDir {
                     let waitDeadline = Date().addingTimeInterval(3)
                     var otherPathDelivered = false
@@ -370,12 +340,9 @@ struct PromiseAwareDropView: NSViewRepresentable {
             }
         }
 
-        /// Thread-safe resolution state shared between the background delivery
-        /// threads and the main-actor poller: which receiver dirs have completed,
-        /// and whether the legacy/raw-data reads are still in flight (under heavy
-        /// inference load a provider can take 60s+ to answer — verified live —
-        /// and the poller must not give up and sweep the staging dirs while an
-        /// answer is still coming).
+        /// Shared between background delivery threads and the main-actor poller: which
+        /// receiver dirs completed, and whether legacy/raw-data reads are still in flight
+        /// (a provider can take 60s+ under load; the poller must not sweep staging dirs early).
         private final class ResolutionState: @unchecked Sendable {
             private let lock = NSLock()
             private var receiverDirs: [URL] = []
@@ -408,11 +375,8 @@ struct PromiseAwareDropView: NSViewRepresentable {
                 return self.completed
             }
 
-            /// Marks a receiver as resolved-but-failed. A failed receiver's
-            /// promise has already answered (with an error), so — unlike a
-            /// still-pending one — its staging dir is safe to sweep immediately
-            /// and it counts toward "every receiver resolved" for delivery
-            /// gating (finding F9).
+            /// A failed receiver's promise already answered, so unlike a pending one its dir
+            /// is safe to sweep immediately, and it counts toward "every receiver resolved".
             func markFailed(_ dir: URL) {
                 self.lock.lock()
                 defer { self.lock.unlock() }
@@ -425,8 +389,7 @@ struct PromiseAwareDropView: NSViewRepresentable {
                 return self.failed
             }
 
-            /// Records the raw-data item count once, so a receiver-less
-            /// multi-item drop can still detect a partial delivery (finding F11).
+            /// Lets a receiver-less multi-item drop still detect a partial delivery.
             func setPayloadCount(_ count: Int) {
                 self.lock.lock()
                 defer { self.lock.unlock() }
@@ -458,9 +421,8 @@ struct PromiseAwareDropView: NSViewRepresentable {
             }
         }
 
-        /// Detached worker at user-initiated QoS: default-QoS threads get starved
-        /// while ML inference saturates the cores, which is exactly when a second
-        /// drop arrives mid-batch.
+        /// User-initiated QoS: default-QoS threads starve while ML inference saturates
+        /// the cores, exactly when a second drop can arrive mid-batch.
         private static func detachWorker(_ body: @escaping () -> Void) {
             let thread = Thread(block: body)
             thread.qualityOfService = .userInitiated
@@ -479,10 +441,9 @@ struct PromiseAwareDropView: NSViewRepresentable {
         ) async {
             let pollInterval: UInt64 = 200_000_000
             let softTimeout: TimeInterval = 30
-            // Under heavy inference load a provider can take 60s+ to answer
-            // (verified live: 80s for a second drop mid-batch). While any
-            // delivery thread is still in flight the poll keeps waiting, up to
-            // a hard cap so a truly wedged provider still ends in an error.
+            // A provider can take 60s+ under heavy inference load (seen up to 80s); keep
+            // waiting while any delivery thread is in flight, up to a hard cap so a truly
+            // wedged provider still ends in an error.
             let hardTimeout: TimeInterval = 120
             let modernGrace: TimeInterval = 1.5
             let start = Date()
@@ -493,15 +454,10 @@ struct PromiseAwareDropView: NSViewRepresentable {
                 let failed = state.failedSnapshot()
                 return DeliveryContext(
                     allDirs: receiverDirs + [legacyDir, dataDir].compactMap(\.self),
-                    // A failed receiver has already answered (with an error), so
-                    // unlike a still-pending one its dir is safe to sweep now.
                     pendingReceiverDirs: receiverDirs.filter { !completed.contains($0) && !failed.contains($0) },
-                    // Relocation empties the legacy dir, so the sweep would now see it as
-                    // undelivered and delete a destination the OS may still be writing into.
+                    // Relocation empties the legacy dir, so a sweep would see it as undelivered
+                    // and delete a destination the OS may still be writing into.
                     pendingFallbackDirs: state.hasInFlightWork ? [legacyDir].compactMap(\.self) : [],
-                    // The raw-data item count also bounds expectations: a
-                    // receiver-less multi-item drop that partially lands must
-                    // still surface a partial-failure error (finding F11).
                     totalExpected: max(receiverDirs.count, state.payloadCountValue(), 1),
                     session: session,
                     onFiles: onFiles,
@@ -516,9 +472,8 @@ struct PromiseAwareDropView: NSViewRepresentable {
                 if elapsed >= hardTimeout { break }
                 if elapsed >= softTimeout, !state.hasInFlightWork { break }
 
-                // A receiver dir only counts once its completion callback fired —
-                // a stalled (e.g. iCloud) download must never be delivered as a
-                // truncated file just because its size held still between polls.
+                // A receiver dir only counts once its completion callback fired — a stalled
+                // (e.g. iCloud) download must never look complete just from a stable size.
                 let receiverDirs = state.receiverDirsSnapshot()
                 let readyModernDirs = state.completedSnapshot()
                 let failedModernDirs = state.failedSnapshot()
@@ -527,33 +482,26 @@ struct PromiseAwareDropView: NSViewRepresentable {
                 let dataFiles = self.listFiles(in: [dataDir].compactMap(\.self))
                 let fallbackSizes = self.sizeMap(for: legacyFiles + dataFiles)
 
-                // "Resolved" = completed OR failed: a failed receiver's promise
-                // has already answered, so it can never flip to completed later
-                // (finding F9) — waiting on it would spin the full soft timeout.
+                // "Resolved" = completed OR failed: a failed promise can never later flip to
+                // completed, so waiting on it would spin the full soft timeout.
                 let resolvedCount = readyModernDirs.count + failedModernDirs.count
                 let allReceiversResolved = !receiverDirs.isEmpty && resolvedCount >= receiverDirs.count
 
-                // Modern succeeded outright: every registered receiver resolved,
-                // at least one completed, and it produced files. (Receivers
-                // register in one tight loop with no pasteboard call in
-                // between, so a partially-registered snapshot is a micro-race
-                // at worst; completion still requires each dir's callback.)
+                // Modern succeeded outright: every receiver resolved, at least one completed,
+                // and it produced files.
                 let modernComplete = allReceiversResolved && !readyModernDirs.isEmpty && !modernFiles.isEmpty
                 if modernComplete {
                     self.deliver(modern: modernFiles, legacy: legacyFiles, data: dataFiles, context: makeContext())
                     return
                 }
 
-                // Modern produced nothing — either no receivers were ever
-                // registered, or every registered receiver resolved and none
-                // completed — past the grace period, but a fallback landed and
-                // its sizes are stable — use the fallback copies.
+                // Modern produced nothing (no receivers, or all resolved with none completed)
+                // past the grace period, and a fallback landed with stable sizes — use it.
                 let modernExhaustedWithNoWins = receiverDirs.isEmpty
                     || (allReceiversResolved && readyModernDirs.isEmpty)
                 let modernProducedNothing = modernExhaustedWithNoWins && elapsed > modernGrace
-                // The worker must be done (no in-flight token) so a multi-item
-                // raw-data sweep that is still writing files 3..5 isn't
-                // delivered after only the first items stabilized.
+                // Worker must be fully done, so a multi-item raw-data sweep still writing
+                // later files isn't delivered early just because earlier ones stabilized.
                 let fallbackStable = !fallbackSizes.isEmpty && fallbackSizes == fallbackPrevSizes
                     && !state.hasInFlightWork
                 if modernProducedNothing && fallbackStable {
@@ -565,9 +513,8 @@ struct PromiseAwareDropView: NSViewRepresentable {
                 try? await Task.sleep(nanoseconds: pollInterval)
             }
 
-            // Timeout: deliver whatever completed, preferring modern. Incomplete
-            // receiver dirs are excluded (possible truncation) and surface via
-            // the partial-failure error below.
+            // Timeout: deliver whatever completed, preferring modern; incomplete dirs are
+            // excluded (possible truncation) and surface via the partial-failure error.
             let receiverDirs = state.receiverDirsSnapshot()
             let readyModernDirs = state.completedSnapshot()
             self.deliver(
@@ -581,12 +528,9 @@ struct PromiseAwareDropView: NSViewRepresentable {
         /// Everything `deliver` needs besides the per-path file lists.
         private struct DeliveryContext {
             let allDirs: [URL]
-            /// Receiver dirs whose promise hasn't completed yet. They must NOT
-            /// be swept at delivery: the source app may still be writing into
-            /// them, and deleting the destination leaves its promise session
-            /// unresolved — Voice Memos then refuses to start any further drag
-            /// until restarted (verified live). They're cleaned up after the
-            /// promise completes (or a 120s deadline) by a deferred task.
+            /// Receiver dirs whose promise hasn't completed yet. Must NOT be swept at delivery:
+            /// deleting an in-flight promise's destination wedges Voice Memos until restart.
+            /// Cleaned up later, after completion (or a 120s deadline).
             let pendingReceiverDirs: [URL]
             /// Fallback dirs whose writer thread hasn't finished. Same rule as above.
             let pendingFallbackDirs: [URL]
@@ -596,9 +540,7 @@ struct PromiseAwareDropView: NSViewRepresentable {
             let onError: (String) -> Void
         }
 
-        /// Delivers the resolved files. Selection/dedup rules live in
-        /// `PromiseDropSupport.selectDelivery`; unsupported formats are filtered
-        /// like the concrete-URL path.
+        /// Delivers resolved files. Selection/dedup lives in `PromiseDropSupport.selectDelivery`.
         private static func deliver(
             modern: [URL],
             legacy: [URL],
@@ -620,11 +562,8 @@ struct PromiseAwareDropView: NSViewRepresentable {
             let result = PromiseDropSupport.relocateForExclusiveOwnership(supported, session: context.session)
 
             if result.isEmpty {
-                // Same pending-respecting sweep as the non-empty branch below:
-                // an empty result must not delete staging dirs whose receiver
-                // promise hasn't completed yet (finding F1) — removeAll() used
-                // to nuke the whole session root, pending dirs included, which
-                // wedges the source app's drag machinery.
+                // Same pending-respecting sweep as below: must not delete staging dirs whose
+                // receiver promise hasn't completed — that wedges the source app's drag machinery.
                 for dir in PromiseDropSupport.dirsSafeToRemoveNow(
                     allDirs: context.allDirs,
                     deliveredFiles: [],
@@ -644,13 +583,10 @@ struct PromiseAwareDropView: NSViewRepresentable {
                 return
             }
 
-            // Item dirs that hold no delivered file — losing duplicates (e.g. the
-            // raw-data copy when the modern receiver won) and empty shells from
-            // failed paths — are dead weight. Deleting them can race the still-
-            // running legacy/data writer threads; that is harmless (the losers'
-            // files are throwaway copies) and keeps the temp dir clean. The
-            // batch coordinator removes the delivered dirs (and then the empty
-            // session root) after each item's transcription.
+            // Dirs holding no delivered file (losing duplicates, empty shells from failed
+            // paths) are dead weight; deleting them may race still-running writer threads,
+            // which is harmless since the losers' files are throwaway copies. The batch
+            // coordinator removes delivered dirs (then the empty session root) per item.
             for dir in PromiseDropSupport.dirsSafeToRemoveNow(
                 allDirs: context.allDirs,
                 deliveredFiles: result.map(\.url),
@@ -667,9 +603,8 @@ struct PromiseAwareDropView: NSViewRepresentable {
             self.cleanUpLater(pendingDirs: context.pendingReceiverDirs + context.pendingFallbackDirs)
         }
 
-        /// Removes still-pending receiver dirs once their promise has had time
-        /// to finish writing (their content is a duplicate of what was already
-        /// delivered), then prunes the session root if it ended up empty.
+        /// Removes still-pending receiver dirs once their promise has had time to finish
+        /// writing (duplicates of what was already delivered), then prunes an empty session root.
         private static func cleanUpLater(pendingDirs: [URL]) {
             guard !pendingDirs.isEmpty else { return }
             Task { @MainActor in
