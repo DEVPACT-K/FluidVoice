@@ -279,6 +279,10 @@ final class MeetingTranscriptionService: ObservableObject {
 
             // Calculate chunk size in source file frames
             let sourceFramesPerChunk = AVAudioFrameCount(Double(samplesPerChunk) / resampleRatio)
+            let usesCohereSeamMerging = SettingsStore.shared.selectedSpeechModel == .cohereTranscribeSixBit
+            let sourceOverlapFrames = usesCohereSeamMerging
+                ? AVAudioFrameCount(2 * fileSampleRate)
+                : 0
             var currentFrame: AVAudioFramePosition = 0
 
             self.currentStatus = duration > 0 ? "Transcribing audio (\(Int(duration))s)..." : "Transcribing audio..."
@@ -325,7 +329,10 @@ final class MeetingTranscriptionService: ObservableObject {
                     chunkCount += 1
                 }
 
-                currentFrame += AVAudioFramePosition(framesToRead)
+                let overlap = currentFrame + AVAudioFramePosition(framesToRead) < audioFile.length
+                    ? min(sourceOverlapFrames, framesToRead - 1)
+                    : 0
+                currentFrame += AVAudioFramePosition(framesToRead - overlap)
 
                 // Update progress
                 let progressPercent = Double(currentFrame) / Double(audioFile.length)
@@ -341,7 +348,9 @@ final class MeetingTranscriptionService: ObservableObject {
             }
 
             // Combine all chunk transcriptions
-            let finalText = allTranscriptions.joined(separator: " ")
+            let finalText = usesCohereSeamMerging
+                ? CohereTranscribeCppLongFormProcessor.merge(allTranscriptions)
+                : allTranscriptions.joined(separator: " ")
             let avgConfidence = chunkCount > 0 ? totalConfidence / Float(chunkCount) : 0
 
             let transcriptionResult = (text: finalText, confidence: avgConfidence)
