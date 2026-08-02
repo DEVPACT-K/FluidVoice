@@ -88,6 +88,28 @@ final class PromiseDropSupportTests: XCTestCase {
         XCTAssertEqual(delivered, [memoA, memoB], "alternates must not exceed the dragged item count")
     }
 
+    func testOneReceiverPromisingSeveralFilesDeliversAllOfThemFromTheFallback() {
+        // The bound is the promised file-name count, not the receiver count: one receiver
+        // advertising three names whose modern path fails must still yield three files.
+        let files = (1...3).map { URL(fileURLWithPath: "/tmp/data/Memo \($0).m4a") }
+        let delivered = PromiseDropSupport.selectDelivery(
+            modern: [],
+            legacy: [],
+            data: files,
+            expectedItemCount: 3
+        )
+        XCTAssertEqual(delivered, files)
+
+        // Counting receivers instead would cap this at 1 and silently drop two files.
+        let underCounted = PromiseDropSupport.selectDelivery(
+            modern: [],
+            legacy: [],
+            data: files,
+            expectedItemCount: 1
+        )
+        XCTAssertEqual(underCounted.count, 1, "documents the failure a receiver-count bound produces")
+    }
+
     func testFallbackStillFillsGapWhenAReceiverDoesNotDeliver() {
         // One receiver didn't deliver, so the renamed copy is a real stand-in.
         let memoA = URL(fileURLWithPath: "/tmp/item-A/New Recording.m4a")
