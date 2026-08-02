@@ -119,6 +119,27 @@ nonisolated enum PromiseDropSupport {
         return delivered
     }
 
+    /// Gives each delivered file its own dir: the coordinator deletes an item's dir the
+    /// moment that item finishes, so a shared one loses files still-queued items need.
+    /// A failed move reports `stagingDir: nil` — unowned beats shared. Order-preserving.
+    static func relocateForExclusiveOwnership(
+        _ files: [URL],
+        session: StagingSession,
+        makeDirectory: (StagingSession) throws -> URL = { try $0.makeItemDirectory() },
+        move: (URL, URL) throws -> Void = { try FileManager.default.moveItem(at: $0, to: $1) }
+    ) -> [(url: URL, stagingDir: URL?)] {
+        files.map { file in
+            do {
+                let dir = try makeDirectory(session)
+                let destination = dir.appendingPathComponent(file.lastPathComponent)
+                try move(file, destination)
+                return (url: destination, stagingDir: dir)
+            } catch {
+                return (url: file, stagingDir: nil)
+            }
+        }
+    }
+
     /// Audio/movie file extensions the OS can decode, queried nonisolated from
     /// AVFoundation. Mirrors `MeetingTranscriptionService.supportedFileExtensions`
     /// but is safe to call from any isolation context.

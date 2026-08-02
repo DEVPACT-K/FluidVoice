@@ -270,6 +270,72 @@ final class BatchTranscriptionCoordinatorTests: XCTestCase {
         XCTAssertTrue(fm.fileExists(atPath: audioURL.path), "files without a stagingDir belong to the user and must never be deleted")
     }
 
+    // MARK: - Shared staging dir regression (issue #219 batch drop)
+
+    func testEachItemFileStillExistsWhenItsOwnTranscriptionRuns() async throws {
+        // A shared dir deleted after the first item destroyed files later items needed.
+        // Dir existence at the end doesn't catch it — the file must be readable on its turn.
+        let fm = FileManager.default
+        let sessionRoot = fm.temporaryDirectory.appendingPathComponent("PromiseDrop-\(UUID().uuidString)", isDirectory: true)
+        var requests: [BatchTranscriptionCoordinator.Request] = []
+        for index in 0..<3 {
+            let itemDir = sessionRoot.appendingPathComponent("item-\(index)-\(UUID().uuidString)", isDirectory: true)
+            try fm.createDirectory(at: itemDir, withIntermediateDirectories: true)
+            let audioURL = itemDir.appendingPathComponent("memo\(index).m4a")
+            try Data([UInt8(index)]).write(to: audioURL)
+            requests.append(.init(url: audioURL, stagingDir: itemDir))
+        }
+
+        var checkedExistence: [Bool] = []
+        let coordinator = BatchTranscriptionCoordinator(transcribe: { url in
+            checkedExistence.append(fm.fileExists(atPath: url.path))
+            return self.makeResult(text: "ok", fileName: url.lastPathComponent)
+        })
+
+        coordinator.enqueue(requests)
+        await coordinator.waitUntilIdle()
+
+        XCTAssertEqual(checkedExistence, [true, true, true], "every item's file must still exist when its own turn to transcribe comes")
+        for item in coordinator.items {
+            guard case .completed = item.status else {
+                return XCTFail("expected .completed, got \(item.status)")
+            }
+        }
+    }
+
+    func testCancelDuringTranscribeLeavesInFlightItemsFileReadable() async throws {
+        let fm = FileManager.default
+        let stagingDir = fm.temporaryDirectory.appendingPathComponent("staging-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: stagingDir, withIntermediateDirectories: true)
+        let audioURL = stagingDir.appendingPathComponent("memo.m4a")
+        try Data([0x00]).write(to: audioURL)
+
+        let started = AsyncGate()
+        var wasReadableDuringInFlightRun = false
+        let coordinator = BatchTranscriptionCoordinator(transcribe: { url in
+            started.open()
+            wasReadableDuringInFlightRun = fm.fileExists(atPath: url.path)
+            try await Task.sleep(nanoseconds: 200_000_000)
+            return self.makeResult(text: "ok", fileName: url.lastPathComponent)
+        })
+
+        coordinator.enqueue([
+            .init(url: audioURL, stagingDir: stagingDir),
+            .init(url: self.tempAudioURL(name: "pending.m4a")),
+        ])
+        await started.wait()
+        coordinator.cancel()
+        await coordinator.waitUntilIdle()
+
+        XCTAssertTrue(wasReadableDuringInFlightRun, "the in-flight item's file must still be readable while it's transcribing, even after cancel() runs")
+        guard case .cancelled = coordinator.items[0].status else {
+            return XCTFail("in-flight item must end .cancelled, got \(coordinator.items[0].status)")
+        }
+        guard case .cancelled = coordinator.items[1].status else {
+            return XCTFail("pending item must be .cancelled, got \(coordinator.items[1].status)")
+        }
+    }
+
     // MARK: - Enqueue while running
 
     func testEnqueueWhileRunningAppendsToSameBatch() async {

@@ -280,19 +280,24 @@ struct PromiseAwareDropView: NSViewRepresentable {
                     // A per-receiver token: the soft timeout must not abandon a
                     // promise that is still downloading (e.g. iCloud taking 45s)
                     // just because the outer worker thread already finished
-                    // (finding F8). Released on both the success and error paths.
+                    // (finding F8). Released once, after the receiver's LAST
+                    // file callback — receivePromisedFiles fires once per name.
                     state.beginInFlight()
+                    let completion = ReceiverCompletion(fileCount: receiver.fileNames.count)
                     receiver.receivePromisedFiles(atDestination: dir, options: [:], operationQueue: Self.promiseQueue) { url, error in
-                        defer { state.endInFlight() }
                         if let error {
                             DebugLogger.shared.debug(
                                 "Modern promise receiver failed [\(url.lastPathComponent)]: \(error.localizedDescription)",
                                 source: "PromiseAwareDropView"
                             )
+                        }
+                        guard completion.recordFile(failed: error != nil) else { return }
+                        if completion.anyFailed {
                             state.markFailed(dir)
                         } else {
                             state.markCompleted(dir)
                         }
+                        state.endInFlight()
                     }
                 }
 
@@ -341,6 +346,28 @@ struct PromiseAwareDropView: NSViewRepresentable {
                 }
             }
             return true
+        }
+
+        /// `receivePromisedFiles` fires once per name, so count down to release the
+        /// receiver's single in-flight token exactly once.
+        private final class ReceiverCompletion: @unchecked Sendable {
+            private let lock = NSLock()
+            private var remaining: Int
+            private(set) var anyFailed = false
+
+            init(fileCount: Int) {
+                // Guard a zero/nil name count: it must still count down to zero.
+                self.remaining = max(fileCount, 1)
+            }
+
+            /// Returns true exactly once, for the last file this receiver reports.
+            func recordFile(failed: Bool) -> Bool {
+                self.lock.lock()
+                defer { self.lock.unlock() }
+                if failed { self.anyFailed = true }
+                self.remaining -= 1
+                return self.remaining <= 0
+            }
         }
 
         /// Thread-safe resolution state shared between the background delivery
@@ -469,6 +496,9 @@ struct PromiseAwareDropView: NSViewRepresentable {
                     // A failed receiver has already answered (with an error), so
                     // unlike a still-pending one its dir is safe to sweep now.
                     pendingReceiverDirs: receiverDirs.filter { !completed.contains($0) && !failed.contains($0) },
+                    // Relocation empties the legacy dir, so the sweep would now see it as
+                    // undelivered and delete a destination the OS may still be writing into.
+                    pendingFallbackDirs: state.hasInFlightWork ? [legacyDir].compactMap(\.self) : [],
                     // The raw-data item count also bounds expectations: a
                     // receiver-less multi-item drop that partially lands must
                     // still surface a partial-failure error (finding F11).
@@ -558,6 +588,8 @@ struct PromiseAwareDropView: NSViewRepresentable {
             /// until restarted (verified live). They're cleaned up after the
             /// promise completes (or a 120s deadline) by a deferred task.
             let pendingReceiverDirs: [URL]
+            /// Fallback dirs whose writer thread hasn't finished. Same rule as above.
+            let pendingFallbackDirs: [URL]
             let totalExpected: Int
             let session: PromiseDropSupport.StagingSession
             let onFiles: ([(url: URL, stagingDir: URL?)]) -> Void
@@ -584,7 +616,8 @@ struct PromiseAwareDropView: NSViewRepresentable {
                 expectedItemCount: context.totalExpected
             )
             let supported = PromiseDropSupport.filterSupported(selected)
-            let result = supported.map { (url: $0, stagingDir: $0.deletingLastPathComponent()) }
+            // Any path can land several files in one dir; the coordinator deletes per item.
+            let result = PromiseDropSupport.relocateForExclusiveOwnership(supported, session: context.session)
 
             if result.isEmpty {
                 // Same pending-respecting sweep as the non-empty branch below:
@@ -595,14 +628,14 @@ struct PromiseAwareDropView: NSViewRepresentable {
                 for dir in PromiseDropSupport.dirsSafeToRemoveNow(
                     allDirs: context.allDirs,
                     deliveredFiles: [],
-                    pendingDirs: context.pendingReceiverDirs
+                    pendingDirs: context.pendingReceiverDirs + context.pendingFallbackDirs
                 ) {
                     try? FileManager.default.removeItem(at: dir)
                 }
-                if context.pendingReceiverDirs.isEmpty {
+                if context.pendingReceiverDirs.isEmpty, context.pendingFallbackDirs.isEmpty {
                     context.session.removeAll()
                 } else {
-                    self.cleanUpLater(pendingDirs: context.pendingReceiverDirs)
+                    self.cleanUpLater(pendingDirs: context.pendingReceiverDirs + context.pendingFallbackDirs)
                 }
                 let reason = selected.isEmpty
                     ? "No files could be read from the drop."
@@ -620,8 +653,8 @@ struct PromiseAwareDropView: NSViewRepresentable {
             // session root) after each item's transcription.
             for dir in PromiseDropSupport.dirsSafeToRemoveNow(
                 allDirs: context.allDirs,
-                deliveredFiles: supported,
-                pendingDirs: context.pendingReceiverDirs
+                deliveredFiles: result.map(\.url),
+                pendingDirs: context.pendingReceiverDirs + context.pendingFallbackDirs
             ) {
                 try? FileManager.default.removeItem(at: dir)
             }
@@ -631,7 +664,7 @@ struct PromiseAwareDropView: NSViewRepresentable {
                 context.onError("\(context.totalExpected - result.count) file(s) could not be read from the drop.")
             }
 
-            self.cleanUpLater(pendingDirs: context.pendingReceiverDirs)
+            self.cleanUpLater(pendingDirs: context.pendingReceiverDirs + context.pendingFallbackDirs)
         }
 
         /// Removes still-pending receiver dirs once their promise has had time

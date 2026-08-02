@@ -192,6 +192,79 @@ final class PromiseDropSupportTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: dirB.path))
     }
 
+    // MARK: - Relocation for exclusive ownership (issue #219 batch drop)
+
+    func testRelocationGivesEachFileFromASharedDirItsOwnStagingDirInOrder() throws {
+        let session = try PromiseDropSupport.StagingSession()
+        defer { session.removeAll() }
+        let sharedDir = try session.makeItemDirectory()
+
+        let names = ["a.m4a", "b.m4a", "c.m4a"]
+        let sourceFiles = try names.map { name -> URL in
+            let file = sharedDir.appendingPathComponent(name)
+            try Data([0x01]).write(to: file)
+            return file
+        }
+
+        let result = PromiseDropSupport.relocateForExclusiveOwnership(sourceFiles, session: session)
+
+        XCTAssertEqual(result.map { $0.url.lastPathComponent }, names, "order must be preserved")
+        let stagingDirs = result.compactMap(\.stagingDir)
+        XCTAssertEqual(stagingDirs.count, 3)
+        XCTAssertEqual(Set(stagingDirs.map(\.standardizedFileURL.path)).count, 3, "each file must get its own distinct dir")
+        for (url, dir) in result {
+            guard let dir else { return XCTFail("expected a staging dir") }
+            XCTAssertEqual(url.deletingLastPathComponent().standardizedFileURL.path, dir.standardizedFileURL.path)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+        }
+    }
+
+    func testRelocationFailureKeepsOriginalURLWithNilStagingDirAndOtherFilesStillRelocate() throws {
+        let session = try PromiseDropSupport.StagingSession()
+        defer { session.removeAll() }
+        let sharedDir = try session.makeItemDirectory()
+
+        let failingFile = sharedDir.appendingPathComponent("bad.m4a")
+        let okFile = sharedDir.appendingPathComponent("ok.m4a")
+        try Data([0x01]).write(to: failingFile)
+        try Data([0x02]).write(to: okFile)
+
+        let result = PromiseDropSupport.relocateForExclusiveOwnership(
+            [failingFile, okFile],
+            session: session,
+            move: { source, destination in
+                if source.lastPathComponent == "bad.m4a" {
+                    throw NSError(domain: "test", code: 1)
+                }
+                try FileManager.default.moveItem(at: source, to: destination)
+            }
+        )
+
+        XCTAssertEqual(result[0].url, failingFile)
+        XCTAssertNil(result[0].stagingDir, "a failed move must report nil, not a dir shared with another item")
+        XCTAssertNotNil(result[1].stagingDir, "a failure for one file must not block others from relocating")
+        XCTAssertNotEqual(result[1].url, okFile, "the succeeding file must have actually moved")
+    }
+
+    func testRelocationDirectoryCreationFailureDegradesTheSameWay() throws {
+        let session = try PromiseDropSupport.StagingSession()
+        defer { session.removeAll() }
+        let sharedDir = try session.makeItemDirectory()
+        let file = sharedDir.appendingPathComponent("memo.m4a")
+        try Data([0x01]).write(to: file)
+
+        let result = PromiseDropSupport.relocateForExclusiveOwnership(
+            [file],
+            session: session,
+            makeDirectory: { _ in throw NSError(domain: "test", code: 2) }
+        )
+
+        XCTAssertEqual(result.count, 1)
+        XCTAssertEqual(result[0].url, file)
+        XCTAssertNil(result[0].stagingDir)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path), "the original file must be left in place")
+    }
+
     // MARK: - Sweep selection
 
     func testSweepNeverIncludesADeliveredFilesDirectoryDespiteTrailingSlashDifferences() {

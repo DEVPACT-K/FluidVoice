@@ -13,6 +13,7 @@ final class BatchTranscriptionCoordinator: ObservableObject {
     /// A transcription request for a single audio file.
     struct Request {
         let url: URL
+        /// Exclusively owned by this item; deleted once the item finishes — producers must never hand the same dir to two items.
         let stagingDir: URL?
 
         init(url: URL, stagingDir: URL? = nil) {
@@ -35,6 +36,7 @@ final class BatchTranscriptionCoordinator: ObservableObject {
     struct Item: Identifiable {
         let id: UUID
         let url: URL
+        /// Exclusively owned by this item; deleted once the item finishes — producers must never hand the same dir to two items.
         let stagingDir: URL?
         var status: Status
     }
