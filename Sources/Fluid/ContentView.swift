@@ -2012,8 +2012,7 @@ struct ContentView: View {
     // MARK: - Stop and Process Transcription
 
     private func stopAndProcessTranscription(route: DictationOutputRoute = .normal) async {
-        // Released at the end: stop() clears isRunning before the final transcription pass.
-        defer { FileTranscriptionSession.shared.endDictationIntent() }
+        defer { FileTranscriptionSession.shared.endDictationIntent() } // released after the final transcription pass
 
         DebugLogger.shared.debug("stopAndProcessTranscription called", source: "ContentView")
         DebugLogger.shared.info("Output route selected: \(route.rawValue)", source: "ContentView")
@@ -3077,8 +3076,7 @@ struct ContentView: View {
 
     /// Capture app context at start to avoid mismatches if the user switches apps mid-session
     private func startRecording() {
-        // Batches drive the same shared ASR model; starting dictation mid-batch would
-        // run concurrent inference through one model.
+        // avoid concurrent inference on the shared ASR model
         guard !FileTranscriptionSession.isBatchTranscribing else {
             self.notifyDictationBlockedByBatch()
             return
@@ -3094,8 +3092,7 @@ struct ContentView: View {
             return
         }
 
-        // Synchronous, before any await; after the guard so an ignored start can't latch it.
-        FileTranscriptionSession.shared.beginDictationIntent()
+        FileTranscriptionSession.shared.beginDictationIntent() // synchronous, before any await, so an ignored start can't latch it
 
         self.advanceOverlayLifecycle()
         self.setActiveRecordingMode(.dictate)
@@ -3367,7 +3364,7 @@ struct ContentView: View {
                 self.menuBarManager.setOverlayMode(.command)
 
                 guard !self.asr.isRunningOrStarting else { return }
-                // Bypasses beginDictationRecording, so it needs its own guard and claim.
+                // bypasses beginDictationRecording; needs its own guard
                 guard !FileTranscriptionSession.isBatchTranscribing else {
                     self.notifyDictationBlockedByBatch()
                     return
@@ -3423,7 +3420,6 @@ struct ContentView: View {
                 self.setActiveRecordingMode(.edit)
 
                 guard !self.asr.isRunningOrStarting else { return }
-                // Bypasses beginDictationRecording, so needs its own batch guard and intent claim.
                 guard !FileTranscriptionSession.isBatchTranscribing else {
                     self.notifyDictationBlockedByBatch()
                     return
@@ -3755,8 +3751,6 @@ extension ContentView {
     }
 
     private func beginDictationRecording(for slot: SettingsStore.DictationShortcutSlot, mode: ActiveRecordingMode) {
-        // Common chokepoint for dictate/prompt/command/rewrite hotkeys: batches drive
-        // the same shared ASR model, so none may start while one is running.
         guard !FileTranscriptionSession.isBatchTranscribing else {
             self.notifyDictationBlockedByBatch()
             return
@@ -3778,8 +3772,7 @@ extension ContentView {
             self.appBench("asr_start_skipped reason=already_running_or_starting")
             return
         }
-        // Claimed before the async start: isRunning hasn't flipped yet.
-        FileTranscriptionSession.shared.beginDictationIntent()
+        FileTranscriptionSession.shared.beginDictationIntent() // claimed before the async start, since isRunning hasn't flipped yet
         self.advanceOverlayLifecycle()
         if self.asr.micStatus == .authorized {
             self.appBench("overlay_mode_request mode=Dictation")
@@ -3817,8 +3810,7 @@ extension ContentView {
         self.beginDictationRecording(for: .secondary, mode: mode)
     }
 
-    /// Rejection feedback when a dictation-family hotkey fires during a batch. Reuses the
-    /// stop cue rather than new UI, so the user hears the press had no effect.
+    /// reuses the stop cue as feedback when blocked by a batch
     private func notifyDictationBlockedByBatch() {
         DebugLogger.shared.warning(
             "Dictation blocked: batch file transcription in progress",

@@ -1,17 +1,13 @@
 import Combine
 import Foundation
 
-/// Sequentially transcribes a batch of audio files: strict enqueue-order processing,
-/// per-item success/failure/no-speech outcomes, cooperative cancellation, staging-dir
-/// cleanup per item, and batch start/end hooks for dictation arbitration. All stored
-/// closures run on the main actor.
+/// Sequentially transcribes a batch of audio files, with per-item outcomes, cooperative
+/// cancellation, and staging-dir cleanup. All stored closures run on the main actor.
 @MainActor
 final class BatchTranscriptionCoordinator: ObservableObject {
-    /// A transcription request for a single audio file.
     struct Request {
         let url: URL
-        /// Exclusively owned by this item; deleted when it finishes. Never share across items.
-        let stagingDir: URL?
+        let stagingDir: URL? // exclusively owned by this item; deleted when it finishes, never shared
 
         init(url: URL, stagingDir: URL? = nil) {
             self.url = url
@@ -19,7 +15,6 @@ final class BatchTranscriptionCoordinator: ObservableObject {
         }
     }
 
-    /// Per-item transcription outcome.
     enum Status {
         case pending
         case transcribing
@@ -29,12 +24,10 @@ final class BatchTranscriptionCoordinator: ObservableObject {
         case cancelled
     }
 
-    /// Tracked state for a single enqueued file.
     struct Item: Identifiable {
         let id: UUID
         let url: URL
-        /// Exclusively owned by this item; deleted when it finishes. Never share across items.
-        let stagingDir: URL?
+        let stagingDir: URL? // exclusively owned by this item; deleted when it finishes, never shared
         var status: Status
     }
 
@@ -46,9 +39,7 @@ final class BatchTranscriptionCoordinator: ObservableObject {
     private let onBatchEnd: @MainActor () -> Void
 
     private var batchTask: Task<Void, Never>?
-    /// Drives a "Cancelling…" UI state: the in-flight item may still run to completion
-    /// (no interruption point), even though pending items stop immediately.
-    @Published private(set) var isCancelRequested: Bool = false
+    @Published private(set) var isCancelRequested: Bool = false // "Cancelling…" state: the in-flight item may still run to completion
 
     private var isCancelled: Bool = false
     private var idleWaiters: [CheckedContinuation<Void, Never>] = []
@@ -65,8 +56,7 @@ final class BatchTranscriptionCoordinator: ObservableObject {
 
     // MARK: - Enqueue
 
-    /// Append requests and start a sequential processing batch if idle. Enqueuing while a
-    /// batch is running appends to the live batch.
+    /// starts a sequential batch if idle, else appends to the live one
     func enqueue(_ requests: [Request]) {
         for request in requests {
             self.items.append(
@@ -86,7 +76,7 @@ final class BatchTranscriptionCoordinator: ObservableObject {
 
     // MARK: - Cancellation
 
-    /// Cancel the in-flight transcription and every still-pending item. No-op when idle.
+    /// cancels the in-flight transcription and every still-pending item; no-op when idle
     func cancel() {
         guard self.batchTask != nil else { return }
 
@@ -105,8 +95,6 @@ final class BatchTranscriptionCoordinator: ObservableObject {
 
     // MARK: - Idle wait
 
-    /// Returns when no batch is processing. Used by tests and callers that need to await
-    /// the full run.
     func waitUntilIdle() async {
         if !self.isRunning { return }
 
@@ -152,9 +140,7 @@ final class BatchTranscriptionCoordinator: ObservableObject {
             self.isRunning = false
             self.batchTask = nil
 
-            // Self-draining: items enqueued during cancellation/finish are still .pending
-            // and were missed above, so start a fresh run. cancel() already flips
-            // pre-existing pending items to .cancelled, so only new ones land here.
+            // Self-draining: items enqueued during cancellation/finish are still .pending and were missed above.
             if self.items.contains(where: { if case .pending = $0.status { return true } else { return false } }) {
                 self.startBatch()
             } else {
@@ -170,8 +156,7 @@ final class BatchTranscriptionCoordinator: ObservableObject {
         }
     }
 
-    /// Completed/failed/cancelled items are never revisited, so re-enqueuing after a
-    /// finished-but-undismissed batch only processes newly appended items.
+    /// finished items are never revisited, so this only sees newly appended ones
     private func nextPendingIndex() -> Int? {
         self.items.firstIndex { if case .pending = $0.status { return true } else { return false } }
     }
@@ -201,17 +186,14 @@ final class BatchTranscriptionCoordinator: ObservableObject {
             }
         }
 
-        // Removed only after the item finishes (success, failure, or cancellation).
-        self.removeStagingDir(for: index)
+        self.removeStagingDir(for: index) // only after the item finishes (success, failure, or cancellation)
     }
 
     private func removeStagingDir(for index: Int) {
         guard let stagingDir = self.items[index].stagingDir else { return }
         try? FileManager.default.removeItem(at: stagingDir)
 
-        // Prune the now-empty drop-session root (PromiseDropSupport.StagingSession)
-        // once its last item dir is gone, so drops don't leak temp shells.
-        let parent = stagingDir.deletingLastPathComponent()
+        let parent = stagingDir.deletingLastPathComponent() // prune the now-empty drop-session root so drops don't leak temp shells
         guard parent.lastPathComponent.hasPrefix(PromiseDropSupport.stagingRootPrefix),
               let remaining = try? FileManager.default.contentsOfDirectory(atPath: parent.path),
               remaining.isEmpty else { return }

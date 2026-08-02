@@ -4,8 +4,7 @@ import UniformTypeIdentifiers
 
 struct MeetingTranscriptionView: View {
     let asrService: ASRService
-    // Owned by FileTranscriptionSession so in-flight transcriptions survive sidebar navigation.
-    @ObservedObject private var transcriptionService: MeetingTranscriptionService
+    @ObservedObject private var transcriptionService: MeetingTranscriptionService // owned by FileTranscriptionSession so in-flight transcriptions survive sidebar navigation
     @ObservedObject private var batchHolder: BatchCoordinatorHolder
     @ObservedObject private var fileHistoryStore = FileTranscriptionHistoryStore.shared
     @State private var selectedFileURL: URL?
@@ -64,17 +63,14 @@ struct MeetingTranscriptionView: View {
                     // File Selection Card
                     self.fileSelectionCard
 
-                    // Progress Card (only show when transcribing outside a batch)
                     if self.transcriptionService.isTranscribing && !self.isBatchActive {
                         self.progressCard
                     }
 
-                    // Results Card (only show when we have results outside a batch)
                     if let result = transcriptionService.result, !self.isBatchActive {
                         self.resultsCard(result: result)
                     }
 
-                    // Error Card (only show when we have a single-file error)
                     if let error = transcriptionService.error, !self.isBatchActive {
                         self.errorCard(error: error)
                     }
@@ -84,7 +80,6 @@ struct MeetingTranscriptionView: View {
                         self.dropErrorCard(message: message)
                     }
 
-                    // Batch transcription progress/results
                     if self.isBatchActive {
                         self.batchSection
                     }
@@ -100,8 +95,7 @@ struct MeetingTranscriptionView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // Overlay (not background): AppKit's front-to-back drag search needs this above
-        // the SwiftUI content; hitTest returns nil so clicks pass through.
+        // Overlay (not background): AppKit's front-to-back drag search needs this above the SwiftUI content; hitTest returns nil so clicks pass through.
         .overlay(
             PromiseAwareDropView(
                 onTargetedChange: { self.isDropTargeted = $0 },
@@ -562,8 +556,7 @@ struct MeetingTranscriptionView: View {
                     Spacer()
 
                     if coordinator.isRunning {
-                        // In-flight file may still run to completion (no interruption point),
-                        // hence "Cancelling" rather than an instant stop.
+                        // in-flight file may still run to completion, hence "Cancelling" not an instant stop
                         if coordinator.isCancelRequested {
                             Text("Cancelling…")
                                 .font(.caption)
@@ -606,8 +599,7 @@ struct MeetingTranscriptionView: View {
         return "Batch complete — \(coordinator.completedCount) transcribed, \(coordinator.failedCount) failed"
     }
 
-    /// One-based position of the item currently being transcribed (or the next pending
-    /// item while between files), for the "Transcribing x of y" header.
+    /// 1-based, for the "Transcribing x of y" header
     private func currentBatchPosition(in coordinator: BatchTranscriptionCoordinator) -> Int {
         let items = coordinator.items
         if let index = items.firstIndex(where: { if case .transcribing = $0.status { return true }; return false }) {
@@ -695,18 +687,13 @@ struct MeetingTranscriptionView: View {
 
     // MARK: - Helper Functions
 
-    /// True while a batch coordinator has any enqueued items (running or finished-but-
-    /// not-dismissed); suppresses single-file cards since `transcribeFile` mutates the
-    /// shared service state per batch item.
+    /// any enqueued items (running or finished-but-undismissed); suppresses single-file cards
     private var isBatchActive: Bool {
         guard let coordinator = self.batchHolder.coordinator else { return false }
         return !coordinator.items.isEmpty
     }
 
-    /// Routes incoming files from a drop or the file picker. A single concrete file (no
-    /// staging dir) follows the existing single-file flow; everything else — multiple
-    /// files, or any staged/promised file — is enqueued on the batch coordinator so
-    /// staged dirs are reliably cleaned up after transcription.
+    // A single concrete (unstaged) file follows the existing single-file flow; everything else is enqueued on the batch coordinator so staged dirs get cleaned up.
     private func handleIncomingFiles(_ files: [(url: URL, stagingDir: URL?)]) {
         guard !files.isEmpty else { return }
         self.dropErrorMessage = nil
@@ -721,9 +708,7 @@ struct MeetingTranscriptionView: View {
         self.batchHolder.enqueue(files.map { .init(url: $0.url, stagingDir: $0.stagingDir) })
     }
 
-    /// Auto-dismisses after a few seconds: promise resolution can report errors up to
-    /// two minutes after the drop, so without this a stale red card could sit over an
-    /// already-successful batch until manually closed.
+    /// auto-dismisses since promise resolution can report errors up to 2 minutes after the drop
     private func showDropError(_ message: String) {
         self.dropErrorMessage = message
         self.dropErrorGeneration += 1
@@ -736,9 +721,7 @@ struct MeetingTranscriptionView: View {
         }
     }
 
-    /// Resets shared service state so a subsequent batch starts fresh with no stale
-    /// single-file result.
-
+    /// resets shared service state so a subsequent batch starts fresh with no stale single-file result
     private func dismissBatch() {
         self.batchHolder.clear()
         self.transcriptionService.reset()

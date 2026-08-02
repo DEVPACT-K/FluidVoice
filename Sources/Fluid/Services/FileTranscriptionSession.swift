@@ -1,31 +1,19 @@
 import Combine
 import Foundation
 
-/// App-level owner of file-transcription state, so switching sidebar pages (which
-/// destroys `MeetingTranscriptionView`) doesn't silently kill an in-flight batch;
-/// the view re-attaches on return.
+// App-level owner of file-transcription state so switching sidebar pages doesn't kill an in-flight batch; the view re-attaches on return.
 @MainActor
 final class FileTranscriptionSession {
     static let shared = FileTranscriptionSession()
 
-    /// Set once `shared` is first touched, so the dictation path can check batch state
-    /// without force-creating the session (and the ASR service).
-    private static var sharedIfCreated: FileTranscriptionSession?
+    private static var sharedIfCreated: FileTranscriptionSession? // lets callers check batch state without force-creating the session
 
-    /// Dictation must not start while true: both paths drive the same shared ASR model,
-    /// and concurrent inference corrupts output.
     static var isBatchTranscribing: Bool {
-        self.sharedIfCreated?.batchHolder.coordinator?.isRunning == true
+        self.sharedIfCreated?.batchHolder.coordinator?.isRunning == true // both paths drive the same shared ASR model; concurrent inference corrupts output
     }
 
-    /// True from just before a dictation/prompt/command/rewrite recording starts until
-    /// the session ends. The "intent to dictate" half of the single-model arbiter shared
-    /// with the batch transcribe closure: set synchronously before any `await`, closing
-    /// the TOCTOU window where the batch's `asr.isRunning` check could pass right before
-    /// dictation flips `isRunning` true.
-    ///
-    /// Readers use `sharedIfCreated` to avoid force-creating the session/ASR service;
-    /// `beginDictationIntent()` is the one path allowed to force-create.
+    /// True from just before a dictation-family recording starts until it ends. Set
+    /// synchronously before any `await`, closing the TOCTOU window where the batch's check could pass right before dictation flips this true.
     private(set) var dictationIntent: Bool = false
 
     let service: MeetingTranscriptionService
@@ -35,10 +23,7 @@ final class FileTranscriptionSession {
         let service = MeetingTranscriptionService(asrService: AppServices.shared.asr)
         self.service = service
         self.batchHolder = BatchCoordinatorHolder(transcribe: { url in
-            // Single-model arbitration: at most one of dictation, single-file, and batch
-            // transcription may drive the shared ASR model at once. Waits on dictation
-            // intent, live dictation, and any in-flight single-file transcription;
-            // cancellation still interrupts the wait.
+            // At most one of dictation, single-file, and batch transcription may drive the shared ASR model at once.
             while AppServices.shared.asr.isRunning
                 || FileTranscriptionSession.shared.dictationIntent
                 || service.isTranscribing {
@@ -50,26 +35,21 @@ final class FileTranscriptionSession {
         Self.sharedIfCreated = self
     }
 
-    /// Signal that a dictation-family recording (dictate/prompt/command/rewrite) is
-    /// about to start. Must be called synchronously before any `await` in the caller.
     func beginDictationIntent() {
         self.dictationIntent = true
     }
 
-    /// Signal that the dictation-family recording session has ended (stopped,
-    /// cancelled, or failed to start).
     func endDictationIntent() {
         self.dictationIntent = false
     }
 
-    /// Releases the flag without force-creating the session, for teardown paths.
+    /// releases the flag without force-creating the session, for teardown paths
     static func endDictationIntentIfCreated() {
         self.sharedIfCreated?.endDictationIntent()
     }
 }
 
-/// Wraps the batch coordinator so a finished batch can be cleared and a fresh one lazily
-/// created, republishing the inner coordinator's changes.
+// Wraps the batch coordinator so a finished batch can be cleared and a fresh one lazily created, republishing its changes.
 @MainActor
 final class BatchCoordinatorHolder: ObservableObject {
     @Published var coordinator: BatchTranscriptionCoordinator?
@@ -92,9 +72,7 @@ final class BatchCoordinatorHolder: ObservableObject {
     }
 
     func clear() {
-        // Never orphan a running batch: dropping it without cancelling would leave it
-        // transcribing invisibly with no way to reach it.
-        self.coordinator?.cancel()
+        self.coordinator?.cancel() // never orphan a running batch: it would transcribe invisibly with no way to reach it
         self.forwarder?.cancel()
         self.forwarder = nil
         self.coordinator = nil
