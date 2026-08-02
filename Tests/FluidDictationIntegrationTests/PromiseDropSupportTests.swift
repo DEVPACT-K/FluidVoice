@@ -363,4 +363,33 @@ final class PromiseDropSupportTests: XCTestCase {
         let kept = PromiseDropSupport.filterSupported([URL(fileURLWithPath: "/tmp/MEMO.M4A")])
         XCTAssertEqual(kept.count, 1)
     }
+
+    // MARK: - ObjC exception shim
+    //
+    // A file promise can carry metadata the OS refuses to decode, and NSFilePromiseReceiver raises
+    // an NSException rather than reporting an error. A terminate handler in-process turns any
+    // uncaught NSException into abort(), so the drop path depends on this shim catching it.
+
+    func testCatcherReturnsNilWhenBlockCompletes() {
+        var ran = false
+        XCTAssertNil(FluidCatchObjCException { ran = true })
+        XCTAssertTrue(ran)
+    }
+
+    func testCatcherReturnsDescriptionInsteadOfAbortingOnRaise() {
+        let description = FluidCatchObjCException {
+            NSException(name: .invalidArgumentException, reason: "promise metadata decode failed", userInfo: nil).raise()
+        }
+        XCTAssertNotNil(description)
+        XCTAssertTrue(description?.contains("promise metadata decode failed") ?? false)
+    }
+
+    func testCatcherIsolatesEachCallSoLaterWorkStillRuns() {
+        _ = FluidCatchObjCException {
+            NSException(name: .genericException, reason: "first receiver", userInfo: nil).raise()
+        }
+        var recovered = false
+        XCTAssertNil(FluidCatchObjCException { recovered = true })
+        XCTAssertTrue(recovered) // a raise on one receiver must not stop the ones after it
+    }
 }

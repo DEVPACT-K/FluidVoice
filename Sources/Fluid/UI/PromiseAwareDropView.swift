@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-// Accepts concrete file URLs and file-promise drags (e.g. Voice Memos), resolving promises into per-item staging dirs. Strategy/staging/filtering logic lives in `PromiseDropSupport`.
+/// Accepts concrete file URLs and file-promise drags (e.g. Voice Memos), resolving promises into per-item staging dirs. Strategy/staging/filtering logic lives in `PromiseDropSupport`.
 struct PromiseAwareDropView: NSViewRepresentable {
     let onTargetedChange: (Bool) -> Void
     let onFiles: ([(url: URL, stagingDir: URL?)]) -> Void
@@ -28,7 +28,7 @@ struct PromiseAwareDropView: NSViewRepresentable {
         var onFiles: ([(url: URL, stagingDir: URL?)]) -> Void = { _ in }
         var onError: (String) -> Void = { _ in }
 
-        // static so in-flight resolution survives the view being destroyed mid-drop
+        /// static so in-flight resolution survives the view being destroyed mid-drop
         private static let promiseQueue: OperationQueue = {
             let queue = OperationQueue()
             queue.maxConcurrentOperationCount = 1
@@ -110,7 +110,8 @@ struct PromiseAwareDropView: NSViewRepresentable {
         private func handleConcreteURLs(pasteboard: NSPasteboard) -> Bool {
             let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
             guard let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: options) as? [URL],
-                  !urls.isEmpty else {
+                  !urls.isEmpty
+            else {
                 self.onError(MeetingTranscriptionService.dropErrorCopy)
                 return false
             }
@@ -239,23 +240,50 @@ struct PromiseAwareDropView: NSViewRepresentable {
                 // raw-data delivered, since an unresolved promise wedges Voice Memos's drag machinery until restart.
                 for receiver in receivers {
                     guard let dir = try? session.makeItemDirectory() else { continue }
-                    state.registerReceiverDir(dir, promisedFileCount: receiver.fileNames.count)
-                    state.beginInFlight() // per-receiver token, released once after the receiver's LAST file callback
-                    let completion = ReceiverCompletion(fileCount: receiver.fileNames.count)
-                    receiver.receivePromisedFiles(atDestination: dir, options: [:], operationQueue: Self.promiseQueue) { url, error in
-                        if let error {
-                            DebugLogger.shared.debug(
-                                "Modern promise receiver failed [\(url.lastPathComponent)]: \(error.localizedDescription)",
-                                source: "PromiseAwareDropView"
-                            )
+                    // Both `fileNames` and starting the receiver decode promise metadata and can raise (the OS
+                    // refuses the NSCalendarDate in a Voice Memos promise). Uncaught, that aborts the process,
+                    // so a bad promise must degrade to the fallbacks. Register the dir either way, otherwise
+                    // the failed one is never swept.
+                    var promisedFiles = 0
+                    let nameError = FluidCatchObjCException { promisedFiles = receiver.fileNames.count }
+                    if let nameError {
+                        DebugLogger.shared.warning(
+                            "Modern promise receiver raised reading fileNames: \(nameError)",
+                            source: "PromiseAwareDropView"
+                        )
+                        try? FileManager.default.removeItem(at: dir) // nothing started writing here, and registering it would inflate the expected count
+                        continue
+                    }
+                    state.registerReceiverDir(dir, promisedFileCount: promisedFiles)
+
+                    state.beginReceiver() // released once, after the receiver's LAST file callback
+                    let completion = ReceiverCompletion(fileCount: promisedFiles)
+                    let startError = FluidCatchObjCException {
+                        receiver.receivePromisedFiles(atDestination: dir, options: [:], operationQueue: Self.promiseQueue) { url, error in
+                            if let error {
+                                DebugLogger.shared.debug(
+                                    "Modern promise receiver failed [\(url.lastPathComponent)]: \(error.localizedDescription)",
+                                    source: "PromiseAwareDropView"
+                                )
+                            }
+                            guard completion.recordFile(failed: error != nil) else { return }
+                            if completion.anyFailed {
+                                state.markFailed(dir)
+                            } else {
+                                state.markCompleted(dir)
+                            }
+                            state.endReceiver()
                         }
-                        guard completion.recordFile(failed: error != nil) else { return }
-                        if completion.anyFailed {
-                            state.markFailed(dir)
-                        } else {
-                            state.markCompleted(dir)
+                    }
+                    if let startError {
+                        DebugLogger.shared.warning(
+                            "Modern promise receiver raised on start: \(startError)",
+                            source: "PromiseAwareDropView"
+                        )
+                        if completion.abort() { // callbacks may already have resolved the dir and released the token
+                            state.markRaised(dir)
+                            state.endReceiver()
                         }
-                        state.endInFlight()
                     }
                 }
 
@@ -281,8 +309,10 @@ struct PromiseAwareDropView: NSViewRepresentable {
                             defer { state.endInFlight() }
                             var names: [String] = []
                             let legacyError = FluidCatchObjCException {
-                                names = (sender.perform(Selector(("namesOfPromisedFilesDroppedAtDestination:")), with: legacyDir)?
-                                    .takeUnretainedValue() as? [String]) ?? []
+                                names = (
+                                    sender.perform(Selector(("namesOfPromisedFilesDroppedAtDestination:")), with: legacyDir)?
+                                        .takeUnretainedValue() as? [String]
+                                ) ?? []
                             }
                             if let legacyError {
                                 DebugLogger.shared.warning(
@@ -301,7 +331,7 @@ struct PromiseAwareDropView: NSViewRepresentable {
             return true
         }
 
-        // `receivePromisedFiles` fires once per name, so count down to release the receiver's in-flight token exactly once.
+        /// `receivePromisedFiles` fires once per name, so count down to release the receiver's in-flight token exactly once.
         private final class ReceiverCompletion: @unchecked Sendable {
             private let lock = NSLock()
             private var remaining: Int
@@ -316,19 +346,32 @@ struct PromiseAwareDropView: NSViewRepresentable {
                 self.lock.lock()
                 defer { self.lock.unlock() }
                 if failed { self.anyFailed = true }
+                guard self.remaining > 0 else { return false } // a provider can over-fire, or fire after an abort
                 self.remaining -= 1
                 return self.remaining <= 0
             }
+
+            /// true only if the countdown hadn't already finished, so the token is released exactly once
+            func abort() -> Bool {
+                self.lock.lock()
+                defer { self.lock.unlock() }
+                guard self.remaining > 0 else { return false }
+                self.remaining = 0
+                self.anyFailed = true
+                return true
+            }
         }
 
-        // Shared between background delivery threads and the main-actor poller: which receiver dirs completed, and
-        // whether legacy/raw-data reads are still in flight (a provider can take 60s+ under load).
+        /// Shared between background delivery threads and the main-actor poller: which receiver dirs completed, and
+        /// whether legacy/raw-data reads are still in flight (a provider can take 60s+ under load).
         private final class ResolutionState: @unchecked Sendable {
             private let lock = NSLock()
             private var receiverDirs: [URL] = []
             private var completed: Set<URL> = []
             private var failed: Set<URL> = []
+            private var raised: Set<URL> = []
             private var inFlightCount = 0
+            private var receiverInFlightCount = 0
             private var payloadCount = 0
             private var promisedFileCount = 0
 
@@ -372,10 +415,25 @@ struct PromiseAwareDropView: NSViewRepresentable {
                 self.failed.insert(dir)
             }
 
+            /// Resolved for liveness, but the receiver raised mid-flight and may still be writing here,
+            /// so this dir must go through the deferred cleanup rather than the immediate sweep.
+            func markRaised(_ dir: URL) {
+                self.lock.lock()
+                defer { self.lock.unlock() }
+                self.failed.insert(dir)
+                self.raised.insert(dir)
+            }
+
             func failedSnapshot() -> Set<URL> {
                 self.lock.lock()
                 defer { self.lock.unlock() }
                 return self.failed
+            }
+
+            func raisedSnapshot() -> Set<URL> {
+                self.lock.lock()
+                defer { self.lock.unlock() }
+                return self.raised
             }
 
             /// lets a receiver-less multi-item drop still detect a partial delivery
@@ -391,6 +449,8 @@ struct PromiseAwareDropView: NSViewRepresentable {
                 return self.payloadCount
             }
 
+            /// Tracks only the threads writing into the fallback dirs. Receivers are counted separately:
+            /// an uncancelled one never releases, and it must not hold the fallback delivery open.
             func beginInFlight() {
                 self.lock.lock()
                 defer { self.lock.unlock() }
@@ -407,6 +467,18 @@ struct PromiseAwareDropView: NSViewRepresentable {
                 self.lock.lock()
                 defer { self.lock.unlock() }
                 return self.inFlightCount > 0
+            }
+
+            func beginReceiver() {
+                self.lock.lock()
+                defer { self.lock.unlock() }
+                self.receiverInFlightCount += 1
+            }
+
+            func endReceiver() {
+                self.lock.lock()
+                defer { self.lock.unlock() }
+                self.receiverInFlightCount -= 1
             }
         }
 
@@ -430,16 +502,17 @@ struct PromiseAwareDropView: NSViewRepresentable {
             let pollInterval: UInt64 = 200_000_000
             let softTimeout: TimeInterval = 30
             let hardTimeout: TimeInterval = 120 // a provider can take 60s+ under heavy load (seen up to 80s) before a truly wedged one errors out
-            let modernGrace: TimeInterval = 1.5
+            let modernGrace: TimeInterval = 1.5 // long enough for a working receiver to write its first byte
             let start = Date()
 
             func makeContext() -> DeliveryContext {
                 let receiverDirs = state.receiverDirsSnapshot()
                 let completed = state.completedSnapshot()
                 let failed = state.failedSnapshot()
+                let raised = state.raisedSnapshot()
                 return DeliveryContext(
                     allDirs: receiverDirs + [legacyDir, dataDir].compactMap(\.self),
-                    pendingReceiverDirs: receiverDirs.filter { !completed.contains($0) && !failed.contains($0) },
+                    pendingReceiverDirs: receiverDirs.filter { !completed.contains($0) && (!failed.contains($0) || raised.contains($0)) },
                     pendingFallbackDirs: state.hasInFlightWork ? [legacyDir].compactMap(\.self) : [], // relocation empties the legacy dir, so a sweep would see it as undelivered and delete a destination still being written
                     totalExpected: max(state.promisedFileCountValue(), state.payloadCountValue(), 1),
                     session: session,
@@ -473,12 +546,20 @@ struct PromiseAwareDropView: NSViewRepresentable {
                     return
                 }
 
+                // Voice Memos only cancels a receiver when the NEXT drag starts, so a lone drop's receiver
+                // stays unresolved indefinitely. An unresolved receiver that has written nothing well past
+                // the grace is treated as non-producing; one mid-transfer keeps its files growing, so it
+                // still holds delivery open.
+                let unresolvedDirs = receiverDirs.filter { !readyModernDirs.contains($0) && !failedModernDirs.contains($0) }
+                let receiversStalled = elapsed > modernGrace
+                    && unresolvedDirs.allSatisfy { self.listFiles(in: [$0]).isEmpty }
+
                 let modernExhaustedWithNoWins = receiverDirs.isEmpty
-                    || (allReceiversResolved && readyModernDirs.isEmpty)
+                    || ((allReceiversResolved || receiversStalled) && readyModernDirs.isEmpty)
                 let modernProducedNothing = modernExhaustedWithNoWins && elapsed > modernGrace
                 let fallbackStable = !fallbackSizes.isEmpty && fallbackSizes == fallbackPrevSizes
                     && !state.hasInFlightWork // worker fully done, so a multi-item sweep still writing later files isn't delivered early
-                if modernProducedNothing && fallbackStable {
+                if modernProducedNothing, fallbackStable {
                     self.deliver(modern: [], legacy: legacyFiles, data: dataFiles, context: makeContext())
                     return
                 }
@@ -497,7 +578,7 @@ struct PromiseAwareDropView: NSViewRepresentable {
             )
         }
 
-        // Everything `deliver` needs besides the per-path file lists.
+        /// Everything `deliver` needs besides the per-path file lists.
         private struct DeliveryContext {
             let allDirs: [URL]
             // Receiver/fallback dirs not yet completed; must NOT be swept at delivery — deleting an in-flight
@@ -576,7 +657,8 @@ struct PromiseAwareDropView: NSViewRepresentable {
                     try? FileManager.default.removeItem(at: dir)
                 }
                 for parent in Set(pendingDirs.map { $0.deletingLastPathComponent() })
-                where parent.lastPathComponent.hasPrefix(PromiseDropSupport.stagingRootPrefix) {
+                    where parent.lastPathComponent.hasPrefix(PromiseDropSupport.stagingRootPrefix)
+                {
                     if ((try? FileManager.default.contentsOfDirectory(atPath: parent.path)) ?? []).isEmpty {
                         try? FileManager.default.removeItem(at: parent)
                     }
