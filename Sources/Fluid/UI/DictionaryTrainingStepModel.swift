@@ -1,12 +1,3 @@
-//
-//  DictionaryTrainingStepModel.swift
-//  fluid
-//
-//  Pure step-derivation and expansion-resolution logic for the "Train by Voice"
-//  accordion composer in CustomDictionaryView. Kept free of SwiftUI/@State so it
-//  can be unit tested directly.
-//
-
 import Foundation
 
 /// The three always-visible steps of the "Train by Voice" accordion composer.
@@ -28,7 +19,6 @@ struct DictionaryTrainingSnapshot: Equatable {
 }
 
 enum DictionaryTrainingStepModel {
-    /// Single source of truth for `CustomDictionaryView.trainingOutputIsCovered`.
     static func isOutputCovered(
         lastTrainingOutputIsCovered: Bool,
         pronunciationEnrollmentCount: Int,
@@ -40,7 +30,6 @@ enum DictionaryTrainingStepModel {
         return lastTrainingOutputIsCovered
     }
 
-    /// Single source of truth for `trainingAlreadyCorrectWithoutReplacement`.
     static func alreadyCorrectWithoutReplacement(
         _ snapshot: DictionaryTrainingSnapshot,
         readyCoveredCount: Int
@@ -64,7 +53,6 @@ enum DictionaryTrainingStepModel {
             snapshot.consecutiveCoveredCaptures >= readyCoveredCount
     }
 
-    /// Single source of truth for `trainingFinalOutputIsReady`.
     static func finalOutputIsReady(
         _ snapshot: DictionaryTrainingSnapshot,
         readyCoveredCount: Int

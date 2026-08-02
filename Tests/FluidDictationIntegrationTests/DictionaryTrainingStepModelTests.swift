@@ -36,8 +36,7 @@ final class DictionaryTrainingStepModelTests: XCTestCase {
     // MARK: - derivedStep
 
     func testEmptyWordDerivesWordStep() {
-        // normalizedWord is expected pre-trimmed by the caller (matches
-        // CustomDictionaryView.normalizedTrainingReplacement), so only "" counts as empty.
+        // Caller pre-trims, so only "" counts as empty.
         XCTAssertEqual(self.derived(word: ""), .word)
     }
 
@@ -66,7 +65,6 @@ final class DictionaryTrainingStepModelTests: XCTestCase {
     }
 
     func testAlreadyCorrectWithoutReplacementDerivesVerifyStep() {
-        // No captured variants, output already matches the word 3x in a row.
         let step = self.derived(
             consecutiveCoveredCaptures: 3,
             lastTrainingOutput: "FluidVoice",
@@ -96,8 +94,7 @@ final class DictionaryTrainingStepModelTests: XCTestCase {
     }
 
     func testVerifyLockSurvivesPostReadyMissedCapture() {
-        // consecutiveCoveredCaptures reset to 0 (a miss after being ready), but the
-        // verify lock is latched — must NOT snap back to .record.
+        // A miss after being ready: the latch must not snap back to .record.
         let step = self.derived(
             consecutiveCoveredCaptures: 0,
             lastTrainingOutput: "FluidVoice",
@@ -109,8 +106,6 @@ final class DictionaryTrainingStepModelTests: XCTestCase {
     }
 
     func testPreloadedVariantsStateDerivesRecordStepNotVerify() {
-        // Preload: chips exist (trainingVariantsIsEmpty == false) but nothing recorded
-        // this session yet (consecutiveCoveredCaptures == 0, no lastTrainingOutput).
         let step = self.derived(
             consecutiveCoveredCaptures: 0,
             lastTrainingOutput: "",
@@ -121,14 +116,11 @@ final class DictionaryTrainingStepModelTests: XCTestCase {
     }
 
     func testEmptyWordGuardOutranksVerifyLatch() {
-        // Word cleared after reaching Verify: the empty-word guard must win over the
-        // latch, dropping back to .word. Load-bearing for the word-edit reset flow.
+        // The empty-word guard must outrank the latch — the word-edit reset depends on it.
         XCTAssertEqual(self.derived(word: "", hasReachedVerify: true), .word)
     }
 
     func testCoveredCapturesAreCaseInsensitiveAgainstWord() {
-        // lastTrainingOutput differs only in case from the word — must still count as
-        // an already-correct/ready match.
         let step = self.derived(
             word: "FluidVoice",
             consecutiveCoveredCaptures: 3,
@@ -188,8 +180,7 @@ final class DictionaryTrainingStepModelTests: XCTestCase {
     }
 
     func testAlreadyCorrectRequiresNoCapturedVariants() {
-        // Same covered output 3x, but variants still present → not "already correct"
-        // (there is something to save), so it's ready-to-save instead.
+        // Variants remain, so there is something to save: ready, not already-correct.
         XCTAssertFalse(self.alreadyCorrect(
             consecutiveCoveredCaptures: 3,
             lastTrainingOutput: "FluidVoice",
@@ -205,8 +196,7 @@ final class DictionaryTrainingStepModelTests: XCTestCase {
     }
 
     func testAlreadyCorrectImpliesFinalOutputNotReady() {
-        // The Save-disabled invariant: when nothing needs saving, final output is not
-        // "ready" (there is no replacement to add).
+        // Nothing to save means not ready — this is what keeps Save disabled.
         let args = (3, "FluidVoice", true, true)
         XCTAssertTrue(self.alreadyCorrect(
             consecutiveCoveredCaptures: args.0,
@@ -223,8 +213,7 @@ final class DictionaryTrainingStepModelTests: XCTestCase {
     }
 
     func testFinalReadyForCoveredNonMatchingOutput() {
-        // Covered by dictionary but output != word (a real replacement to save):
-        // ready must be true, alreadyCorrect false.
+        // Covered but output != word: a real replacement to save.
         XCTAssertTrue(self.finalReady(
             consecutiveCoveredCaptures: 3,
             lastTrainingOutput: "fluid voice",
@@ -240,7 +229,6 @@ final class DictionaryTrainingStepModelTests: XCTestCase {
     }
 
     func testPronunciationEnrollmentBoundary() {
-        // readyCoveredCount - 1 enrollments is not ready; == readyCoveredCount is.
         XCTAssertFalse(self.finalReady(
             pronunciationEnrollmentCount: self.readyCoveredCount - 1,
             trainingVariantsIsEmpty: false,
@@ -254,8 +242,7 @@ final class DictionaryTrainingStepModelTests: XCTestCase {
     }
 
     func testPronunciationAlreadyCorrectWithEnoughEnrollments() {
-        // No variants to save, output matches word, enrollments sufficient → already
-        // correct, and therefore not ready-to-save.
+        // Nothing to save and the output already matches: already-correct, not ready.
         XCTAssertTrue(self.alreadyCorrect(
             pronunciationEnrollmentCount: self.readyCoveredCount,
             lastTrainingOutput: "FluidVoice",
@@ -326,8 +313,7 @@ final class DictionaryTrainingStepModelTests: XCTestCase {
     // MARK: - isStepInteractive
 
     func testVerifyHeaderIsNotTappableBeforeAnythingIsRecorded() {
-        // Word typed but nothing recorded yet: opening Verify would strand the user
-        // on an empty final output with Add Replacement disabled.
+        // Opening Verify here would strand the user with Add Replacement disabled.
         XCTAssertFalse(DictionaryTrainingStepModel.isStepInteractive(
             .verify,
             derived: .record,
@@ -381,9 +367,8 @@ final class DictionaryTrainingStepModelTests: XCTestCase {
 
     // MARK: - Latched post-ready-miss progress
 
-    /// Mirrors `CustomDictionaryView.trainingReadinessProgress` for the
-    /// non-pronunciation-matching branch, using the model's single-source predicates
-    /// so the test exercises the same progress the view would show.
+    /// Mirrors `CustomDictionaryView.trainingReadinessProgress` so the test sees the
+    /// same progress the view would show.
     private func readinessProgress(
         consecutiveCoveredCaptures: Int,
         lastTrainingOutputIsCovered: Bool,
@@ -415,9 +400,7 @@ final class DictionaryTrainingStepModelTests: XCTestCase {
     }
 
     func testLatchedPostReadyMissKeepsVerifyExpandedButReadsZeroProgress() {
-        // Post-ready missed capture: the verify latch holds derivedStep at .verify
-        // while consecutive covered captures reset to 0 and the last output is no
-        // longer covered. The readiness ring must show the real progress (0/total).
+        // The latch holds .verify while coverage resets; the ring must show real progress.
         let total = self.readyCoveredCount
         let snapshot = DictionaryTrainingSnapshot(
             normalizedWord: "FluidVoice",
@@ -452,8 +435,7 @@ final class DictionaryTrainingStepModelTests: XCTestCase {
         )
         XCTAssertEqual(progress, 0, "latched post-ready-miss must read zero progress")
 
-        // The Verify header stays tappable through the latched miss, so the user can
-        // still get back to the panel that holds Try Again.
+        // Verify stays tappable through the miss so Try Again remains reachable.
         XCTAssertTrue(DictionaryTrainingStepModel.isStepInteractive(
             .verify,
             derived: step,
