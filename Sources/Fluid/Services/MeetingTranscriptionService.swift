@@ -218,6 +218,9 @@ final class MeetingTranscriptionService: ObservableObject {
 
                 try Task.checkCancellation()
                 let nativeResult = try await provider.transcribeFile(at: fileURL)
+                // The native path has no interruption point, so a provider can return a
+                // full result after a cancel; without this it lands in history anyway.
+                try Task.checkCancellation()
                 let processingTime = Date().timeIntervalSince(startTime)
                 let result = TranscriptionResult(
                     text: nativeResult.text,
@@ -347,6 +350,10 @@ final class MeetingTranscriptionService: ObservableObject {
             let avgConfidence = chunkCount > 0 ? totalConfidence / Float(chunkCount) : 0
 
             let transcriptionResult = (text: finalText, confidence: avgConfidence)
+
+            // The loop only checks between chunks, so a cancel during the last chunk
+            // reaches here with a full result.
+            try Task.checkCancellation()
 
             self.currentStatus = "Complete!"
             self.progress = 1.0
