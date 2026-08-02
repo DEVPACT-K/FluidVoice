@@ -4205,7 +4205,7 @@ final class SettingsStore: ObservableObject {
             case .parakeetTDTv2: return "~442.9 MiB"
             case .parakeetRealtime: return "~428.4 MiB"
             case .qwen3Asr: return "~2.0 GiB"
-            case .cohereTranscribeSixBit: return "~1.54 GiB"
+            case .cohereTranscribeSixBit: return "~1.45 GiB"
             case .nemotronOffline: return "~530.8 MiB"
             case .nemotronStreaming: return "~668.2 MiB"
             case .nemotronStreaming320: return "~668.2 MiB"
@@ -4226,7 +4226,7 @@ final class SettingsStore: ObservableObject {
             case .parakeetTDTv2: return 464_421_712
             case .parakeetRealtime: return 449_190_189
             case .qwen3Asr: return 2000 * 1024 * 1024
-            case .cohereTranscribeSixBit: return 1_650_748_785
+            case .cohereTranscribeSixBit: return 1_558_162_944
             case .nemotronOffline: return 556_552_620
             case .nemotronStreaming, .nemotronStreaming320: return 700_685_415
             case .whisperTiny: return 45_981_088
@@ -4263,6 +4263,16 @@ final class SettingsStore: ObservableObject {
             case .whisperLargeTurbo: return "whisper-large-v3-turbo-Q8_0.gguf"
             case .whisperLarge: return "whisper-large-v3-Q8_0.gguf"
             default: return nil
+            }
+        }
+
+        /// The GGUF filename for any model served by transcribe.cpp.
+        var transcribeCppModelFile: String? {
+            switch self {
+            case .cohereTranscribeSixBit:
+                return "cohere-transcribe-03-2026-Q4_K_M.gguf"
+            default:
+                return self.whisperModelFile
             }
         }
 
@@ -4692,13 +4702,16 @@ final class SettingsStore: ObservableObject {
                 return false
                 #endif
             case .cohereTranscribeSixBit:
-                guard
-                    let spec = self.externalCoreMLSpec,
-                    let directory = SettingsStore.shared.externalCoreMLArtifactsDirectory(for: self)
-                else {
-                    return false
-                }
-                return spec.validatesInstalledArtifacts(at: directory)
+                guard let cacheDirectory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first,
+                      let modelFile = self.transcribeCppModelFile
+                else { return false }
+                let modelURL = cacheDirectory
+                    .appendingPathComponent("CohereTranscribeModels", isDirectory: true)
+                    .appendingPathComponent(modelFile, isDirectory: false)
+                guard let attributes = try? FileManager.default.attributesOfItem(atPath: modelURL.path),
+                      let size = attributes[.size] as? NSNumber
+                else { return false }
+                return size.int64Value == self.expectedDownloadBytes
             case .nemotronOffline, .nemotronStreaming, .nemotronStreaming320:
                 let hint: String
                 switch self {

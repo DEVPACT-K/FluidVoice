@@ -1,9 +1,181 @@
 import Foundation
 import TranscribeCpp
 
-/// TranscriptionProvider implementation using transcribe.cpp for Whisper GGUF models.
+nonisolated enum CohereTranscribeCppLongFormProcessor {
+    static func ranges(
+        sampleCount: Int,
+        sampleRate: Int,
+        maximumChunkSeconds: Double = 30,
+        overlapSeconds: Double = 2
+    ) -> [Range<Int>] {
+        guard sampleCount > 0, sampleRate > 0, maximumChunkSeconds > 0 else { return [] }
+
+        let maximumChunkSamples = max(1, Int(Double(sampleRate) * maximumChunkSeconds))
+        guard sampleCount > maximumChunkSamples else { return [0..<sampleCount] }
+
+        let requestedOverlap = max(0, Int(Double(sampleRate) * overlapSeconds))
+        let overlapSamples = min(requestedOverlap, maximumChunkSamples - 1)
+        var ranges: [Range<Int>] = []
+        var start = 0
+
+        while start < sampleCount {
+            let end = min(start + maximumChunkSamples, sampleCount)
+            ranges.append(start..<end)
+            guard end < sampleCount else { break }
+            start = end - overlapSamples
+        }
+
+        return ranges
+    }
+
+    static func merge(_ texts: [String]) -> String {
+        texts.reduce(into: "") { result, text in
+            let next = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !next.isEmpty else { return }
+            guard !result.isEmpty else {
+                result = next
+                return
+            }
+
+            if let merged = self.mergeCJK(left: result, right: next) {
+                result = merged
+                return
+            }
+
+            let leftTokens = result.split(whereSeparator: \.isWhitespace).map(String.init)
+            let rightTokens = next.split(whereSeparator: \.isWhitespace).map(String.init)
+            let overlap = self.wordOverlap(left: leftTokens, right: rightTokens)
+            let remaining = rightTokens.dropFirst(overlap)
+            guard !remaining.isEmpty else { return }
+            result += " " + remaining.joined(separator: " ")
+        }
+    }
+
+    private static func wordOverlap(left: [String], right: [String]) -> Int {
+        let maximum = min(24, left.count, right.count)
+        guard maximum > 0 else { return 0 }
+        let normalizedLeft = left.map(self.normalize)
+        let normalizedRight = right.map(self.normalize)
+
+        for count in stride(from: maximum, through: 1, by: -1) {
+            let leftStart = normalizedLeft.count - count
+            let matches = (0..<count).allSatisfy {
+                !normalizedLeft[leftStart + $0].isEmpty
+                    && normalizedLeft[leftStart + $0] == normalizedRight[$0]
+            }
+            guard matches else { continue }
+            if count > 1 || normalizedRight[0].count >= 4 || Int(normalizedRight[0]) != nil {
+                return count
+            }
+        }
+
+        for count in stride(from: maximum, through: 2, by: -1) {
+            let leftStart = normalizedLeft.count - count
+            let similarCount = (0..<count).reduce(into: 0) { total, index in
+                if self.tokensAreSimilar(normalizedLeft[leftStart + index], normalizedRight[index]) {
+                    total += 1
+                }
+            }
+            if similarCount >= max(2, count - 1) {
+                return count
+            }
+        }
+
+        var bestRightCount = 0
+        var bestMatchLength = 0
+        for leftCount in 2...maximum {
+            let leftPhrase = self.normalize(left.suffix(leftCount).joined())
+            for rightCount in 2...maximum {
+                let rightPhrase = self.normalize(right.prefix(rightCount).joined())
+                let matchLength = min(leftPhrase.count, rightPhrase.count)
+                guard matchLength >= 12 else { continue }
+                let distanceLimit = max(2, matchLength / 6)
+                guard abs(leftPhrase.count - rightPhrase.count) <= distanceLimit,
+                      self.editDistance(leftPhrase, rightPhrase, limit: distanceLimit) <= distanceLimit
+                else { continue }
+                if matchLength > bestMatchLength {
+                    bestMatchLength = matchLength
+                    bestRightCount = rightCount
+                }
+            }
+        }
+
+        return bestRightCount
+    }
+
+    private static func normalize(_ token: String) -> String {
+        token.lowercased().unicodeScalars
+            .filter { CharacterSet.alphanumerics.contains($0) }
+            .map(String.init)
+            .joined()
+    }
+
+    private static func tokensAreSimilar(_ left: String, _ right: String) -> Bool {
+        guard !left.isEmpty, !right.isEmpty else { return false }
+        if left == right { return true }
+        if min(left.count, right.count) >= 5, left.hasPrefix(right) || right.hasPrefix(left) {
+            return true
+        }
+        let maximumDistance = max(left.count, right.count) >= 8 ? 2 : 1
+        return self.editDistance(left, right, limit: maximumDistance) <= maximumDistance
+    }
+
+    private static func editDistance(_ left: String, _ right: String, limit: Int) -> Int {
+        let lhs = Array(left)
+        let rhs = Array(right)
+        guard abs(lhs.count - rhs.count) <= limit else { return limit + 1 }
+        var previous = Array(0...rhs.count)
+
+        for (leftIndex, leftCharacter) in lhs.enumerated() {
+            var current = [leftIndex + 1] + Array(repeating: 0, count: rhs.count)
+            var rowMinimum = current[0]
+            for (rightIndex, rightCharacter) in rhs.enumerated() {
+                current[rightIndex + 1] = min(
+                    current[rightIndex] + 1,
+                    previous[rightIndex + 1] + 1,
+                    previous[rightIndex] + (leftCharacter == rightCharacter ? 0 : 1)
+                )
+                rowMinimum = min(rowMinimum, current[rightIndex + 1])
+            }
+            if rowMinimum > limit { return limit + 1 }
+            previous = current
+        }
+
+        return previous[rhs.count]
+    }
+
+    private static func mergeCJK(left: String, right: String) -> String? {
+        guard self.containsCJK(String(left.suffix(32))),
+              self.containsCJK(String(right.prefix(32)))
+        else { return nil }
+        let leftScalars = Array(left.unicodeScalars)
+        let rightScalars = Array(right.unicodeScalars)
+        let maximum = min(48, leftScalars.count, rightScalars.count)
+        for count in stride(from: maximum, through: 1, by: -1)
+            where leftScalars.suffix(count).elementsEqual(rightScalars.prefix(count))
+        {
+            return left + String(String.UnicodeScalarView(rightScalars.dropFirst(count)))
+        }
+        return left + right
+    }
+
+    private static func containsCJK(_ text: String) -> Bool {
+        text.unicodeScalars.contains { scalar in
+            switch scalar.value {
+            case 0x3040...0x30ff, 0x3400...0x4dbf, 0x4e00...0x9fff, 0xac00...0xd7af:
+                return true
+            default:
+                return false
+            }
+        }
+    }
+}
+
+/// TranscriptionProvider implementation using transcribe.cpp GGUF models.
 final class WhisperProvider: TranscriptionProvider {
-    let name = "Whisper (Universal)"
+    var name: String {
+        self.selectedModel == .cohereTranscribeSixBit ? "Cohere Transcribe" : "Whisper (Universal)"
+    }
 
     var isAvailable: Bool {
         guard case .success = Self.backendInitialization else { return false }
@@ -49,7 +221,7 @@ final class WhisperProvider: TranscriptionProvider {
     }
 
     private var modelName: String {
-        self.selectedModel.whisperModelFile ?? "whisper-base-Q8_0.gguf"
+        self.selectedModel.transcribeCppModelFile ?? "whisper-base-Q8_0.gguf"
     }
 
     private var legacyModelName: String? {
@@ -71,10 +243,19 @@ final class WhisperProvider: TranscriptionProvider {
         guard let cacheDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else {
             preconditionFailure("Could not find caches directory")
         }
-        return cacheDir.appendingPathComponent("WhisperModels")
+        let directoryName = self.selectedModel == .cohereTranscribeSixBit
+            ? "CohereTranscribeModels"
+            : "WhisperModels"
+        return cacheDir.appendingPathComponent(directoryName)
     }
 
     private var modelDownloadURL: URL? {
+        if self.selectedModel == .cohereTranscribeSixBit {
+            return URL(
+                string: "https://huggingface.co/handy-computer/cohere-transcribe-03-2026-gguf/resolve/main/\(self.modelName)"
+            )
+        }
+
         let modelName = self.modelName
         let suffix = "-Q8_0.gguf"
         guard modelName.hasSuffix(suffix) else { return nil }
@@ -132,8 +313,33 @@ final class WhisperProvider: TranscriptionProvider {
         }
     }
 
+    private func removeLegacyCohereCachesIfNeeded(for model: SettingsStore.SpeechModel) {
+        guard model == .cohereTranscribeSixBit, self.overriddenModelDirectory == nil,
+              let cacheDirectory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+        else { return }
+
+        let legacyDirectories = [
+            cacheDirectory.appendingPathComponent("cohere-transcribe-03-2026-CoreML-6bit", isDirectory: true),
+            cacheDirectory.appendingPathComponent("FluidAudio/CompiledCohereModels", isDirectory: true),
+        ]
+        for directory in legacyDirectories where FileManager.default.fileExists(atPath: directory.path) {
+            do {
+                try FileManager.default.removeItem(at: directory)
+                DebugLogger.shared.info(
+                    "WhisperProvider: Removed legacy Cohere cache at \(directory.path)",
+                    source: "WhisperProvider"
+                )
+            } catch {
+                DebugLogger.shared.warning(
+                    "WhisperProvider: Failed to remove legacy Cohere cache at \(directory.path): \(error.localizedDescription)",
+                    source: "WhisperProvider"
+                )
+            }
+        }
+    }
+
     private func isModelFileValid(at url: URL, for targetModel: SettingsStore.SpeechModel) -> Bool {
-        guard let expectedModelFile = targetModel.whisperModelFile,
+        guard let expectedModelFile = targetModel.transcribeCppModelFile,
               url.lastPathComponent == expectedModelFile
         else {
             return false
@@ -151,7 +357,7 @@ final class WhisperProvider: TranscriptionProvider {
         try Task.checkCancellation()
 
         let targetModel = self.selectedModel
-        let currentModelName = targetModel.whisperModelFile ?? "whisper-base-Q8_0.gguf"
+        let currentModelName = targetModel.transcribeCppModelFile ?? "whisper-base-Q8_0.gguf"
 
         let loadedModelName = self.currentLoadedModelName()
         if self.isReady, loadedModelName != currentModelName {
@@ -195,7 +401,9 @@ final class WhisperProvider: TranscriptionProvider {
                 userInfo: [NSLocalizedDescriptionKey: "Whisper model file is missing or corrupted. Please re-download the model."]
             )
         }
-        self.removeLegacyModelIfNeeded()
+        if targetModel.isWhisperModel {
+            self.removeLegacyModelIfNeeded()
+        }
 
         let requiredMemoryGB = targetModel.requiredMemoryGB
         let availableMemoryGB = Self.availableMemoryGB()
@@ -242,6 +450,7 @@ final class WhisperProvider: TranscriptionProvider {
 
         try Task.checkCancellation()
         self.installModel(loadedModel, session: loadedSession, modelName: currentModelName)
+        self.removeLegacyCohereCachesIfNeeded(for: targetModel)
         DebugLogger.shared.info(
             "WhisperProvider: Model ready (\(currentModelName), backend=\(loadedModel.backend), arch=\(loadedModel.arch))",
             source: "WhisperProvider"
@@ -297,7 +506,7 @@ final class WhisperProvider: TranscriptionProvider {
             throw NSError(
                 domain: "WhisperProvider",
                 code: -2,
-                userInfo: [NSLocalizedDescriptionKey: "Audio too short for Whisper transcription"]
+                userInfo: [NSLocalizedDescriptionKey: "Audio too short for transcription"]
             )
         }
 
@@ -305,15 +514,33 @@ final class WhisperProvider: TranscriptionProvider {
             throw NSError(
                 domain: "WhisperProvider",
                 code: -1,
-                userInfo: [NSLocalizedDescriptionKey: "Whisper model not loaded"]
+                userInfo: [NSLocalizedDescriptionKey: "Speech model not loaded"]
             )
         }
 
-        let transcript = try await session.run(
-            samples,
-            options: RunOptions(timestamps: .segment)
+        let isCohere = self.selectedModel == .cohereTranscribeSixBit
+        let options = RunOptions(
+            timestamps: isCohere ? .none : .segment,
+            language: isCohere ? SettingsStore.shared.selectedCohereLanguage.rawValue : nil
         )
-        let fullText = transcript.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let texts: [String]
+        if isCohere {
+            let ranges = CohereTranscribeCppLongFormProcessor.ranges(
+                sampleCount: samples.count,
+                sampleRate: 16_000
+            )
+            var chunkTexts: [String] = []
+            chunkTexts.reserveCapacity(ranges.count)
+            for range in ranges {
+                try Task.checkCancellation()
+                let transcript = try await session.run(Array(samples[range]), options: options)
+                chunkTexts.append(transcript.text)
+            }
+            texts = chunkTexts
+        } else {
+            texts = try [await session.run(samples, options: options).text]
+        }
+        let fullText = CohereTranscribeCppLongFormProcessor.merge(texts)
         return ASRTranscriptionResult(text: fullText, confidence: 1.0)
     }
 
@@ -322,6 +549,7 @@ final class WhisperProvider: TranscriptionProvider {
     }
 
     func clearCache() async throws {
+        let targetModel = self.selectedModel
         self.unloadModel()
 
         if FileManager.default.fileExists(atPath: self.modelURL.path) {
@@ -338,6 +566,7 @@ final class WhisperProvider: TranscriptionProvider {
                 try FileManager.default.removeItem(at: self.modelDirectory)
             }
         }
+        self.removeLegacyCohereCachesIfNeeded(for: targetModel)
     }
 
     private func downloadModel(progressHandler: ((Double) -> Void)?) async throws {
