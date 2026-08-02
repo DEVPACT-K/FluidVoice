@@ -83,6 +83,25 @@ final class CohereCppLongFormTests: XCTestCase {
             CohereTranscribeCppLongFormProcessor.merge(["测试结果", "测试结结果非常准确"]),
             "测试结果非常准确"
         )
+        XCTAssertEqual(
+            CohereTranscribeCppLongFormProcessor.merge(["测试结果", "试结果非常准确"]),
+            "测试结果非常准确"
+        )
+    }
+
+    func testMergePreservesCJKAndMixedScriptBoundariesWithoutOverlap() {
+        XCTAssertEqual(
+            CohereTranscribeCppLongFormProcessor.merge(["한국어 테스트", "새로운 문장"]),
+            "한국어 테스트 새로운 문장"
+        )
+        XCTAssertEqual(
+            CohereTranscribeCppLongFormProcessor.merge(["中文 hello", "world 中文"]),
+            "中文 hello world 中文"
+        )
+        XCTAssertEqual(
+            CohereTranscribeCppLongFormProcessor.merge(["第一句", "第二句"]),
+            "第一句第二句"
+        )
     }
 
     func testEarlierCJKDoesNotBreakEnglishBoundarySpacing() {
@@ -100,6 +119,13 @@ final class CohereCppLongFormTests: XCTestCase {
         XCTAssertEqual(
             CohereTranscribeCppLongFormProcessor.merge(["", "  ", "complete transcript"]),
             "complete transcript"
+        )
+    }
+
+    func testMergeRejectsUnrelatedShortFuzzyWords() {
+        XCTAssertEqual(
+            CohereTranscribeCppLongFormProcessor.merge(["turn on", "burn in slowly"]),
+            "turn on burn in slowly"
         )
     }
 }

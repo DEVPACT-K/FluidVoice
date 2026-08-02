@@ -74,12 +74,18 @@ nonisolated enum CohereTranscribeCppLongFormProcessor {
         guard maximum >= 2 else { return 0 }
         for count in stride(from: maximum, through: 2, by: -1) {
             let leftStart = normalizedLeft.count - count
-            let similarCount = (0..<count).reduce(into: 0) { total, index in
-                if self.tokensAreSimilar(normalizedLeft[leftStart + index], normalizedRight[index]) {
-                    total += 1
-                }
+            var similarCount = 0
+            var similarCharacterCount = 0
+            for index in 0..<count
+                where self.tokensAreSimilar(normalizedLeft[leftStart + index], normalizedRight[index])
+            {
+                similarCount += 1
+                similarCharacterCount += max(
+                    normalizedLeft[leftStart + index].count,
+                    normalizedRight[index].count
+                )
             }
-            if similarCount >= max(2, count - 1) {
+            if similarCount >= max(2, count - 1), similarCharacterCount >= 8 {
                 return count
             }
         }
@@ -157,7 +163,9 @@ nonisolated enum CohereTranscribeCppLongFormProcessor {
             .filter { CharacterSet.alphanumerics.contains($0.element) }
         let maximumLeftCount = min(48, leftScalars.count)
         let maximumRightCount = min(48, indexedRightScalars.count)
-        guard maximumLeftCount >= 2, maximumRightCount >= 2 else { return left + right }
+        guard maximumLeftCount >= 2, maximumRightCount >= 2 else {
+            return self.joinCJKWithoutOverlap(left: left, right: right)
+        }
 
         for leftCount in stride(from: maximumLeftCount, through: 2, by: -1) {
             let leftPhrase = String(String.UnicodeScalarView(leftScalars.suffix(leftCount)))
@@ -172,7 +180,29 @@ nonisolated enum CohereTranscribeCppLongFormProcessor {
                 return left + String(String.UnicodeScalarView(rightScalars.dropFirst(endIndex)))
             }
         }
-        return left + right
+        return self.joinCJKWithoutOverlap(left: left, right: right)
+    }
+
+    private static func joinCJKWithoutOverlap(left: String, right: String) -> String {
+        guard let leftScalar = left.unicodeScalars.last,
+              let rightScalar = right.unicodeScalars.first,
+              !CharacterSet.whitespacesAndNewlines.contains(leftScalar),
+              !CharacterSet.whitespacesAndNewlines.contains(rightScalar)
+        else { return left + right }
+
+        let needsSpace = self.isHangul(leftScalar)
+            || self.isHangul(rightScalar)
+            || self.isLatinAlphanumeric(leftScalar)
+            || self.isLatinAlphanumeric(rightScalar)
+        return needsSpace ? left + " " + right : left + right
+    }
+
+    private static func isHangul(_ scalar: UnicodeScalar) -> Bool {
+        (0xac00...0xd7af).contains(scalar.value)
+    }
+
+    private static func isLatinAlphanumeric(_ scalar: UnicodeScalar) -> Bool {
+        scalar.value <= 0x024f && CharacterSet.alphanumerics.contains(scalar)
     }
 
     private static func containsCJK(_ text: String) -> Bool {
