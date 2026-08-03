@@ -159,14 +159,19 @@ final class MeetingTranscriptionService: ObservableObject {
     /// - Parameters:
     ///   - fileURL: URL to the audio/video file
     func transcribeFile(_ fileURL: URL) async throws -> TranscriptionResult {
+        guard self.asrService.beginFileTranscription() else {
+            throw TranscriptionError.transcriptionFailed("Another transcription is already in progress.")
+        }
         self.isTranscribing = true
         error = nil
         self.progress = 0.0
         let startTime = Date()
+        let transcriptionModel = SettingsStore.shared.selectedSpeechModel
 
         defer {
             isTranscribing = false
             progress = 0.0
+            self.asrService.endFileTranscription()
         }
 
         do {
@@ -279,7 +284,7 @@ final class MeetingTranscriptionService: ObservableObject {
 
             // Calculate chunk size in source file frames
             let sourceFramesPerChunk = AVAudioFrameCount(Double(samplesPerChunk) / resampleRatio)
-            let usesCohereSeamMerging = SettingsStore.shared.selectedSpeechModel == .cohereTranscribeSixBit
+            let usesCohereSeamMerging = transcriptionModel == .cohereTranscribeSixBit
             let sourceOverlapFrames = usesCohereSeamMerging
                 ? AVAudioFrameCount(2 * fileSampleRate)
                 : 0

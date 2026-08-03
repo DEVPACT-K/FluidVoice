@@ -2,6 +2,20 @@
 import XCTest
 
 final class CohereCppLongFormTests: XCTestCase {
+    @MainActor
+    func testFileTranscriptionGateBlocksConcurrentSpeechOperations() {
+        let service = ASRService()
+
+        XCTAssertTrue(service.beginFileTranscription())
+        XCTAssertTrue(service.isFileTranscriptionRunning)
+        XCTAssertTrue(service.isAnyTranscriptionRunning)
+        XCTAssertFalse(service.beginFileTranscription())
+
+        service.endFileTranscription()
+        XCTAssertFalse(service.isFileTranscriptionRunning)
+        XCTAssertFalse(service.isAnyTranscriptionRunning)
+    }
+
     func testCohereEnablesBoundedStreamingPreviews() {
         XCTAssertTrue(SettingsStore.SpeechModel.cohereTranscribeSixBit.supportsStreaming)
         XCTAssertEqual(

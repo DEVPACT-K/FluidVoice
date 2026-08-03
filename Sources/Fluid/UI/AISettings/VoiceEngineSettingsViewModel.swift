@@ -11,7 +11,7 @@ final class VoiceEngineSettingsViewModel: ObservableObject {
     var asr: ASRService { self.appServices.asr }
 
     var areSpeechModelActionsBlocked: Bool {
-        self.asr.isRunning
+        self.asr.isAnyTranscriptionRunning
             || self.downloadingModel != nil
             || self.asr.hasActiveModelDownload
             || self.asr.hasActiveModelPreparation

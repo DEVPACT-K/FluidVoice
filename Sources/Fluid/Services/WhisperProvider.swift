@@ -251,6 +251,7 @@ final class WhisperProvider: TranscriptionProvider {
     private var session: Session?
     private var ready = false
     private var loadedModelName: String?
+    private var loadedSpeechModel: SettingsStore.SpeechModel?
 
     private let overriddenModelDirectory: URL?
     private let urlSession: URLSession
@@ -331,6 +332,7 @@ final class WhisperProvider: TranscriptionProvider {
         self.model = nil
         self.ready = false
         self.loadedModelName = nil
+        self.loadedSpeechModel = nil
     }
 
     private func currentLoadedModelName() -> String? {
@@ -339,19 +341,32 @@ final class WhisperProvider: TranscriptionProvider {
         return self.loadedModelName
     }
 
-    private func installModel(_ model: Model, session: Session, modelName: String) {
+    private func installModel(
+        _ model: Model,
+        session: Session,
+        modelName: String,
+        speechModel: SettingsStore.SpeechModel
+    ) {
         self.stateLock.lock()
         defer { self.stateLock.unlock() }
         self.model = model
         self.session = session
         self.loadedModelName = modelName
+        self.loadedSpeechModel = speechModel
         self.ready = true
     }
 
-    private func activeSession() -> Session? {
+    private func activeRuntime() -> (session: Session, speechModel: SettingsStore.SpeechModel)? {
         self.stateLock.lock()
         defer { self.stateLock.unlock() }
-        return self.session
+        guard let session, let loadedSpeechModel else { return nil }
+        return (session, loadedSpeechModel)
+    }
+
+    private func currentLoadedSpeechModel() -> SettingsStore.SpeechModel? {
+        self.stateLock.lock()
+        defer { self.stateLock.unlock() }
+        return self.loadedSpeechModel
     }
 
     private func removeLegacyModelIfNeeded() {
@@ -511,7 +526,12 @@ final class WhisperProvider: TranscriptionProvider {
         let loadedSession = try loadedModel.session()
 
         try Task.checkCancellation()
-        self.installModel(loadedModel, session: loadedSession, modelName: currentModelName)
+        self.installModel(
+            loadedModel,
+            session: loadedSession,
+            modelName: currentModelName,
+            speechModel: targetModel
+        )
         self.removeLegacyCohereCachesIfNeeded(for: targetModel)
         DebugLogger.shared.info(
             "WhisperProvider: Model ready (\(currentModelName), backend=\(loadedModel.backend), arch=\(loadedModel.arch))",
@@ -576,7 +596,7 @@ final class WhisperProvider: TranscriptionProvider {
             )
         }
 
-        guard let session = self.activeSession() else {
+        guard let runtime = self.activeRuntime() else {
             throw NSError(
                 domain: "WhisperProvider",
                 code: -1,
@@ -584,7 +604,7 @@ final class WhisperProvider: TranscriptionProvider {
             )
         }
 
-        let isCohere = self.selectedModel == .cohereTranscribeSixBit
+        let isCohere = runtime.speechModel == .cohereTranscribeSixBit
         let options = RunOptions(
             timestamps: isCohere ? .none : .segment,
             language: isCohere ? SettingsStore.shared.selectedCohereLanguage.rawValue : nil
@@ -599,19 +619,19 @@ final class WhisperProvider: TranscriptionProvider {
             chunkTexts.reserveCapacity(ranges.count)
             for range in ranges {
                 try Task.checkCancellation()
-                let transcript = try await session.run(Array(samples[range]), options: options)
+                let transcript = try await runtime.session.run(Array(samples[range]), options: options)
                 chunkTexts.append(transcript.text)
             }
             texts = chunkTexts
         } else {
-            texts = try [await session.run(samples, options: options).text]
+            texts = try [await runtime.session.run(samples, options: options).text]
         }
         let fullText = CohereTranscribeCppLongFormProcessor.merge(texts)
         return ASRTranscriptionResult(text: fullText, confidence: 1.0)
     }
 
     func transcribeStreaming(_ samples: [Float]) async throws -> ASRTranscriptionResult {
-        guard self.selectedModel == .cohereTranscribeSixBit else {
+        guard self.currentLoadedSpeechModel() == .cohereTranscribeSixBit else {
             return try await self.transcribe(samples)
         }
         return try await self.transcribe(CohereTranscribeCppLongFormProcessor.previewSamples(samples))

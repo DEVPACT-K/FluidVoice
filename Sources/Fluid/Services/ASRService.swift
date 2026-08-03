@@ -172,6 +172,7 @@ final class ASRService: ObservableObject {
     }
 
     @Published var isRunning: Bool = false
+    @Published private(set) var isFileTranscriptionRunning: Bool = false
     @Published var finalText: String = ""
     @Published var partialTranscription: String = ""
     @Published var wordBoostStatusText: String = "Word boost: off"
@@ -193,6 +194,20 @@ final class ASRService: ObservableObject {
     private var audioCaptureStartWaiters: [CheckedContinuation<Void, Never>] = []
     var isRunningOrStarting: Bool {
         self.isRunning || self.isStarting
+    }
+
+    var isAnyTranscriptionRunning: Bool {
+        self.isRunningOrStarting || self.isFileTranscriptionRunning
+    }
+
+    func beginFileTranscription() -> Bool {
+        guard !self.isAnyTranscriptionRunning else { return false }
+        self.isFileTranscriptionRunning = true
+        return true
+    }
+
+    func endFileTranscription() {
+        self.isFileTranscriptionRunning = false
     }
 
     private let audioCaptureReadinessGate = AudioCaptureReadinessGate()
@@ -571,6 +586,9 @@ final class ASRService: ObservableObject {
     ///   - model: The model to download
     ///   - progressHandler: Optional callback for download progress (0.0 to 1.0)
     func downloadModel(_ model: SettingsStore.SpeechModel, progressHandler: ((Double) -> Void)?) async throws {
+        guard !self.isFileTranscriptionRunning else {
+            throw self.fileTranscriptionModelOperationError()
+        }
         guard self.modelDownloadTask == nil, self.ensureReadyTask == nil else {
             throw NSError(
                 domain: "ASRService",
@@ -644,6 +662,13 @@ final class ASRService: ObservableObject {
 
     /// Call this when the transcription provider setting changes to reset state
     func resetTranscriptionProvider() {
+        guard !self.isFileTranscriptionRunning else {
+            DebugLogger.shared.warning(
+                "ASRService: Ignoring model reset during file transcription",
+                source: "ASRService"
+            )
+            return
+        }
         let newModel = SettingsStore.shared.selectedSpeechModel
         DebugLogger.shared.info("ASRService: Switching to '\(newModel.displayName)', resetting provider state...", source: "ASRService")
 
@@ -1386,6 +1411,10 @@ final class ASRService: ObservableObject {
     ) async -> AudioCaptureStartOutcome {
         DebugLogger.shared.info("🎤 START() called - beginning recording session", source: "ASRService")
 
+        guard !self.isFileTranscriptionRunning else {
+            DebugLogger.shared.warning("START() blocked - file transcription is active", source: "ASRService")
+            return .failed
+        }
         guard self.micStatus == .authorized else {
             DebugLogger.shared.error("❌ START() blocked - mic not authorized", source: "ASRService")
             return .failed
@@ -3738,6 +3767,9 @@ final class ASRService: ObservableObject {
     // MARK: - Cache management
 
     func clearModelCache() async throws {
+        guard !self.isFileTranscriptionRunning else {
+            throw self.fileTranscriptionModelOperationError()
+        }
         DebugLogger.shared.debug("Clearing model cache via transcription provider", source: "ASRService")
         await self.transcriptionExecutor.cancelAndAwaitPending()
         try await self.transcriptionProvider.clearCache()
@@ -3746,6 +3778,9 @@ final class ASRService: ObservableObject {
     }
 
     func clearModelCache(for model: SettingsStore.SpeechModel) async throws {
+        guard !self.isFileTranscriptionRunning else {
+            throw self.fileTranscriptionModelOperationError()
+        }
         DebugLogger.shared.debug("Clearing model cache for \(model.displayName)", source: "ASRService")
         if SettingsStore.shared.selectedSpeechModel == model {
             await self.transcriptionExecutor.cancelAndAwaitPending()
@@ -3760,6 +3795,14 @@ final class ASRService: ObservableObject {
         guard SettingsStore.shared.selectedSpeechModel == model else { return }
         self.resetTranscriptionProvider()
         await self.checkIfModelsExistAsync()
+    }
+
+    private func fileTranscriptionModelOperationError() -> NSError {
+        NSError(
+            domain: "ASRService",
+            code: -2002,
+            userInfo: [NSLocalizedDescriptionKey: "Voice model controls are unavailable during meeting transcription."]
+        )
     }
 
     // MARK: - Timer-based Streaming Transcription (No VAD)
