@@ -505,6 +505,7 @@ struct PromiseAwareDropView: NSViewRepresentable {
         ) async {
             let pollInterval: UInt64 = 200_000_000
             let softTimeout: TimeInterval = 30
+            let settledSoftTimeout: TimeInterval = 8 // one completed ⇒ rest usually on disk; full 30s only pays when nothing arrived
             let hardTimeout: TimeInterval = 120 // a provider can take 60s+ under heavy load (seen up to 80s) before a truly wedged one errors out
             let modernGrace: TimeInterval = 1.5 // long enough for a working receiver to write its first byte
             let start = Date()
@@ -543,7 +544,8 @@ struct PromiseAwareDropView: NSViewRepresentable {
                 // provider — 80s has been seen — is kept alive by its files instead, not by a token.
                 let unresolvedDirs = receiverDirs.filter { !readyModernDirs.contains($0) && !failedModernDirs.contains($0) }
                 let receiversProducing = unresolvedDirs.contains { !self.listFiles(in: [$0]).isEmpty }
-                if elapsed >= softTimeout, !state.hasInFlightWork, !receiversProducing { break }
+                let effectiveSoftTimeout = readyModernDirs.isEmpty ? softTimeout : settledSoftTimeout
+                if elapsed >= effectiveSoftTimeout, !state.hasInFlightWork, !receiversProducing { break }
 
                 let resolvedCount = readyModernDirs.count + failedModernDirs.count
                 let allReceiversResolved = !receiverDirs.isEmpty && resolvedCount >= receiverDirs.count
