@@ -2,6 +2,17 @@ import Foundation
 import TranscribeCpp
 
 nonisolated enum CohereTranscribeCppLongFormProcessor {
+    static func previewSamples(
+        _ samples: [Float],
+        sampleRate: Int = 16_000,
+        maximumSeconds: Double = 30
+    ) -> [Float] {
+        guard sampleRate > 0, maximumSeconds > 0 else { return [] }
+        let maximumSamples = max(1, Int(Double(sampleRate) * maximumSeconds))
+        guard samples.count > maximumSamples else { return samples }
+        return Array(samples.suffix(maximumSamples))
+    }
+
     static func ranges(
         sampleCount: Int,
         sampleRate: Int,
@@ -597,6 +608,13 @@ final class WhisperProvider: TranscriptionProvider {
         }
         let fullText = CohereTranscribeCppLongFormProcessor.merge(texts)
         return ASRTranscriptionResult(text: fullText, confidence: 1.0)
+    }
+
+    func transcribeStreaming(_ samples: [Float]) async throws -> ASRTranscriptionResult {
+        guard self.selectedModel == .cohereTranscribeSixBit else {
+            return try await self.transcribe(samples)
+        }
+        return try await self.transcribe(CohereTranscribeCppLongFormProcessor.previewSamples(samples))
     }
 
     func modelsExistOnDisk() -> Bool {

@@ -4589,7 +4589,7 @@ final class SettingsStore: ObservableObject {
         /// Large Whisper models are too slow for streaming, so they only do final transcription on stop.
         var supportsStreaming: Bool {
             switch self {
-            case .qwen3Asr, .cohereTranscribeSixBit, .whisperMedium, .whisperLargeTurbo, .whisperLarge:
+            case .qwen3Asr, .whisperMedium, .whisperLargeTurbo, .whisperLarge:
                 return false // Too slow for real-time chunk processing
             default:
                 return true // All other models support streaming
