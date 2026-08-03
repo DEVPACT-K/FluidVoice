@@ -57,6 +57,13 @@ nonisolated enum CohereTranscribeCppLongFormProcessor {
             let leftTokens = result.split(whereSeparator: \.isWhitespace).map(String.init)
             let rightTokens = next.split(whereSeparator: \.isWhitespace).map(String.init)
             let overlap = self.wordOverlap(left: leftTokens, right: rightTokens)
+            if overlap > 0, let leftToken = leftTokens.last {
+                result = self.preservingRightBoundaryPunctuation(
+                    in: result,
+                    leftToken: leftToken,
+                    rightToken: rightTokens[overlap - 1]
+                )
+            }
             let remaining = rightTokens.dropFirst(overlap)
             guard !remaining.isEmpty else { continue }
             result += " " + remaining.joined(separator: " ")
@@ -121,6 +128,22 @@ nonisolated enum CohereTranscribeCppLongFormProcessor {
         }
 
         return bestRightCount
+    }
+
+    private static func preservingRightBoundaryPunctuation(
+        in left: String,
+        leftToken: String,
+        rightToken: String
+    ) -> String {
+        guard self.normalize(leftToken) == self.normalize(rightToken),
+              self.trailingPunctuation(in: leftToken).isEmpty
+        else { return left }
+        return left + self.trailingPunctuation(in: rightToken)
+    }
+
+    private static func trailingPunctuation(in token: String) -> String {
+        let suffix = token.unicodeScalars.reversed().prefix { CharacterSet.punctuationCharacters.contains($0) }
+        return String(String.UnicodeScalarView(suffix.reversed()))
     }
 
     private static func normalize(_ token: String) -> String {

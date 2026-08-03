@@ -66,6 +66,17 @@ final class CohereCppLongFormTests: XCTestCase {
         )
     }
 
+    func testMergePreservesPunctuationRecognizedOnlyInOverlappedChunk() {
+        XCTAssertEqual(
+            CohereTranscribeCppLongFormProcessor.merge(["The end", "The end. Next"]),
+            "The end. Next"
+        )
+        XCTAssertEqual(
+            CohereTranscribeCppLongFormProcessor.merge(["The end", "The end."]),
+            "The end."
+        )
+    }
+
     func testMergeToleratesMinorRecognitionDrift() {
         XCTAssertEqual(
             CohereTranscribeCppLongFormProcessor.merge([
