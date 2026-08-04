@@ -8,7 +8,7 @@ nonisolated enum AudioCaptureReadinessResult: Equatable {
     case staleSession
 }
 
-final class AudioCaptureReadinessGate: @unchecked Sendable {
+final nonisolated class AudioCaptureReadinessGate: @unchecked Sendable {
     private struct Key: Equatable {
         let sessionID: Int
         let attemptID: UInt64
@@ -23,6 +23,7 @@ final class AudioCaptureReadinessGate: @unchecked Sendable {
     private var key: Key?
     private var result: AudioCaptureReadinessResult?
     private var waiter: Waiter?
+    private var cancelledWaiterIDs = Set<UUID>()
     private var timeoutTask: Task<Void, Never>?
 
     func arm(sessionID: Int, attemptID: UInt64) {
@@ -31,6 +32,7 @@ final class AudioCaptureReadinessGate: @unchecked Sendable {
         let previousWaiter = self.waiter
         self.timeoutTask = nil
         self.waiter = nil
+        self.cancelledWaiterIDs.removeAll(keepingCapacity: true)
         self.key = Key(sessionID: sessionID, attemptID: attemptID)
         self.result = nil
         self.lock.unlock()
@@ -67,6 +69,11 @@ final class AudioCaptureReadinessGate: @unchecked Sendable {
                     return
                 }
                 guard self.waiter == nil else {
+                    self.lock.unlock()
+                    continuation.resume(returning: .cancelled)
+                    return
+                }
+                guard self.cancelledWaiterIDs.remove(waiterID) == nil else {
                     self.lock.unlock()
                     continuation.resume(returning: .cancelled)
                     return
@@ -128,9 +135,18 @@ final class AudioCaptureReadinessGate: @unchecked Sendable {
             self.lock.unlock()
             return
         }
-        if let waiterID, self.waiter?.id != waiterID {
-            self.lock.unlock()
-            return
+        if let waiterID {
+            guard let waiter = self.waiter else {
+                if result == .cancelled {
+                    self.cancelledWaiterIDs.insert(waiterID)
+                }
+                self.lock.unlock()
+                return
+            }
+            guard waiter.id == waiterID else {
+                self.lock.unlock()
+                return
+            }
         }
         self.result = result
         let timeoutTask = self.timeoutTask
