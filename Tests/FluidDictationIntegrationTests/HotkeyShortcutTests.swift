@@ -137,7 +137,7 @@ final class HotkeyShortcutTests: XCTestCase {
         XCTAssertNil(decoded.settings.skipSilentRecordingsEnabled)
     }
 
-    func testFasterRecordingStartDefaultsToEnabledWhenUnset() {
+    func testDirectAudioCaptureIsEnabledWhenLegacyPreferenceIsUnset() {
         self.withRestoredDefaults(keys: [self.experimentalDirectAudioCaptureEnabledKey]) {
             UserDefaults.standard.removeObject(forKey: self.experimentalDirectAudioCaptureEnabledKey)
 
@@ -145,17 +145,9 @@ final class HotkeyShortcutTests: XCTestCase {
         }
     }
 
-    func testFasterRecordingStartPreservesStoredDisabledPreference() {
+    func testDirectAudioCaptureIgnoresStoredDisabledPreference() {
         self.withRestoredDefaults(keys: [self.experimentalDirectAudioCaptureEnabledKey]) {
             UserDefaults.standard.set(false, forKey: self.experimentalDirectAudioCaptureEnabledKey)
-
-            XCTAssertFalse(SettingsStore.shared.experimentalDirectAudioCaptureEnabled)
-        }
-    }
-
-    func testFasterRecordingStartPreservesStoredEnabledPreference() {
-        self.withRestoredDefaults(keys: [self.experimentalDirectAudioCaptureEnabledKey]) {
-            UserDefaults.standard.set(true, forKey: self.experimentalDirectAudioCaptureEnabledKey)
 
             XCTAssertTrue(SettingsStore.shared.experimentalDirectAudioCaptureEnabled)
         }

@@ -1033,24 +1033,6 @@ final class ASRService: ObservableObject {
         self.activeAudioCaptureBackend = .none
     }
 
-    /// Applies the experimental capture preference immediately when idle.
-    /// If a recording transition is already underway, start() reads the latest
-    /// persisted value and the following session will use it.
-    func refreshAudioCaptureBackendPreference() {
-        guard self.isRunning == false, self.isStarting == false else {
-            DebugLogger.shared.debug(
-                "Audio capture preference changed during a recording transition; deferring backend refresh",
-                source: "ASRService"
-            )
-            return
-        }
-
-        self.scheduleAudioRouteRecovery(
-            reason: "capture preference changed",
-            requiresIdlePrewarm: true
-        )
-    }
-
     private var inputFormat: AVAudioFormat?
     private var micPermissionGranted = false
 
@@ -4326,9 +4308,10 @@ private extension ASRService {
 
 //
 // Audio callbacks are not main-actor isolated. Direct Core Audio arrives through
-// a lock-free C ring. AVAudioEngine is used only when Faster Recording Start is
-// disabled. This pipeline owns timestamp trimming, 16 kHz conversion, levels,
-// and session-safe delivery without touching ASRService from a realtime callback.
+// a lock-free C ring. The AVAudioEngine implementation remains as legacy code but
+// is no longer user-selectable. This pipeline owns timestamp trimming, 16 kHz
+// conversion, levels, and session-safe delivery without touching ASRService from
+// a realtime callback.
 
 private final nonisolated class AudioCapturePipeline: @unchecked Sendable {
     private let audioBuffer: ThreadSafeAudioBuffer
