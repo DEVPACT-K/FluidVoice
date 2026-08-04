@@ -35,7 +35,12 @@ final class MediaPlaybackService {
             let resumeLock = NSLock()
             var didResume = false
 
-            func resumeOnce(_ value: Bool) {
+            @discardableResult
+            func resumeOnce(
+                _ value: Bool,
+                logDuplicate: Bool = true,
+                beforeResume: () -> Void = {}
+            ) -> Bool {
                 var shouldResume = false
 
                 resumeLock.lock()
@@ -46,14 +51,27 @@ final class MediaPlaybackService {
                 resumeLock.unlock()
 
                 guard shouldResume else {
-                    DebugLogger.shared.warning(
-                        "MediaPlaybackService: Suppressed duplicate resume (MediaRemoteAdapter callback fired more than once)",
-                        source: "MediaPlaybackService"
-                    )
-                    return
+                    if logDuplicate {
+                        DebugLogger.shared.warning(
+                            "MediaPlaybackService: Suppressed late or duplicate media callback",
+                            source: "MediaPlaybackService"
+                        )
+                    }
+                    return false
                 }
 
+                beforeResume()
                 continuation.resume(returning: value)
+                return true
+            }
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                if resumeOnce(false, logDuplicate: false) {
+                    DebugLogger.shared.warning(
+                        "MediaPlaybackService: Now Playing query timed out; leaving playback unchanged",
+                        source: "MediaPlaybackService"
+                    )
+                }
             }
 
             self.mediaController.getTrackInfo { [weak self] trackInfo in
@@ -97,12 +115,13 @@ final class MediaPlaybackService {
                 )
 
                 if isPlaying {
-                    DebugLogger.shared.info(
-                        "MediaPlaybackService: Media is playing, sending pause command",
-                        source: "MediaPlaybackService"
-                    )
-                    self.mediaController.pause()
-                    resumeOnce(true)
+                    resumeOnce(true) {
+                        DebugLogger.shared.info(
+                            "MediaPlaybackService: Media is playing, sending pause command",
+                            source: "MediaPlaybackService"
+                        )
+                        self.mediaController.pause()
+                    }
                 } else {
                     DebugLogger.shared.debug(
                         "MediaPlaybackService: Media is not playing, no action needed",

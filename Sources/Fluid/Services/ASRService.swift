@@ -1832,7 +1832,7 @@ final class ASRService: ObservableObject {
         await self.cancelAudioRouteRecoveryAndWait()
 
         // Capture media pause state before we reset it, for resuming at the end
-        let shouldResumeMedia = SettingsStore.shared.pauseMediaDuringTranscription && self.didPauseMediaForThisSession
+        let shouldResumeMedia = self.didPauseMediaForThisSession
         self.didPauseMediaForThisSession = false // Reset for next session
 
         DebugLogger.shared.debug("📍 Preparing final transcription", source: "ASRService")
@@ -2202,7 +2202,7 @@ final class ASRService: ObservableObject {
         await self.cancelAudioRouteRecoveryAndWait()
 
         // Capture media pause state before we reset it, for resuming at the end
-        let shouldResumeMedia = SettingsStore.shared.pauseMediaDuringTranscription && self.didPauseMediaForThisSession
+        let shouldResumeMedia = self.didPauseMediaForThisSession
         self.didPauseMediaForThisSession = false // Reset for next session
 
         DebugLogger.shared.info("🛑 Stopping recording - releasing audio devices", source: "ASRService")
