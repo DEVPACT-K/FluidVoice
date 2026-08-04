@@ -1119,7 +1119,7 @@ final class ASRService: ObservableObject {
             audioBuffer: self.audioBuffer,
             onFirstAudio: { sessionID, attemptID, sampleCount, frameLength, sampleRate, acquisitionMs, elapsedMs in
                 Task {
-                    await readinessGate.signalFirstPCM(
+                    readinessGate.signalFirstPCM(
                         sessionID: sessionID,
                         attemptID: attemptID
                     )
@@ -1435,7 +1435,7 @@ final class ASRService: ObservableObject {
         let captureSessionID = self.benchmarkSessionID
         self.audioCaptureAttemptID &+= 1
         var readinessAttemptID = self.audioCaptureAttemptID
-        await self.audioCaptureReadinessGate.arm(
+        self.audioCaptureReadinessGate.arm(
             sessionID: captureSessionID,
             attemptID: readinessAttemptID
         )
@@ -1709,7 +1709,7 @@ final class ASRService: ObservableObject {
 
         self.audioCaptureAttemptID &+= 1
         let attemptID = self.audioCaptureAttemptID
-        await self.audioCaptureReadinessGate.arm(
+        self.audioCaptureReadinessGate.arm(
             sessionID: sessionID,
             attemptID: attemptID
         )
@@ -2862,7 +2862,7 @@ final class ASRService: ObservableObject {
         do {
             self.audioCaptureAttemptID &+= 1
             let readinessAttemptID = self.audioCaptureAttemptID
-            await self.audioCaptureReadinessGate.arm(
+            self.audioCaptureReadinessGate.arm(
                 sessionID: self.benchmarkSessionID,
                 attemptID: readinessAttemptID
             )

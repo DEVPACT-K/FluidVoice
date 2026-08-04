@@ -6,8 +6,8 @@ import XCTest
 final class DirectAudioReliabilityTests: XCTestCase {
     func testReadinessGatePreservesFirstPCMThatArrivesBeforeWait() async {
         let gate = AudioCaptureReadinessGate()
-        await gate.arm(sessionID: 41, attemptID: 1)
-        await gate.signalFirstPCM(sessionID: 41, attemptID: 1)
+        gate.arm(sessionID: 41, attemptID: 1)
+        gate.signalFirstPCM(sessionID: 41, attemptID: 1)
 
         let result = await gate.wait(
             sessionID: 41,
@@ -20,7 +20,7 @@ final class DirectAudioReliabilityTests: XCTestCase {
 
     func testReadinessGateCancelsWaitAndIgnoresStalePCM() async {
         let gate = AudioCaptureReadinessGate()
-        await gate.arm(sessionID: 41, attemptID: 1)
+        gate.arm(sessionID: 41, attemptID: 1)
         let firstWait = Task {
             await gate.wait(
                 sessionID: 41,
@@ -29,12 +29,12 @@ final class DirectAudioReliabilityTests: XCTestCase {
             )
         }
         await Task.yield()
-        await gate.cancel(sessionID: 41, attemptID: 1)
+        gate.cancel(sessionID: 41, attemptID: 1)
         let firstResult = await firstWait.value
         XCTAssertEqual(firstResult, .cancelled)
 
-        await gate.arm(sessionID: 41, attemptID: 2)
-        await gate.signalFirstPCM(sessionID: 41, attemptID: 1)
+        gate.arm(sessionID: 41, attemptID: 2)
+        gate.signalFirstPCM(sessionID: 41, attemptID: 1)
         let staleResult = await gate.wait(
             sessionID: 41,
             attemptID: 1,
@@ -42,7 +42,32 @@ final class DirectAudioReliabilityTests: XCTestCase {
         )
         XCTAssertEqual(staleResult, .staleSession)
 
-        await gate.signalFirstPCM(sessionID: 41, attemptID: 2)
+        gate.signalFirstPCM(sessionID: 41, attemptID: 2)
+        let replacementResult = await gate.wait(
+            sessionID: 41,
+            attemptID: 2,
+            timeoutNanoseconds: 1_000_000
+        )
+        XCTAssertEqual(replacementResult, .ready)
+    }
+
+    func testReadinessGateRearmingCancelsExistingWaiter() async {
+        let gate = AudioCaptureReadinessGate()
+        gate.arm(sessionID: 41, attemptID: 1)
+        let firstWait = Task {
+            await gate.wait(
+                sessionID: 41,
+                attemptID: 1,
+                timeoutNanoseconds: 10_000_000_000
+            )
+        }
+        await Task.yield()
+
+        gate.arm(sessionID: 41, attemptID: 2)
+
+        let firstResult = await firstWait.value
+        XCTAssertEqual(firstResult, .cancelled)
+        gate.signalFirstPCM(sessionID: 41, attemptID: 2)
         let replacementResult = await gate.wait(
             sessionID: 41,
             attemptID: 2,
@@ -53,7 +78,7 @@ final class DirectAudioReliabilityTests: XCTestCase {
 
     func testReadinessGateTimesOutWithoutPCM() async {
         let gate = AudioCaptureReadinessGate()
-        await gate.arm(sessionID: 41, attemptID: 1)
+        gate.arm(sessionID: 41, attemptID: 1)
 
         let result = await gate.wait(
             sessionID: 41,
@@ -66,7 +91,7 @@ final class DirectAudioReliabilityTests: XCTestCase {
 
     func testReadinessWaitRespondsPromptlyToTaskCancellation() async {
         let gate = AudioCaptureReadinessGate()
-        await gate.arm(sessionID: 41, attemptID: 1)
+        gate.arm(sessionID: 41, attemptID: 1)
         let waitTask = Task {
             await gate.wait(
                 sessionID: 41,
