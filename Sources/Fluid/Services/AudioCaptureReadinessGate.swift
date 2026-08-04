@@ -51,6 +51,11 @@ final class AudioCaptureReadinessGate: @unchecked Sendable {
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 self.lock.lock()
+                guard Task.isCancelled == false else {
+                    self.lock.unlock()
+                    continuation.resume(returning: .cancelled)
+                    return
+                }
                 guard self.key == key else {
                     self.lock.unlock()
                     continuation.resume(returning: .staleSession)
