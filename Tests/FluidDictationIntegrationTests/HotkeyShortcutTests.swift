@@ -137,6 +137,45 @@ final class HotkeyShortcutTests: XCTestCase {
         XCTAssertNil(decoded.settings.skipSilentRecordingsEnabled)
     }
 
+    @MainActor
+    func testSystemModeBackupRestartsAppOnlyMicrophoneMigration() async throws {
+        let document = await BackupService.shared.makeBackupDocument()
+
+        try self.withRestoredDefaults(keys: [
+            self.microphoneSelectionModeKey,
+            self.preferredInputDeviceUIDKey,
+            self.appOnlyMicrophoneSelectionMigrationVersionKey,
+        ]) {
+            SettingsStore.shared.appMicSelectionMigrationVersion = 1
+            let encoded = try BackupService.shared.encode(document)
+            var root = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+            var settings = try XCTUnwrap(root["settings"] as? [String: Any])
+            settings["microphoneSelectionMode"] = SettingsStore.MicrophoneSelectionMode.system.rawValue
+            settings["preferredInputDeviceUID"] = "legacy-system-mic"
+            root["settings"] = settings
+            let backup = try BackupService.shared.decode(JSONSerialization.data(withJSONObject: root))
+
+            SettingsStore.shared.restore(from: backup.settings)
+
+            XCTAssertEqual(SettingsStore.shared.preferredInputDeviceUID, "legacy-system-mic")
+            XCTAssertEqual(SettingsStore.shared.microphoneSelectionMode, .manual)
+            XCTAssertEqual(SettingsStore.shared.appMicSelectionMigrationVersion, 0)
+        }
+    }
+
+    @MainActor
+    func testAppOnlyBackupKeepsCompletedMicrophoneMigration() async {
+        let document = await BackupService.shared.makeBackupDocument()
+
+        self.withRestoredDefaults(keys: [self.appOnlyMicrophoneSelectionMigrationVersionKey]) {
+            SettingsStore.shared.appMicSelectionMigrationVersion = 1
+
+            SettingsStore.shared.restore(from: document.settings)
+
+            XCTAssertEqual(SettingsStore.shared.appMicSelectionMigrationVersion, 1)
+        }
+    }
+
     func testDirectAudioCaptureIsEnabledWhenLegacyPreferenceIsUnset() {
         self.withRestoredDefaults(keys: [self.experimentalDirectAudioCaptureEnabledKey]) {
             UserDefaults.standard.removeObject(forKey: self.experimentalDirectAudioCaptureEnabledKey)

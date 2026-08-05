@@ -3123,6 +3123,9 @@ final class SettingsStore: ObservableObject {
         self.textInsertionMode = payload.textInsertionMode
         self.preferredInputDeviceUID = payload.preferredInputDeviceUID
         self.preferredOutputDeviceUID = payload.preferredOutputDeviceUID
+        if payload.microphoneSelectionMode == .system {
+            self.appMicSelectionMigrationVersion = 0
+        }
         self.enforceAppOnlyMicrophoneSelection()
         self.visualizerNoiseThreshold = payload.visualizerNoiseThreshold
         self.overlayPosition = payload.overlayPosition
