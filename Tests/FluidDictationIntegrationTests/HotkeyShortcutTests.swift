@@ -12,7 +12,7 @@ final class HotkeyShortcutTests: XCTestCase {
     private let pasteLastTranscriptionEnabledKey = "PasteLastTranscriptionShortcutEnabled"
     private let microphoneSelectionModeKey = "MicrophoneSelectionMode"
     private let preferredInputDeviceUIDKey = "PreferredInputDeviceUID"
-    private let appOnlyMicrophoneSelectionMigrationVersionKey = "AppOnlyMicrophoneSelectionMigrationVersion"
+    private let appOnlyMicMigrationVersionKey = "AppOnlyMicrophoneSelectionMigrationVersion"
     private let experimentalDirectAudioCaptureEnabledKey = "ExperimentalDirectAudioCaptureEnabled"
 
     @MainActor
@@ -144,7 +144,7 @@ final class HotkeyShortcutTests: XCTestCase {
         try self.withRestoredDefaults(keys: [
             self.microphoneSelectionModeKey,
             self.preferredInputDeviceUIDKey,
-            self.appOnlyMicrophoneSelectionMigrationVersionKey,
+            self.appOnlyMicMigrationVersionKey,
         ]) {
             SettingsStore.shared.appMicSelectionMigrationVersion = 1
             let encoded = try BackupService.shared.encode(document)
@@ -167,7 +167,7 @@ final class HotkeyShortcutTests: XCTestCase {
     func testAppOnlyBackupKeepsCompletedMicrophoneMigration() async {
         let document = await BackupService.shared.makeBackupDocument()
 
-        self.withRestoredDefaults(keys: [self.appOnlyMicrophoneSelectionMigrationVersionKey]) {
+        self.withRestoredDefaults(keys: [self.appOnlyMicMigrationVersionKey]) {
             SettingsStore.shared.appMicSelectionMigrationVersion = 1
 
             SettingsStore.shared.restore(from: document.settings)
@@ -461,7 +461,7 @@ final class HotkeyShortcutTests: XCTestCase {
         try self.withRestoredDefaults(keys: [
             self.microphoneSelectionModeKey,
             self.preferredInputDeviceUIDKey,
-            self.appOnlyMicrophoneSelectionMigrationVersionKey,
+            self.appOnlyMicMigrationVersionKey,
         ]) {
             UserDefaults.standard.set(
                 SettingsStore.MicrophoneSelectionMode.system.rawValue,
@@ -503,7 +503,7 @@ final class HotkeyShortcutTests: XCTestCase {
     func testMicrophoneMigrationWaitsForAUsableDeviceList() throws {
         try self.withRestoredDefaults(keys: [
             self.preferredInputDeviceUIDKey,
-            self.appOnlyMicrophoneSelectionMigrationVersionKey,
+            self.appOnlyMicMigrationVersionKey,
         ]) {
             SettingsStore.shared.preferredInputDeviceUID = "airpods"
             SettingsStore.shared.appMicSelectionMigrationVersion = 0
@@ -521,7 +521,7 @@ final class HotkeyShortcutTests: XCTestCase {
     func testMicrophoneMigrationWithoutBuiltInPreservesAvailableSelection() throws {
         try self.withRestoredDefaults(keys: [
             self.preferredInputDeviceUIDKey,
-            self.appOnlyMicrophoneSelectionMigrationVersionKey,
+            self.appOnlyMicMigrationVersionKey,
         ]) {
             SettingsStore.shared.preferredInputDeviceUID = "studio-mic"
             SettingsStore.shared.appMicSelectionMigrationVersion = 0
@@ -546,7 +546,7 @@ final class HotkeyShortcutTests: XCTestCase {
     func testMicrophoneMigrationWithoutBuiltInReplacesMissingSelectionWithDefault() throws {
         try self.withRestoredDefaults(keys: [
             self.preferredInputDeviceUIDKey,
-            self.appOnlyMicrophoneSelectionMigrationVersionKey,
+            self.appOnlyMicMigrationVersionKey,
         ]) {
             SettingsStore.shared.preferredInputDeviceUID = "disconnected-usb"
             SettingsStore.shared.appMicSelectionMigrationVersion = 0
@@ -571,7 +571,7 @@ final class HotkeyShortcutTests: XCTestCase {
     func testCompletedMigrationReconcilesMissingSavedInputAtLaunch() throws {
         try self.withRestoredDefaults(keys: [
             self.preferredInputDeviceUIDKey,
-            self.appOnlyMicrophoneSelectionMigrationVersionKey,
+            self.appOnlyMicMigrationVersionKey,
         ]) {
             SettingsStore.shared.preferredInputDeviceUID = "disconnected-usb"
             SettingsStore.shared.appMicSelectionMigrationVersion = 1
