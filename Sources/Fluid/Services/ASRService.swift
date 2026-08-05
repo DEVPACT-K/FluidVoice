@@ -730,6 +730,7 @@ final class ASRService: ObservableObject {
         let generation: UInt64
         let reason: String
         let requiresIdlePrewarm: Bool
+        let reconcilesInputSelection: Bool
     }
 
     private lazy var directAudioLifecycleController: DirectCoreAudioLifecycleController = {
@@ -907,8 +908,7 @@ final class ASRService: ObservableObject {
     }
 
     private func directCoreAudioDeviceSelection() -> DirectCoreAudioDeviceSelection {
-        if SettingsStore.shared.microphoneSelectionMode == .manual,
-           let preferredUID = SettingsStore.shared.preferredInputDeviceUID,
+        if let preferredUID = SettingsStore.shared.preferredInputDeviceUID,
            preferredUID.isEmpty == false
         {
             return .preferredUID(preferredUID)
@@ -1258,23 +1258,27 @@ final class ASRService: ObservableObject {
         self.micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
         self.micPermissionGranted = (self.micStatus == .authorized)
 
-        if AudioCaptureIdlePolicy.shouldEnforceSystemPreferredInput(
-            experimentalDirectAudioCaptureEnabled: SettingsStore.shared.experimentalDirectAudioCaptureEnabled
-        ) {
-            let microphonePreferenceCoordinator =
-                AppServices.shared.microphonePreferenceCoordinator
-            _ = microphonePreferenceCoordinator.enforcePreferredInput(reason: "startup")
-            microphonePreferenceCoordinator.stabilizePreferredInputAfterHardwareChange(
-                reason: "startup"
-            )
+        let initialInputSnapshot = await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let devices = AudioDevice.listInputDevices()
+                let defaultInputUID = AudioDevice.getDefaultInputDevice()?.uid
+                continuation.resume(returning: (devices, defaultInputUID))
+            }
         }
+        guard self.isTerminating == false else { return }
+
+        let microphonePreferenceCoordinator = AppServices.shared.microphonePreferenceCoordinator
+        microphonePreferenceCoordinator.migrateToAppOnlySelectionIfNeeded(
+            availableInputs: initialInputSnapshot.0,
+            defaultInputUID: initialInputSnapshot.1
+        )
 
         self.registerDefaultDeviceChangeListener()
         self.registerEngineConfigurationChangeObserver()
         self.registerDeviceListChangeListener()
 
         // Initialize device list cache
-        self.cacheCurrentDeviceList(AudioDevice.listInputDevices())
+        self.cacheCurrentDeviceList(initialInputSnapshot.0)
 
         // Register the input callback and allocate its fixed ring now. This
         // does not start the device or show the microphone privacy indicator.
@@ -1460,12 +1464,6 @@ final class ASRService: ObservableObject {
         self.isDictionaryTrainingCaptureActive = false
 
         do {
-            if SettingsStore.shared.microphoneSelectionMode == .manual,
-               SettingsStore.shared.experimentalDirectAudioCaptureEnabled == false
-            {
-                AppServices.shared.microphonePreferenceCoordinator.enforcePreferredInput(reason: "recording start")
-            }
-
             let maximumStartAttempts =
                 SettingsStore.shared.experimentalDirectAudioCaptureEnabled ? 3 : 1
             var startAttempt = 1
@@ -2264,11 +2262,6 @@ final class ASRService: ObservableObject {
     private func bindPreferredInputDeviceIfNeeded() -> Bool {
         DebugLogger.shared.debug("bindPreferredInputDeviceIfNeeded() - Starting input device binding", source: "ASRService")
 
-        guard SettingsStore.shared.microphoneSelectionMode == .manual else {
-            DebugLogger.shared.info("Using current macOS default input device", source: "ASRService")
-            return true
-        }
-
         guard let device = self.resolvedInputDeviceForCapture() else {
             DebugLogger.shared.error(
                 "No input device available for manual microphone capture.",
@@ -2688,7 +2681,8 @@ final class ASRService: ObservableObject {
 
     private func scheduleAudioRouteRecovery(
         reason: String,
-        requiresIdlePrewarm: Bool = false
+        requiresIdlePrewarm: Bool = false,
+        reconcilesInputSelection: Bool = false
     ) {
         guard self.isTerminating == false else {
             self.benchmarkLog("route_recovery_ignored reason=app_terminating event=\(reason)")
@@ -2697,10 +2691,13 @@ final class ASRService: ObservableObject {
         self.audioRouteRecoveryGeneration &+= 1
         let requiresPrewarmAfterRecovery =
             requiresIdlePrewarm || self.pendingAudioRouteRecovery?.requiresIdlePrewarm == true
+        let reconcilesInputAfterRecovery =
+            reconcilesInputSelection || self.pendingAudioRouteRecovery?.reconcilesInputSelection == true
         let request = AudioRouteRecoveryRequest(
             generation: self.audioRouteRecoveryGeneration,
             reason: reason,
-            requiresIdlePrewarm: requiresPrewarmAfterRecovery
+            requiresIdlePrewarm: requiresPrewarmAfterRecovery,
+            reconcilesInputSelection: reconcilesInputAfterRecovery
         )
         self.pendingAudioRouteRecovery = request
 
@@ -2796,6 +2793,12 @@ final class ASRService: ObservableObject {
             self.finishAudioRouteRecovery(request)
         }
 
+        if request.reconcilesInputSelection,
+           await self.reconcileInputSelectionAfterTopologySettles(request) == false
+        {
+            return
+        }
+
         if self.isRunning {
             await self.recoverActiveAudioRoute(request)
         } else {
@@ -2819,6 +2822,44 @@ final class ASRService: ObservableObject {
         self.armAudioRouteRecovery(pendingRequest)
     }
 
+    private func reconcileInputSelectionAfterTopologySettles(
+        _ request: AudioRouteRecoveryRequest
+    ) async -> Bool {
+        let snapshot = await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let devices = AudioDevice.listInputDevices()
+                let defaultInputUID = AudioDevice.getDefaultInputDevice()?.uid
+                continuation.resume(returning: (devices, defaultInputUID))
+            }
+        }
+        guard request.generation == self.audioRouteRecoveryGeneration,
+              Task.isCancelled == false
+        else { return false }
+
+        let currentUIDs = Set(snapshot.0.map(\.uid))
+        guard currentUIDs == self.cachedDeviceUIDs else {
+            self.cacheCurrentDeviceList(snapshot.0)
+            self.scheduleAudioRouteRecovery(
+                reason: "input topology still settling",
+                requiresIdlePrewarm: request.requiresIdlePrewarm,
+                reconcilesInputSelection: true
+            )
+            return false
+        }
+
+        let coordinator = AppServices.shared.microphonePreferenceCoordinator
+        coordinator.migrateToAppOnlySelectionIfNeeded(
+            availableInputs: snapshot.0,
+            defaultInputUID: snapshot.1
+        )
+        _ = coordinator.inputDeviceForCapture(
+            availableInputs: snapshot.0,
+            defaultInputUID: snapshot.1,
+            persistFallback: true
+        )
+        return true
+    }
+
     private func recoverIdleAudioRoute(_ request: AudioRouteRecoveryRequest) async {
         let shouldRebuild = self.hasPreparedAudioCapture || request.requiresIdlePrewarm
         guard shouldRebuild else { return }
@@ -2828,7 +2869,8 @@ final class ASRService: ObservableObject {
         self.pendingAudioRouteRecovery = AudioRouteRecoveryRequest(
             generation: request.generation,
             reason: request.reason,
-            requiresIdlePrewarm: true
+            requiresIdlePrewarm: true,
+            reconcilesInputSelection: request.reconcilesInputSelection
         )
         await self.directAudioLifecycleController.invalidate(
             reason: "idle_route_change:\(request.reason)"
@@ -2985,21 +3027,8 @@ final class ASRService: ObservableObject {
     }
 
     private func handleDefaultInputChanged() {
-        if SettingsStore.shared.microphoneSelectionMode == .manual {
-            if AudioCaptureIdlePolicy.shouldEnforceSystemPreferredInput(
-                experimentalDirectAudioCaptureEnabled: SettingsStore.shared.experimentalDirectAudioCaptureEnabled
-            ) {
-                AppServices.shared.microphonePreferenceCoordinator.stabilizePreferredInputAfterHardwareChange(
-                    reason: "default input changed"
-                )
-                if self.isRunning || self.isStarting {
-                    self.scheduleAudioRouteRecovery(reason: "manual preferred input reasserted")
-                }
-            }
-            return
-        }
-
-        self.scheduleAudioRouteRecovery(reason: "default input changed")
+        // FluidVoice owns only its app-specific input selection. A macOS
+        // default-input change must not move or restart the selected mic.
     }
 
     private func handleDefaultOutputChanged() {
@@ -3257,23 +3286,20 @@ final class ASRService: ObservableObject {
 
                 DebugLogger.shared.debug("Current input devices: \(currentDevices.map { $0.name }.joined(separator: ", "))", source: "ASRService")
 
-                if SettingsStore.shared.microphoneSelectionMode == .manual,
-                   currentUIDs != cachedUIDs
-                {
-                    if AudioCaptureIdlePolicy.shouldEnforceSystemPreferredInput(
-                        experimentalDirectAudioCaptureEnabled: SettingsStore.shared.experimentalDirectAudioCaptureEnabled
-                    ) {
-                        AppServices.shared.microphonePreferenceCoordinator.stabilizePreferredInputAfterHardwareChange(
-                            reason: "input device list changed"
-                        )
-                    } else if AudioCaptureIdlePolicy.didPreferredInputAvailabilityChange(
-                        preferredInputUID: SettingsStore.shared.preferredInputDeviceUID,
+                if currentUIDs != cachedUIDs {
+                    let previousPreferredUID = SettingsStore.shared.preferredInputDeviceUID
+                    let preferredAvailabilityChanged = AudioCaptureIdlePolicy.didPreferredInputAvailabilityChange(
+                        preferredInputUID: previousPreferredUID,
                         previousInputUIDs: cachedUIDs,
                         currentInputUIDs: currentUIDs
-                    ) {
+                    )
+                    let needsInitialSelection =
+                        (previousPreferredUID?.isEmpty ?? true) && currentDevices.isEmpty == false
+                    if needsInitialSelection || preferredAvailabilityChanged {
                         self.scheduleAudioRouteRecovery(
-                            reason: "direct preferred input availability changed",
-                            requiresIdlePrewarm: true
+                            reason: "app microphone availability changed",
+                            requiresIdlePrewarm: true,
+                            reconcilesInputSelection: true
                         )
                     }
                 }
@@ -3310,7 +3336,10 @@ final class ASRService: ObservableObject {
                     "Device changed during recording - deferring rebuild until audio route recovery",
                     source: "ASRService"
                 )
-                self.scheduleAudioRouteRecovery(reason: "monitored input disconnected")
+                self.scheduleAudioRouteRecovery(
+                    reason: "monitored input disconnected",
+                    reconcilesInputSelection: true
+                )
             } else {
                 DebugLogger.shared.info("Not recording - device disconnect handled gracefully", source: "ASRService")
             }

@@ -5,7 +5,6 @@ import Foundation
 protocol AudioDeviceManaging {
     func listInputDevices() -> [AudioDevice.Device]
     func defaultInputDevice() -> AudioDevice.Device?
-    @discardableResult func setDefaultInputDevice(uid: String) -> Bool
 }
 
 struct CoreAudioDeviceManager: AudioDeviceManaging {
@@ -16,29 +15,14 @@ struct CoreAudioDeviceManager: AudioDeviceManaging {
     func defaultInputDevice() -> AudioDevice.Device? {
         AudioDevice.getDefaultInputDevice()
     }
-
-    @discardableResult
-    func setDefaultInputDevice(uid: String) -> Bool {
-        AudioDevice.setDefaultInputDevice(uid: uid)
-    }
 }
 
 @MainActor
 final class MicrophonePreferenceCoordinator: ObservableObject {
-    enum EnforcementResult: Equatable {
-        case skippedSystemMode
-        case skippedNoPreferredInput
-        case skippedPreferredUnavailable(String)
-        case alreadyUsingPreferred(String)
-        case applied(String)
-        case failed(String)
-    }
-
-    @Published private(set) var lastResult: EnforcementResult?
+    private static let appOnlyMigrationVersion = 1
 
     private let settings: SettingsStore
     private let devices: any AudioDeviceManaging
-    private var stabilizationTask: Task<Void, Never>?
 
     init(
         settings: SettingsStore? = nil,
@@ -48,83 +32,87 @@ final class MicrophonePreferenceCoordinator: ObservableObject {
         self.devices = devices ?? CoreAudioDeviceManager()
     }
 
-    @discardableResult
-    func enforcePreferredInput(reason: String) -> EnforcementResult {
-        guard self.settings.microphoneSelectionMode == .manual else {
-            self.lastResult = .skippedSystemMode
-            return .skippedSystemMode
+    func migrateToAppOnlySelectionIfNeeded() {
+        guard self.settings.appMicSelectionMigrationVersion < Self.appOnlyMigrationVersion else {
+            self.settings.enforceAppOnlyMicrophoneSelection()
+            return
         }
-
-        guard let preferredUID = self.settings.preferredInputDeviceUID,
-              preferredUID.isEmpty == false
-        else {
-            self.lastResult = .skippedNoPreferredInput
-            return .skippedNoPreferredInput
-        }
-
         let inputs = self.devices.listInputDevices()
-        guard inputs.contains(where: { $0.uid == preferredUID }) else {
-            let result = EnforcementResult.skippedPreferredUnavailable(preferredUID)
-            self.lastResult = result
-            DebugLogger.shared.warning(
-                "Preferred microphone unavailable during \(reason): \(preferredUID)",
-                source: "MicrophonePreferenceCoordinator"
-            )
-            return result
+        let defaultInputUID = self.devices.defaultInputDevice()?.uid
+        self.migrateToAppOnlySelectionIfNeeded(
+            availableInputs: inputs,
+            defaultInputUID: defaultInputUID
+        )
+    }
+
+    func migrateToAppOnlySelectionIfNeeded(
+        availableInputs: [AudioDevice.Device],
+        defaultInputUID: String?
+    ) {
+        guard self.settings.appMicSelectionMigrationVersion < Self.appOnlyMigrationVersion else {
+            self.settings.enforceAppOnlyMicrophoneSelection()
+            return
         }
+        guard let selectedInput = self.fallbackInput(
+            from: availableInputs,
+            defaultInputUID: defaultInputUID
+        ) else { return }
 
-        if self.devices.defaultInputDevice()?.uid == preferredUID {
-            let result = EnforcementResult.alreadyUsingPreferred(preferredUID)
-            self.lastResult = result
-            return result
-        }
-
-        let didApply = self.devices.setDefaultInputDevice(uid: preferredUID)
-        let result: EnforcementResult = didApply ? .applied(preferredUID) : .failed(preferredUID)
-        self.lastResult = result
-
-        if didApply {
-            DebugLogger.shared.info(
-                "Reasserted preferred microphone during \(reason): \(preferredUID)",
-                source: "MicrophonePreferenceCoordinator"
-            )
-        } else {
-            DebugLogger.shared.error(
-                "Failed to reassert preferred microphone during \(reason): \(preferredUID)",
-                source: "MicrophonePreferenceCoordinator"
-            )
-        }
-
-        return result
+        self.settings.preferredInputDeviceUID = selectedInput.uid
+        self.settings.enforceAppOnlyMicrophoneSelection()
+        self.settings.appMicSelectionMigrationVersion = Self.appOnlyMigrationVersion
+        DebugLogger.shared.info(
+            "Migrated FluidVoice microphone selection to app-only input '\(selectedInput.name)'",
+            source: "MicrophonePreferenceCoordinator"
+        )
     }
 
     func inputDeviceForCapture() -> AudioDevice.Device? {
-        if self.settings.microphoneSelectionMode == .manual,
-           let preferredUID = self.settings.preferredInputDeviceUID,
+        self.inputDeviceForCapture(
+            availableInputs: self.devices.listInputDevices(),
+            defaultInputUID: self.devices.defaultInputDevice()?.uid
+        )
+    }
+
+    func inputDeviceForCapture(
+        availableInputs: [AudioDevice.Device],
+        defaultInputUID: String? = nil,
+        persistFallback: Bool = false
+    ) -> AudioDevice.Device? {
+        if let preferredUID = self.settings.preferredInputDeviceUID,
            preferredUID.isEmpty == false,
-           let preferredDevice = self.devices.listInputDevices().first(where: { $0.uid == preferredUID })
+           let preferredDevice = availableInputs.first(where: { $0.uid == preferredUID })
         {
             return preferredDevice
         }
 
-        return self.devices.defaultInputDevice()
+        guard let fallback = self.fallbackInput(
+            from: availableInputs,
+            defaultInputUID: defaultInputUID
+        ) else { return nil }
+        if persistFallback {
+            self.settings.preferredInputDeviceUID = fallback.uid
+            DebugLogger.shared.info(
+                "Selected fallback FluidVoice microphone '\(fallback.name)'",
+                source: "MicrophonePreferenceCoordinator"
+            )
+        }
+        return fallback
     }
 
-    func stabilizePreferredInputAfterHardwareChange(reason: String) {
-        self.stabilizationTask?.cancel()
-        self.stabilizationTask = Task { [weak self] in
-            let delaysNanoseconds: [UInt64] = [
-                250_000_000,
-                750_000_000,
-                1_500_000_000,
-                2_500_000_000,
-            ]
-
-            for delay in delaysNanoseconds {
-                try? await Task.sleep(nanoseconds: delay)
-                guard Task.isCancelled == false else { return }
-                _ = self?.enforcePreferredInput(reason: reason)
-            }
+    private func fallbackInput(
+        from inputs: [AudioDevice.Device],
+        defaultInputUID: String?
+    ) -> AudioDevice.Device? {
+        guard inputs.isEmpty == false else { return nil }
+        if let builtInInput = inputs.first(where: \.isBuiltIn) {
+            return builtInInput
         }
+        if let defaultUID = defaultInputUID,
+           let defaultInput = inputs.first(where: { $0.uid == defaultUID })
+        {
+            return defaultInput
+        }
+        return inputs.first
     }
 }

@@ -12,7 +12,7 @@ final class HotkeyShortcutTests: XCTestCase {
     private let pasteLastTranscriptionEnabledKey = "PasteLastTranscriptionShortcutEnabled"
     private let microphoneSelectionModeKey = "MicrophoneSelectionMode"
     private let preferredInputDeviceUIDKey = "PreferredInputDeviceUID"
-    private let systemInputDeviceUIDBeforeManualKey = "SystemInputDeviceUIDBeforeManual"
+    private let appOnlyMicrophoneSelectionMigrationVersionKey = "AppOnlyMicrophoneSelectionMigrationVersion"
     private let experimentalDirectAudioCaptureEnabledKey = "ExperimentalDirectAudioCaptureEnabled"
 
     @MainActor
@@ -161,15 +161,6 @@ final class HotkeyShortcutTests: XCTestCase {
 
     func testPreparedDirectCaptureMayRemainWarmWhileIdle() {
         XCTAssertTrue(AudioCaptureIdlePolicy.shouldPrewarmCapture(
-            experimentalDirectAudioCaptureEnabled: true
-        ))
-    }
-
-    func testSystemPreferredInputIsEnforcedOnlyForLegacyCapture() {
-        XCTAssertTrue(AudioCaptureIdlePolicy.shouldEnforceSystemPreferredInput(
-            experimentalDirectAudioCaptureEnabled: false
-        ))
-        XCTAssertFalse(AudioCaptureIdlePolicy.shouldEnforceSystemPreferredInput(
             experimentalDirectAudioCaptureEnabled: true
         ))
     }
@@ -355,130 +346,24 @@ final class HotkeyShortcutTests: XCTestCase {
         }
     }
 
-    func testMicrophoneSelectionModeDefaultsToSystem() throws {
+    func testMicrophoneSelectionModeIsAlwaysAppOnly() throws {
         try self.withRestoredDefaults(keys: [self.microphoneSelectionModeKey]) {
-            UserDefaults.standard.removeObject(forKey: self.microphoneSelectionModeKey)
-
-            XCTAssertEqual(SettingsStore.shared.microphoneSelectionMode, .system)
-        }
-    }
-
-    func testMicrophoneSelectionModePersistsManual() throws {
-        try self.withRestoredDefaults(keys: [self.microphoneSelectionModeKey]) {
-            SettingsStore.shared.microphoneSelectionMode = .manual
+            UserDefaults.standard.set(
+                SettingsStore.MicrophoneSelectionMode.system.rawValue,
+                forKey: self.microphoneSelectionModeKey
+            )
 
             XCTAssertEqual(SettingsStore.shared.microphoneSelectionMode, .manual)
-            XCTAssertEqual(
-                UserDefaults.standard.string(forKey: self.microphoneSelectionModeKey),
-                SettingsStore.MicrophoneSelectionMode.manual.rawValue
-            )
         }
     }
 
-    func testLegacySyncFalseDoesNotEnableManualMode() throws {
+    func testInputSelectionPersistsAppPreference() throws {
         try self.withRestoredDefaults(keys: [
-            self.microphoneSelectionModeKey,
-            "SyncAudioDevicesWithSystem",
-        ]) {
-            UserDefaults.standard.removeObject(forKey: self.microphoneSelectionModeKey)
-            UserDefaults.standard.set(false, forKey: "SyncAudioDevicesWithSystem")
-
-            XCTAssertEqual(SettingsStore.shared.microphoneSelectionMode, .system)
-        }
-    }
-
-    func testSystemModeInputSelectionDoesNotOverwriteManualPreference() throws {
-        try self.withRestoredDefaults(keys: [
-            self.microphoneSelectionModeKey,
             self.preferredInputDeviceUIDKey,
         ]) {
-            SettingsStore.shared.microphoneSelectionMode = .manual
-            SettingsStore.shared.preferredInputDeviceUID = "internal"
-            SettingsStore.shared.microphoneSelectionMode = .system
-
-            SettingsStore.shared.recordInputDeviceSelection("airpods")
-
-            XCTAssertEqual(SettingsStore.shared.preferredInputDeviceUID, "internal")
-        }
-    }
-
-    func testManualModeInputSelectionPersistsManualPreference() throws {
-        try self.withRestoredDefaults(keys: [
-            self.microphoneSelectionModeKey,
-            self.preferredInputDeviceUIDKey,
-        ]) {
-            SettingsStore.shared.microphoneSelectionMode = .manual
-
             SettingsStore.shared.recordInputDeviceSelection("studio-mic")
 
             XCTAssertEqual(SettingsStore.shared.preferredInputDeviceUID, "studio-mic")
-        }
-    }
-
-    func testSystemModeInputSelectionSyncsToSystemDefault() throws {
-        try self.withRestoredDefaults(keys: [self.microphoneSelectionModeKey]) {
-            SettingsStore.shared.microphoneSelectionMode = .system
-
-            XCTAssertTrue(SettingsStore.shared.shouldSyncInputSelectionToSystemDefault())
-        }
-    }
-
-    func testManualModeInputSelectionDoesNotImmediatelySyncToSystemDefault() throws {
-        try self.withRestoredDefaults(keys: [self.microphoneSelectionModeKey]) {
-            SettingsStore.shared.microphoneSelectionMode = .manual
-
-            XCTAssertFalse(SettingsStore.shared.shouldSyncInputSelectionToSystemDefault())
-        }
-    }
-
-    func testSwitchingBackToSystemModeRestoresPreviousSystemInput() throws {
-        try self.withRestoredDefaults(keys: [
-            self.microphoneSelectionModeKey,
-            self.preferredInputDeviceUIDKey,
-            self.systemInputDeviceUIDBeforeManualKey,
-        ]) {
-            SettingsStore.shared.microphoneSelectionMode = .system
-            _ = SettingsStore.shared.setMicrophoneSelectionMode(
-                .manual,
-                currentSystemInputUID: "internal",
-                availableInputUIDs: ["internal", "airpods"]
-            )
-            SettingsStore.shared.recordInputDeviceSelection("airpods")
-
-            let restoreUID = SettingsStore.shared.setMicrophoneSelectionMode(
-                .system,
-                currentSystemInputUID: "airpods",
-                availableInputUIDs: ["internal", "airpods"]
-            )
-
-            XCTAssertEqual(restoreUID, "internal")
-            XCTAssertEqual(SettingsStore.shared.microphoneSelectionMode, .system)
-            XCTAssertEqual(SettingsStore.shared.preferredInputDeviceUID, "airpods")
-        }
-    }
-
-    func testSwitchingBackToSystemModeFallsBackWhenPreviousSystemInputUnavailable() throws {
-        try self.withRestoredDefaults(keys: [
-            self.microphoneSelectionModeKey,
-            self.preferredInputDeviceUIDKey,
-            self.systemInputDeviceUIDBeforeManualKey,
-        ]) {
-            SettingsStore.shared.microphoneSelectionMode = .system
-            _ = SettingsStore.shared.setMicrophoneSelectionMode(
-                .manual,
-                currentSystemInputUID: "internal",
-                availableInputUIDs: ["internal", "airpods"]
-            )
-            SettingsStore.shared.recordInputDeviceSelection("airpods")
-
-            let restoreUID = SettingsStore.shared.setMicrophoneSelectionMode(
-                .system,
-                currentSystemInputUID: "airpods",
-                availableInputUIDs: ["airpods"]
-            )
-
-            XCTAssertEqual(restoreUID, "airpods")
-            XCTAssertEqual(SettingsStore.shared.preferredInputDeviceUID, "airpods")
         }
     }
 
@@ -512,106 +397,80 @@ final class HotkeyShortcutTests: XCTestCase {
     }
 
     @MainActor
-    func testMicrophoneCoordinatorSkipsSystemMode() throws {
+    func testMicrophoneMigrationChoosesBuiltInOnce() throws {
         try self.withRestoredDefaults(keys: [
             self.microphoneSelectionModeKey,
             self.preferredInputDeviceUIDKey,
+            self.appOnlyMicrophoneSelectionMigrationVersionKey,
         ]) {
-            SettingsStore.shared.microphoneSelectionMode = .system
-            SettingsStore.shared.preferredInputDeviceUID = "internal"
-            let devices = FakeAudioDeviceManager(
-                inputs: [Self.device(uid: "internal", name: "MacBook Pro Microphone")],
-                defaultInputUID: "airpods"
+            UserDefaults.standard.set(
+                SettingsStore.MicrophoneSelectionMode.system.rawValue,
+                forKey: self.microphoneSelectionModeKey
             )
-            let coordinator = MicrophonePreferenceCoordinator(settings: .shared, devices: devices)
-
-            let result = coordinator.enforcePreferredInput(reason: "unit test")
-
-            XCTAssertEqual(result, .skippedSystemMode)
-            XCTAssertEqual(devices.setInputCalls, [])
-        }
-    }
-
-    @MainActor
-    func testMicrophoneCoordinatorAppliesManualPreferredInput() throws {
-        try self.withRestoredDefaults(keys: [
-            self.microphoneSelectionModeKey,
-            self.preferredInputDeviceUIDKey,
-        ]) {
-            SettingsStore.shared.microphoneSelectionMode = .manual
-            SettingsStore.shared.preferredInputDeviceUID = "internal"
+            SettingsStore.shared.preferredInputDeviceUID = "airpods"
+            SettingsStore.shared.appMicSelectionMigrationVersion = 0
             let devices = FakeAudioDeviceManager(
                 inputs: [
-                    Self.device(uid: "internal", name: "MacBook Pro Microphone"),
+                    Self.device(
+                        uid: "internal",
+                        name: "MacBook Pro Microphone",
+                        transportType: kAudioDeviceTransportTypeBuiltIn
+                    ),
                     Self.device(uid: "airpods", name: "AirPods"),
                 ],
                 defaultInputUID: "airpods"
             )
             let coordinator = MicrophonePreferenceCoordinator(settings: .shared, devices: devices)
 
-            let result = coordinator.enforcePreferredInput(reason: "unit test")
+            coordinator.migrateToAppOnlySelectionIfNeeded()
 
-            XCTAssertEqual(result, .applied("internal"))
-            XCTAssertEqual(devices.setInputCalls, ["internal"])
-            XCTAssertEqual(devices.defaultInputUID, "internal")
+            XCTAssertEqual(SettingsStore.shared.preferredInputDeviceUID, "internal")
+            XCTAssertEqual(SettingsStore.shared.microphoneSelectionMode, .manual)
+            XCTAssertEqual(SettingsStore.shared.appMicSelectionMigrationVersion, 1)
+            XCTAssertEqual(
+                UserDefaults.standard.string(forKey: self.microphoneSelectionModeKey),
+                SettingsStore.MicrophoneSelectionMode.manual.rawValue
+            )
+            XCTAssertEqual(devices.defaultInputUID, "airpods")
+
+            SettingsStore.shared.recordInputDeviceSelection("airpods")
+            coordinator.migrateToAppOnlySelectionIfNeeded()
+            XCTAssertEqual(SettingsStore.shared.preferredInputDeviceUID, "airpods")
         }
     }
 
     @MainActor
-    func testMicrophoneCoordinatorKeepsUnavailableManualPreference() throws {
+    func testMicrophoneMigrationWaitsForAUsableDeviceList() throws {
         try self.withRestoredDefaults(keys: [
-            self.microphoneSelectionModeKey,
             self.preferredInputDeviceUIDKey,
+            self.appOnlyMicrophoneSelectionMigrationVersionKey,
         ]) {
-            SettingsStore.shared.microphoneSelectionMode = .manual
-            SettingsStore.shared.preferredInputDeviceUID = "external"
-            let devices = FakeAudioDeviceManager(
-                inputs: [Self.device(uid: "internal", name: "MacBook Pro Microphone")],
-                defaultInputUID: "internal"
-            )
+            SettingsStore.shared.preferredInputDeviceUID = "airpods"
+            SettingsStore.shared.appMicSelectionMigrationVersion = 0
+            let devices = FakeAudioDeviceManager(inputs: [], defaultInputUID: nil)
             let coordinator = MicrophonePreferenceCoordinator(settings: .shared, devices: devices)
 
-            let result = coordinator.enforcePreferredInput(reason: "unit test")
+            coordinator.migrateToAppOnlySelectionIfNeeded()
 
-            XCTAssertEqual(result, .skippedPreferredUnavailable("external"))
-            XCTAssertEqual(SettingsStore.shared.preferredInputDeviceUID, "external")
-            XCTAssertEqual(devices.setInputCalls, [])
+            XCTAssertEqual(SettingsStore.shared.preferredInputDeviceUID, "airpods")
+            XCTAssertEqual(SettingsStore.shared.appMicSelectionMigrationVersion, 0)
         }
     }
 
     @MainActor
-    func testMicrophoneCoordinatorNoOpsWhenPreferredAlreadyDefault() throws {
+    func testMicrophoneCoordinatorKeepsAvailableUserSelection() throws {
         try self.withRestoredDefaults(keys: [
-            self.microphoneSelectionModeKey,
             self.preferredInputDeviceUIDKey,
         ]) {
-            SettingsStore.shared.microphoneSelectionMode = .manual
-            SettingsStore.shared.preferredInputDeviceUID = "internal"
-            let devices = FakeAudioDeviceManager(
-                inputs: [Self.device(uid: "internal", name: "MacBook Pro Microphone")],
-                defaultInputUID: "internal"
-            )
-            let coordinator = MicrophonePreferenceCoordinator(settings: .shared, devices: devices)
-
-            let result = coordinator.enforcePreferredInput(reason: "unit test")
-
-            XCTAssertEqual(result, .alreadyUsingPreferred("internal"))
-            XCTAssertEqual(devices.setInputCalls, [])
-        }
-    }
-
-    @MainActor
-    func testMicrophoneCoordinatorResolvesManualPreferredInputForCapture() throws {
-        try self.withRestoredDefaults(keys: [
-            self.microphoneSelectionModeKey,
-            self.preferredInputDeviceUIDKey,
-        ]) {
-            SettingsStore.shared.microphoneSelectionMode = .manual
             SettingsStore.shared.preferredInputDeviceUID = "studio-mic"
             let studioMic = Self.device(uid: "studio-mic", name: "Studio Mic")
             let devices = FakeAudioDeviceManager(
                 inputs: [
-                    Self.device(uid: "internal", name: "MacBook Pro Microphone"),
+                    Self.device(
+                        uid: "internal",
+                        name: "MacBook Pro Microphone",
+                        transportType: kAudioDeviceTransportTypeBuiltIn
+                    ),
                     studioMic,
                 ],
                 defaultInputUID: "internal"
@@ -621,7 +480,74 @@ final class HotkeyShortcutTests: XCTestCase {
             let resolved = coordinator.inputDeviceForCapture()
 
             XCTAssertEqual(resolved, studioMic)
-            XCTAssertEqual(devices.setInputCalls, [])
+            XCTAssertEqual(SettingsStore.shared.preferredInputDeviceUID, "studio-mic")
+        }
+    }
+
+    @MainActor
+    func testMicrophoneCoordinatorFallsBackToBuiltInWhenSelectionDisappears() throws {
+        try self.withRestoredDefaults(keys: [
+            self.preferredInputDeviceUIDKey,
+        ]) {
+            SettingsStore.shared.preferredInputDeviceUID = "airpods"
+            let builtIn = Self.device(
+                uid: "internal",
+                name: "MacBook Pro Microphone",
+                transportType: kAudioDeviceTransportTypeBuiltIn
+            )
+            let devices = FakeAudioDeviceManager(
+                inputs: [builtIn, Self.device(uid: "usb", name: "USB Mic")],
+                defaultInputUID: "usb"
+            )
+            let coordinator = MicrophonePreferenceCoordinator(settings: .shared, devices: devices)
+
+            let previewFallback = coordinator.inputDeviceForCapture()
+
+            XCTAssertEqual(previewFallback, builtIn)
+            XCTAssertEqual(SettingsStore.shared.preferredInputDeviceUID, "airpods")
+            XCTAssertEqual(devices.defaultInputUID, "usb")
+
+            let settledFallback = coordinator.inputDeviceForCapture(
+                availableInputs: devices.inputs,
+                defaultInputUID: devices.defaultInputUID,
+                persistFallback: true
+            )
+            XCTAssertEqual(settledFallback, builtIn)
+            XCTAssertEqual(SettingsStore.shared.preferredInputDeviceUID, "internal")
+            XCTAssertEqual(devices.defaultInputUID, "usb")
+
+            let afterReconnect = coordinator.inputDeviceForCapture(availableInputs: [
+                builtIn,
+                Self.device(uid: "airpods", name: "AirPods"),
+            ])
+            XCTAssertEqual(afterReconnect, builtIn)
+            XCTAssertEqual(SettingsStore.shared.preferredInputDeviceUID, "internal")
+        }
+    }
+
+    @MainActor
+    func testMicrophoneCoordinatorUsesCurrentInputWhenNoBuiltInExists() throws {
+        try self.withRestoredDefaults(keys: [self.preferredInputDeviceUIDKey]) {
+            SettingsStore.shared.preferredInputDeviceUID = "disconnected"
+            let currentInput = Self.device(uid: "usb", name: "USB Mic")
+            let devices = FakeAudioDeviceManager(
+                inputs: [Self.device(uid: "other", name: "Other Mic"), currentInput],
+                defaultInputUID: "usb"
+            )
+            let coordinator = MicrophonePreferenceCoordinator(settings: .shared, devices: devices)
+
+            let previewFallback = coordinator.inputDeviceForCapture()
+
+            XCTAssertEqual(previewFallback, currentInput)
+            XCTAssertEqual(SettingsStore.shared.preferredInputDeviceUID, "disconnected")
+
+            let settledFallback = coordinator.inputDeviceForCapture(
+                availableInputs: devices.inputs,
+                defaultInputUID: devices.defaultInputUID,
+                persistFallback: true
+            )
+            XCTAssertEqual(settledFallback, currentInput)
+            XCTAssertEqual(SettingsStore.shared.preferredInputDeviceUID, "usb")
         }
     }
 
@@ -667,7 +593,6 @@ final class HotkeyShortcutTests: XCTestCase {
 private final class FakeAudioDeviceManager: AudioDeviceManaging {
     let inputs: [AudioDevice.Device]
     var defaultInputUID: String?
-    private(set) var setInputCalls: [String] = []
 
     init(inputs: [AudioDevice.Device], defaultInputUID: String?) {
         self.inputs = inputs
@@ -681,11 +606,5 @@ private final class FakeAudioDeviceManager: AudioDeviceManaging {
     func defaultInputDevice() -> AudioDevice.Device? {
         guard let defaultInputUID else { return nil }
         return self.inputs.first { $0.uid == defaultInputUID }
-    }
-
-    func setDefaultInputDevice(uid: String) -> Bool {
-        self.setInputCalls.append(uid)
-        self.defaultInputUID = uid
-        return true
     }
 }

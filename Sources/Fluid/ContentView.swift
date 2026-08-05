@@ -255,7 +255,6 @@ struct ContentView: View {
     // constructs this view can race AttributeGraph metadata processing.
     @State private var selectedInputUID: String = ""
     @State private var selectedOutputUID: String = SettingsStore.shared.preferredOutputDeviceUID ?? ""
-    @State private var microphoneSelectionMode: SettingsStore.MicrophoneSelectionMode = SettingsStore.shared.microphoneSelectionMode
 
     // AI Prompts Tab State
     @State private var aiInputText: String = ""
@@ -384,16 +383,6 @@ struct ContentView: View {
             .onChange(of: self.audioObserver.changeTick) { _, _ in
                 // Hardware change detected → refresh device lists
                 self.refreshDevices()
-
-                switch SettingsStore.shared.microphoneSelectionMode {
-                case .system:
-                    if let sysIn = AudioDevice.getDefaultInputDevice()?.uid {
-                        self.selectedInputUID = sysIn
-                    }
-                case .manual:
-                    // The refreshed device list drives the displayed selection.
-                    break
-                }
 
                 if let sysOut = AudioDevice.getDefaultOutputDevice()?.uid {
                     self.selectedOutputUID = sysOut
@@ -613,18 +602,8 @@ struct ContentView: View {
                 self.menuBarManager.configure(asrService: self.appServices.asr)
                 self.refreshDevices()
 
-                switch SettingsStore.shared.microphoneSelectionMode {
-                case .system:
-                    if let defaultUID = AudioDevice.getDefaultInputDevice()?.uid {
-                        self.selectedInputUID = defaultUID
-                    }
-                case .manual:
-                    if let preferredUID = SettingsStore.shared.preferredInputDeviceUID, !preferredUID.isEmpty {
-                        self.selectedInputUID = preferredUID
-                    } else if let defaultUID = AudioDevice.getDefaultInputDevice()?.uid {
-                        self.selectedInputUID = defaultUID
-                        SettingsStore.shared.preferredInputDeviceUID = defaultUID
-                    }
+                if let preferredUID = SettingsStore.shared.preferredInputDeviceUID, !preferredUID.isEmpty {
+                    self.selectedInputUID = preferredUID
                 }
 
                 if self.selectedOutputUID.isEmpty, let defOut = AudioDevice.getDefaultOutputDevice()?.uid {
@@ -1471,7 +1450,6 @@ struct ContentView: View {
             visualizerNoiseThreshold: self.$visualizerNoiseThreshold,
             selectedInputUID: self.$selectedInputUID,
             selectedOutputUID: self.$selectedOutputUID,
-            microphoneSelectionMode: self.$microphoneSelectionMode,
             inputDevices: self.$inputDevices,
             outputDevices: self.$outputDevices,
             accessibilityEnabled: self.$accessibilityEnabled,
@@ -1545,6 +1523,11 @@ struct ContentView: View {
             DispatchQueue.main.async {
                 self.inputDevices = inputs
                 self.outputDevices = outputs
+                if let selectedInput = self.appServices.microphonePreferenceCoordinator
+                    .inputDeviceForCapture(availableInputs: inputs)
+                {
+                    self.selectedInputUID = selectedInput.uid
+                }
             }
         }
     }
@@ -4398,13 +4381,7 @@ private extension ContentView {
         self.isRewriteModeShortcutEnabled = SettingsStore.shared.rewriteModeShortcutEnabled
         self.playgroundUsed = SettingsStore.shared.playgroundUsed
         self.visualizerNoiseThreshold = SettingsStore.shared.visualizerNoiseThreshold
-        self.microphoneSelectionMode = SettingsStore.shared.microphoneSelectionMode
-        switch SettingsStore.shared.microphoneSelectionMode {
-        case .system:
-            self.selectedInputUID = AudioDevice.getDefaultInputDevice()?.uid ?? ""
-        case .manual:
-            self.selectedInputUID = SettingsStore.shared.preferredInputDeviceUID ?? AudioDevice.getDefaultInputDevice()?.uid ?? ""
-        }
+        self.selectedInputUID = SettingsStore.shared.preferredInputDeviceUID ?? ""
         self.selectedOutputUID = SettingsStore.shared.preferredOutputDeviceUID ?? ""
         self.enableDebugLogs = SettingsStore.shared.enableDebugLogs
         self.hotkeyMode = SettingsStore.shared.hotkeyMode
