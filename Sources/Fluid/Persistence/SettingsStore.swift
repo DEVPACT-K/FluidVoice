@@ -1780,17 +1780,10 @@ final class SettingsStore: ObservableObject {
         }
     }
 
-    /// Direct Core Audio capture defaults on while preserving stored user choices.
-    var experimentalDirectAudioCaptureEnabled: Bool {
-        get {
-            let value = self.defaults.object(forKey: Keys.experimentalDirectAudioCaptureEnabled)
-            return value as? Bool ?? true
-        }
-        set {
-            objectWillChange.send()
-            self.defaults.set(newValue, forKey: Keys.experimentalDirectAudioCaptureEnabled)
-        }
-    }
+    /// Direct Core Audio is the required capture backend. Legacy persisted
+    /// preferences are intentionally ignored because AVAudioEngine can block or
+    /// crash while audio devices are changing.
+    var experimentalDirectAudioCaptureEnabled: Bool { true }
 
     var copyTranscriptionToClipboard: Bool {
         get { self.defaults.bool(forKey: Keys.copyTranscriptionToClipboard) }
@@ -4915,7 +4908,6 @@ private extension SettingsStore {
         static let enableStreamingPreview = "EnableStreamingPreview"
         static let skipSilentRecordingsEnabled = "SkipSilentRecordingsEnabled"
         static let enableAIStreaming = "EnableAIStreaming"
-        static let experimentalDirectAudioCaptureEnabled = "ExperimentalDirectAudioCaptureEnabled"
         static let copyTranscriptionToClipboard = "CopyTranscriptionToClipboard"
         static let textInsertionMode = "TextInsertionMode"
         static let autoUpdateCheckEnabled = "AutoUpdateCheckEnabled"
