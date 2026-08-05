@@ -458,6 +458,36 @@ final class HotkeyShortcutTests: XCTestCase {
     }
 
     @MainActor
+    func testCompletedMigrationReconcilesMissingSavedInputAtLaunch() throws {
+        try self.withRestoredDefaults(keys: [
+            self.preferredInputDeviceUIDKey,
+            self.appOnlyMicrophoneSelectionMigrationVersionKey,
+        ]) {
+            SettingsStore.shared.preferredInputDeviceUID = "disconnected-usb"
+            SettingsStore.shared.appMicSelectionMigrationVersion = 1
+            let builtIn = Self.device(
+                uid: "internal",
+                name: "MacBook Pro Microphone",
+                transportType: kAudioDeviceTransportTypeBuiltIn
+            )
+            let devices = FakeAudioDeviceManager(
+                inputs: [builtIn, Self.device(uid: "usb", name: "USB Mic")],
+                defaultInputUID: "usb"
+            )
+            let coordinator = MicrophonePreferenceCoordinator(settings: .shared, devices: devices)
+
+            let reconciled = coordinator.reconcileAppOnlySelection(
+                availableInputs: devices.inputs,
+                defaultInputUID: devices.defaultInputUID
+            )
+
+            XCTAssertEqual(reconciled, builtIn)
+            XCTAssertEqual(SettingsStore.shared.preferredInputDeviceUID, "internal")
+            XCTAssertEqual(devices.defaultInputUID, "usb")
+        }
+    }
+
+    @MainActor
     func testMicrophoneCoordinatorKeepsAvailableUserSelection() throws {
         try self.withRestoredDefaults(keys: [
             self.preferredInputDeviceUIDKey,

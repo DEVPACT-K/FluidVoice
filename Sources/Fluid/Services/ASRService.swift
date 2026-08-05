@@ -204,6 +204,7 @@ final class ASRService: ObservableObject {
     private var lastBoostHitTerm: String?
     private var hasPendingParakeetVocabularyReload: Bool = false
     private var vocabularyChangeObserver: NSObjectProtocol?
+    private var settingsBackupRestoreObserver: NSObjectProtocol?
 
     // MARK: - Error Handling
 
@@ -1167,6 +1168,19 @@ final class ASRService: ObservableObject {
                 self?.handleParakeetVocabularyDidChange()
             }
         }
+        self.settingsBackupRestoreObserver = NotificationCenter.default.addObserver(
+            forName: .settingsBackupDidRestore,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.scheduleAudioRouteRecovery(
+                    reason: "settings backup restored",
+                    requiresIdlePrewarm: true,
+                    reconcilesInputSelection: true
+                )
+            }
+        }
     }
 
     deinit {
@@ -1174,6 +1188,9 @@ final class ASRService: ObservableObject {
             NotificationCenter.default.removeObserver(observer)
         }
         if let observer = self.engineConfigurationChangeObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        if let observer = self.settingsBackupRestoreObserver {
             NotificationCenter.default.removeObserver(observer)
         }
     }
@@ -1268,7 +1285,7 @@ final class ASRService: ObservableObject {
         guard self.isTerminating == false else { return }
 
         let microphonePreferenceCoordinator = AppServices.shared.microphonePreferenceCoordinator
-        microphonePreferenceCoordinator.migrateToAppOnlySelectionIfNeeded(
+        microphonePreferenceCoordinator.reconcileAppOnlySelection(
             availableInputs: initialInputSnapshot.0,
             defaultInputUID: initialInputSnapshot.1
         )
@@ -2847,15 +2864,9 @@ final class ASRService: ObservableObject {
             return false
         }
 
-        let coordinator = AppServices.shared.microphonePreferenceCoordinator
-        coordinator.migrateToAppOnlySelectionIfNeeded(
+        AppServices.shared.microphonePreferenceCoordinator.reconcileAppOnlySelection(
             availableInputs: snapshot.0,
             defaultInputUID: snapshot.1
-        )
-        _ = coordinator.inputDeviceForCapture(
-            availableInputs: snapshot.0,
-            defaultInputUID: snapshot.1,
-            persistFallback: true
         )
         return true
     }

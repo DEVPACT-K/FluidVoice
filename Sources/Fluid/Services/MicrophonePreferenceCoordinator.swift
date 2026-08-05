@@ -67,6 +67,22 @@ final class MicrophonePreferenceCoordinator: ObservableObject {
         )
     }
 
+    @discardableResult
+    func reconcileAppOnlySelection(
+        availableInputs: [AudioDevice.Device],
+        defaultInputUID: String?
+    ) -> AudioDevice.Device? {
+        self.migrateToAppOnlySelectionIfNeeded(
+            availableInputs: availableInputs,
+            defaultInputUID: defaultInputUID
+        )
+        return self.inputDeviceForCapture(
+            availableInputs: availableInputs,
+            defaultInputUID: defaultInputUID,
+            persistFallback: true
+        )
+    }
+
     func inputDeviceForCapture() -> AudioDevice.Device? {
         self.inputDeviceForCapture(
             availableInputs: self.devices.listInputDevices(),
