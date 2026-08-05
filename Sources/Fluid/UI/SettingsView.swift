@@ -1498,27 +1498,6 @@ struct SettingsView: View {
                     }
                     .padding(16)
                 }
-
-                // Experimental Card
-                ThemedCard(style: .standard) {
-                    VStack(alignment: .leading, spacing: 14) {
-                        Label("Experimental Settings", systemImage: "exclamationmark.triangle")
-                            .font(.headline)
-                            .foregroundStyle(.primary)
-
-                        VStack(alignment: .leading, spacing: 8) {
-                            self.lowLatencyAudioCaptureToggle
-
-                            if self.asr.isRunning {
-                                Text("Settings are disabled during active recording")
-                                    .font(.caption)
-                                    .foregroundStyle(self.settingsSecondaryText)
-                                    .italic()
-                            }
-                        }
-                    }
-                    .padding(16)
-                }
             }
             .padding(16)
         }
@@ -2627,28 +2606,6 @@ struct FlowLayout: Layout {
 
         cache.containerSize = CGSize(width: maxWidth, height: y + rowHeight)
         cache.lastWidth = maxWidth
-    }
-}
-
-private extension SettingsView {
-    var lowLatencyAudioCaptureToggle: some View {
-        Group {
-            self.settingsToggleRow(
-                title: "Faster Recording Start",
-                description: "FluidVoice starts listening sooner, so your first word is less likely to be missed.",
-                footnote: "If your microphone does not work correctly, turn this off.",
-                isOn: Binding(
-                    get: { self.settings.experimentalDirectAudioCaptureEnabled },
-                    set: { enabled in
-                        self.settings.experimentalDirectAudioCaptureEnabled = enabled
-                        self.asr.refreshAudioCaptureBackendPreference()
-                    }
-                )
-            )
-            .disabled(self.asr.isRunning)
-
-            Divider().padding(.vertical, 8)
-        }
     }
 }
 

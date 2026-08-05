@@ -8,7 +8,7 @@ nonisolated enum AudioCaptureReadinessResult: Equatable {
     case staleSession
 }
 
-actor AudioCaptureReadinessGate {
+final nonisolated class AudioCaptureReadinessGate: @unchecked Sendable {
     private struct Key: Equatable {
         let sessionID: Int
         let attemptID: UInt64
@@ -19,15 +19,26 @@ actor AudioCaptureReadinessGate {
         let continuation: CheckedContinuation<AudioCaptureReadinessResult, Never>
     }
 
+    private let lock = NSLock()
     private var key: Key?
     private var result: AudioCaptureReadinessResult?
     private var waiter: Waiter?
+    private var cancelledWaiterIDs = Set<UUID>()
     private var timeoutTask: Task<Void, Never>?
 
     func arm(sessionID: Int, attemptID: UInt64) {
-        self.finishCurrent(with: .cancelled)
+        self.lock.lock()
+        let previousTimeoutTask = self.timeoutTask
+        let previousWaiter = self.waiter
+        self.timeoutTask = nil
+        self.waiter = nil
+        self.cancelledWaiterIDs.removeAll(keepingCapacity: true)
         self.key = Key(sessionID: sessionID, attemptID: attemptID)
         self.result = nil
+        self.lock.unlock()
+
+        previousTimeoutTask?.cancel()
+        previousWaiter?.continuation.resume(returning: .cancelled)
     }
 
     func wait(
@@ -37,23 +48,33 @@ actor AudioCaptureReadinessGate {
     ) async -> AudioCaptureReadinessResult {
         let key = Key(sessionID: sessionID, attemptID: attemptID)
         guard Task.isCancelled == false else { return .cancelled }
-        guard self.key == key else { return .staleSession }
-        if let result {
-            return result
-        }
 
         let waiterID = UUID()
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
+                self.lock.lock()
+                guard Task.isCancelled == false else {
+                    self.lock.unlock()
+                    continuation.resume(returning: .cancelled)
+                    return
+                }
                 guard self.key == key else {
+                    self.lock.unlock()
                     continuation.resume(returning: .staleSession)
                     return
                 }
                 if let result = self.result {
+                    self.lock.unlock()
                     continuation.resume(returning: result)
                     return
                 }
                 guard self.waiter == nil else {
+                    self.lock.unlock()
+                    continuation.resume(returning: .cancelled)
+                    return
+                }
+                guard self.cancelledWaiterIDs.remove(waiterID) == nil else {
+                    self.lock.unlock()
                     continuation.resume(returning: .cancelled)
                     return
                 }
@@ -66,21 +87,20 @@ actor AudioCaptureReadinessGate {
                     } catch {
                         return
                     }
-                    await self?.finish(
+                    self?.finish(
                         key: key,
                         waiterID: waiterID,
                         with: .timedOut
                     )
                 }
+                self.lock.unlock()
             }
         } onCancel: {
-            Task {
-                await self.finish(
-                    key: key,
-                    waiterID: waiterID,
-                    with: .cancelled
-                )
-            }
+            self.finish(
+                key: key,
+                waiterID: waiterID,
+                with: .cancelled
+            )
         }
     }
 
@@ -110,22 +130,32 @@ actor AudioCaptureReadinessGate {
         waiterID: UUID? = nil,
         with result: AudioCaptureReadinessResult
     ) {
-        guard self.key == key, self.result == nil else { return }
-        if let waiterID, self.waiter?.id != waiterID {
+        self.lock.lock()
+        guard self.key == key, self.result == nil else {
+            self.lock.unlock()
             return
         }
+        if let waiterID {
+            guard let waiter = self.waiter else {
+                if result == .cancelled {
+                    self.cancelledWaiterIDs.insert(waiterID)
+                }
+                self.lock.unlock()
+                return
+            }
+            guard waiter.id == waiterID else {
+                self.lock.unlock()
+                return
+            }
+        }
         self.result = result
-        self.timeoutTask?.cancel()
+        let timeoutTask = self.timeoutTask
         self.timeoutTask = nil
         let waiter = self.waiter
         self.waiter = nil
-        waiter?.continuation.resume(returning: result)
-    }
+        self.lock.unlock()
 
-    private func finishCurrent(with result: AudioCaptureReadinessResult) {
-        guard let key else { return }
-        self.finish(key: key, with: result)
-        self.key = nil
-        self.result = nil
+        timeoutTask?.cancel()
+        waiter?.continuation.resume(returning: result)
     }
 }

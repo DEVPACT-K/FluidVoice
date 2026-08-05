@@ -1033,24 +1033,6 @@ final class ASRService: ObservableObject {
         self.activeAudioCaptureBackend = .none
     }
 
-    /// Applies the experimental capture preference immediately when idle.
-    /// If a recording transition is already underway, start() reads the latest
-    /// persisted value and the following session will use it.
-    func refreshAudioCaptureBackendPreference() {
-        guard self.isRunning == false, self.isStarting == false else {
-            DebugLogger.shared.debug(
-                "Audio capture preference changed during a recording transition; deferring backend refresh",
-                source: "ASRService"
-            )
-            return
-        }
-
-        self.scheduleAudioRouteRecovery(
-            reason: "capture preference changed",
-            requiresIdlePrewarm: true
-        )
-    }
-
     private var inputFormat: AVAudioFormat?
     private var micPermissionGranted = false
 
@@ -1137,7 +1119,7 @@ final class ASRService: ObservableObject {
             audioBuffer: self.audioBuffer,
             onFirstAudio: { sessionID, attemptID, sampleCount, frameLength, sampleRate, acquisitionMs, elapsedMs in
                 Task {
-                    await readinessGate.signalFirstPCM(
+                    readinessGate.signalFirstPCM(
                         sessionID: sessionID,
                         attemptID: attemptID
                     )
@@ -1453,7 +1435,7 @@ final class ASRService: ObservableObject {
         let captureSessionID = self.benchmarkSessionID
         self.audioCaptureAttemptID &+= 1
         var readinessAttemptID = self.audioCaptureAttemptID
-        await self.audioCaptureReadinessGate.arm(
+        self.audioCaptureReadinessGate.arm(
             sessionID: captureSessionID,
             attemptID: readinessAttemptID
         )
@@ -1727,7 +1709,7 @@ final class ASRService: ObservableObject {
 
         self.audioCaptureAttemptID &+= 1
         let attemptID = self.audioCaptureAttemptID
-        await self.audioCaptureReadinessGate.arm(
+        self.audioCaptureReadinessGate.arm(
             sessionID: sessionID,
             attemptID: attemptID
         )
@@ -2880,7 +2862,7 @@ final class ASRService: ObservableObject {
         do {
             self.audioCaptureAttemptID &+= 1
             let readinessAttemptID = self.audioCaptureAttemptID
-            await self.audioCaptureReadinessGate.arm(
+            self.audioCaptureReadinessGate.arm(
                 sessionID: self.benchmarkSessionID,
                 attemptID: readinessAttemptID
             )
@@ -4326,9 +4308,10 @@ private extension ASRService {
 
 //
 // Audio callbacks are not main-actor isolated. Direct Core Audio arrives through
-// a lock-free C ring. AVAudioEngine is used only when Faster Recording Start is
-// disabled. This pipeline owns timestamp trimming, 16 kHz conversion, levels,
-// and session-safe delivery without touching ASRService from a realtime callback.
+// a lock-free C ring. The AVAudioEngine implementation remains as legacy code but
+// is no longer user-selectable. This pipeline owns timestamp trimming, 16 kHz
+// conversion, levels, and session-safe delivery without touching ASRService from
+// a realtime callback.
 
 private final nonisolated class AudioCapturePipeline: @unchecked Sendable {
     private let audioBuffer: ThreadSafeAudioBuffer
