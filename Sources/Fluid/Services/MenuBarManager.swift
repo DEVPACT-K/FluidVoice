@@ -683,12 +683,8 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
                     repo: "Fluid-oss",
                     includePrerelease: SettingsStore.shared.betaReleasesEnabled
                 )
-                let ok = NSAlert()
-                ok.messageText = "Update Found!"
-                ok.informativeText = "A new version is available and will be installed now."
-                ok.alertStyle = .informational
-                ok.addButton(withTitle: "OK")
-                ok.runModal()
+            } catch SimpleUpdateError.updateAlreadyInProgress {
+                DebugLogger.shared.info("Update installation already in progress", source: "MenuBarManager")
             } catch {
                 let msg = NSAlert()
                 if let pmkError = error as? PMKError, pmkError.isCancelled {

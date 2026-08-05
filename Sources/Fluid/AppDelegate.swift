@@ -371,12 +371,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
                     repo: "Fluid-oss",
                     includePrerelease: includePrerelease
                 )
-                // If we get here, an update was found; SimpleUpdater will relaunch on success
-                // Show a quick heads-up before app restarts
-                self.showUpdateAlert(
-                    title: "Update Found!",
-                    message: "A new version is available and will be installed now."
-                )
+            } catch SimpleUpdateError.updateAlreadyInProgress {
+                DebugLogger.shared.info("Update installation already in progress", source: "AppDelegate")
             } catch {
                 if let pmkError = error as? PMKError, pmkError.isCancelled {
                     DebugLogger.shared.info("App is already up-to-date", source: "AppDelegate")
@@ -432,6 +428,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 
                 if result.hasUpdate {
                     DebugLogger.shared.info("✅ Update available: \(result.latestVersion)", source: "AppDelegate")
+
+                    guard !SimpleUpdater.shared.isUpdateInProgress else {
+                        DebugLogger.shared.debug(
+                            "Update prompt skipped because installation is already in progress",
+                            source: "AppDelegate"
+                        )
+                        return
+                    }
 
                     // Check if user snoozed this version (clicked "Later")
                     if SettingsStore.shared.shouldShowUpdatePrompt(forVersion: result.latestVersion) {

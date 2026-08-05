@@ -466,12 +466,11 @@ struct SettingsView: View {
                                                 repo: "Fluid-oss",
                                                 includePrerelease: includePrerelease
                                             )
-                                            let ok = NSAlert()
-                                            ok.messageText = "Update Found!"
-                                            ok.informativeText = "A new version is available and will be installed now."
-                                            ok.alertStyle = .informational
-                                            ok.addButton(withTitle: "OK")
-                                            ok.runModal()
+                                        } catch SimpleUpdateError.updateAlreadyInProgress {
+                                            DebugLogger.shared.info(
+                                                "Update installation already in progress",
+                                                source: "SettingsView"
+                                            )
                                         } catch {
                                             let msg = NSAlert()
                                             if let pmkError = error as? PMKError, pmkError.isCancelled {

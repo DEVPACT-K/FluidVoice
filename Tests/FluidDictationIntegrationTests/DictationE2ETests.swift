@@ -2357,3 +2357,19 @@ final class OverlayFailureStateTests: XCTestCase {
         XCTAssertTrue(state.canRetryAIProcessingFailure)
     }
 }
+
+@MainActor
+final class SimpleUpdaterTests: XCTestCase {
+    func testUpdateOperationGateAllowsOnlyOneActiveInstall() {
+        var gate = UpdateOperationGate()
+
+        XCTAssertTrue(gate.begin())
+        XCTAssertTrue(gate.isActive)
+        XCTAssertFalse(gate.begin())
+
+        gate.finish()
+
+        XCTAssertFalse(gate.isActive)
+        XCTAssertTrue(gate.begin())
+    }
+}
