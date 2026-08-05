@@ -1296,6 +1296,13 @@ final class ASRService: ObservableObject {
 
         // Initialize device list cache
         self.cacheCurrentDeviceList(initialInputSnapshot.0)
+        if microphonePreferenceCoordinator.needsAppOnlySelectionMigration {
+            self.scheduleAudioRouteRecovery(
+                reason: "app microphone migration pending",
+                requiresIdlePrewarm: true,
+                reconcilesInputSelection: true
+            )
+        }
 
         // Register the input callback and allocate its fixed ring now. This
         // does not start the device or show the microphone privacy indicator.
@@ -3299,14 +3306,15 @@ final class ASRService: ObservableObject {
 
                 if currentUIDs != cachedUIDs {
                     let previousPreferredUID = SettingsStore.shared.preferredInputDeviceUID
-                    let preferredAvailabilityChanged = AudioCaptureIdlePolicy.didPreferredInputAvailabilityChange(
+                    let microphonePreferenceCoordinator =
+                        AppServices.shared.microphonePreferenceCoordinator
+                    let shouldReconcileInputSelection = AudioCaptureIdlePolicy.shouldReconcileInputSelection(
                         preferredInputUID: previousPreferredUID,
+                        migrationPending: microphonePreferenceCoordinator.needsAppOnlySelectionMigration,
                         previousInputUIDs: cachedUIDs,
                         currentInputUIDs: currentUIDs
                     )
-                    let needsInitialSelection =
-                        (previousPreferredUID?.isEmpty ?? true) && currentDevices.isEmpty == false
-                    if needsInitialSelection || preferredAvailabilityChanged {
+                    if shouldReconcileInputSelection {
                         self.scheduleAudioRouteRecovery(
                             reason: "app microphone availability changed",
                             requiresIdlePrewarm: true,

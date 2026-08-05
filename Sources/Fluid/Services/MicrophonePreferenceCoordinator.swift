@@ -32,8 +32,12 @@ final class MicrophonePreferenceCoordinator: ObservableObject {
         self.devices = devices ?? CoreAudioDeviceManager()
     }
 
+    var needsAppOnlySelectionMigration: Bool {
+        self.settings.appMicSelectionMigrationVersion < Self.appOnlyMigrationVersion
+    }
+
     func migrateToAppOnlySelectionIfNeeded() {
-        guard self.settings.appMicSelectionMigrationVersion < Self.appOnlyMigrationVersion else {
+        guard self.needsAppOnlySelectionMigration else {
             self.settings.enforceAppOnlyMicrophoneSelection()
             return
         }
@@ -49,14 +53,17 @@ final class MicrophonePreferenceCoordinator: ObservableObject {
         availableInputs: [AudioDevice.Device],
         defaultInputUID: String?
     ) {
-        guard self.settings.appMicSelectionMigrationVersion < Self.appOnlyMigrationVersion else {
+        guard self.needsAppOnlySelectionMigration else {
             self.settings.enforceAppOnlyMicrophoneSelection()
             return
         }
-        guard let selectedInput = self.fallbackInput(
-            from: availableInputs,
-            defaultInputUID: defaultInputUID
-        ) else { return }
+        let preferredInput = availableInputs.first { input in
+            input.uid == self.settings.preferredInputDeviceUID
+        }
+        guard let selectedInput = availableInputs.first(where: \.isBuiltIn)
+            ?? preferredInput
+            ?? self.fallbackInput(from: availableInputs, defaultInputUID: defaultInputUID)
+        else { return }
 
         self.settings.preferredInputDeviceUID = selectedInput.uid
         self.settings.enforceAppOnlyMicrophoneSelection()

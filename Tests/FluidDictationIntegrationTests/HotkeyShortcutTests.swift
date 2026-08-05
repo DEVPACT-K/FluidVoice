@@ -185,6 +185,27 @@ final class HotkeyShortcutTests: XCTestCase {
         ))
     }
 
+    func testPendingMicrophoneMigrationRetriesWhenDevicesAppear() {
+        XCTAssertFalse(AudioCaptureIdlePolicy.shouldReconcileInputSelection(
+            preferredInputUID: "disconnected-usb",
+            migrationPending: true,
+            previousInputUIDs: [],
+            currentInputUIDs: []
+        ))
+        XCTAssertTrue(AudioCaptureIdlePolicy.shouldReconcileInputSelection(
+            preferredInputUID: "disconnected-usb",
+            migrationPending: true,
+            previousInputUIDs: [],
+            currentInputUIDs: ["built-in"]
+        ))
+        XCTAssertTrue(AudioCaptureIdlePolicy.shouldReconcileInputSelection(
+            preferredInputUID: nil,
+            migrationPending: false,
+            previousInputUIDs: [],
+            currentInputUIDs: ["built-in"]
+        ))
+    }
+
     func testEngineConfigurationChangesRecoverOnlyDuringCaptureTransitions() {
         XCTAssertFalse(AudioCaptureIdlePolicy.shouldRecoverEngineConfigurationChange(
             isRunning: false,
@@ -454,6 +475,56 @@ final class HotkeyShortcutTests: XCTestCase {
 
             XCTAssertEqual(SettingsStore.shared.preferredInputDeviceUID, "airpods")
             XCTAssertEqual(SettingsStore.shared.appMicSelectionMigrationVersion, 0)
+        }
+    }
+
+    @MainActor
+    func testMicrophoneMigrationWithoutBuiltInPreservesAvailableSelection() throws {
+        try self.withRestoredDefaults(keys: [
+            self.preferredInputDeviceUIDKey,
+            self.appOnlyMicrophoneSelectionMigrationVersionKey,
+        ]) {
+            SettingsStore.shared.preferredInputDeviceUID = "studio-mic"
+            SettingsStore.shared.appMicSelectionMigrationVersion = 0
+            let devices = FakeAudioDeviceManager(
+                inputs: [
+                    Self.device(uid: "display-mic", name: "Display Mic"),
+                    Self.device(uid: "studio-mic", name: "Studio Mic"),
+                ],
+                defaultInputUID: "display-mic"
+            )
+            let coordinator = MicrophonePreferenceCoordinator(settings: .shared, devices: devices)
+
+            coordinator.migrateToAppOnlySelectionIfNeeded()
+
+            XCTAssertEqual(SettingsStore.shared.preferredInputDeviceUID, "studio-mic")
+            XCTAssertEqual(SettingsStore.shared.appMicSelectionMigrationVersion, 1)
+            XCTAssertEqual(devices.defaultInputUID, "display-mic")
+        }
+    }
+
+    @MainActor
+    func testMicrophoneMigrationWithoutBuiltInReplacesMissingSelectionWithDefault() throws {
+        try self.withRestoredDefaults(keys: [
+            self.preferredInputDeviceUIDKey,
+            self.appOnlyMicrophoneSelectionMigrationVersionKey,
+        ]) {
+            SettingsStore.shared.preferredInputDeviceUID = "disconnected-usb"
+            SettingsStore.shared.appMicSelectionMigrationVersion = 0
+            let devices = FakeAudioDeviceManager(
+                inputs: [
+                    Self.device(uid: "display-mic", name: "Display Mic"),
+                    Self.device(uid: "studio-mic", name: "Studio Mic"),
+                ],
+                defaultInputUID: "studio-mic"
+            )
+            let coordinator = MicrophonePreferenceCoordinator(settings: .shared, devices: devices)
+
+            coordinator.migrateToAppOnlySelectionIfNeeded()
+
+            XCTAssertEqual(SettingsStore.shared.preferredInputDeviceUID, "studio-mic")
+            XCTAssertEqual(SettingsStore.shared.appMicSelectionMigrationVersion, 1)
+            XCTAssertEqual(devices.defaultInputUID, "studio-mic")
         }
     }
 
