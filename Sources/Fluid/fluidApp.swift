@@ -37,6 +37,13 @@ struct FluidApp: App {
                 }
                 .keyboardShortcut(",", modifiers: .command)
             }
+
+            CommandMenu("Demo") {
+                Button("Show Meeting Detected Demo") {
+                    NotificationService.showMeetingDetectedDemo()
+                }
+                .keyboardShortcut("m", modifiers: [.command, .shift])
+            }
         }
     }
 }

@@ -15,6 +15,12 @@ final class HotkeyShortcutTests: XCTestCase {
     private let appOnlyMicMigrationVersionKey = "AppOnlyMicrophoneSelectionMigrationVersion"
     private let experimentalDirectAudioCaptureEnabledKey = "ExperimentalDirectAudioCaptureEnabled"
 
+    func testMeetingDetectedDemoCopy() {
+        XCTAssertEqual(MeetingDetectedDemoCopy.title, "Meeting detected")
+        XCTAssertEqual(MeetingDetectedDemoCopy.detail, "Zoom")
+        XCTAssertEqual(MeetingDetectedDemoCopy.action, "Take Notes")
+    }
+
     @MainActor
     func testBottomOverlayRapidStopStartStopDoesNotDropFinalHide() async {
         let audioPublisher = Just(CGFloat.zero).eraseToAnyPublisher()

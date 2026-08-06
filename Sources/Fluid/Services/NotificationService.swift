@@ -11,6 +11,11 @@ enum NotificationService {
         static let commandModeFailure = "commandModeFailure"
     }
 
+    @MainActor
+    static func showMeetingDetectedDemo() {
+        MeetingDetectedDemoOverlayController.shared.show()
+    }
+
     static func showAIProcessingFallback(error: String) {
         guard SettingsStore.shared.notifyAIProcessingFailures else { return }
 

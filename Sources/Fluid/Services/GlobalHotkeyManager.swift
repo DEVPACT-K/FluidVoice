@@ -43,6 +43,11 @@ private final nonisolated class HotkeyState: @unchecked Sendable {
 
 @MainActor
 final class GlobalHotkeyManager: NSObject {
+    private static let meetingDemoShortcut = HotkeyShortcut(
+        keyCode: 46,
+        modifierFlags: [.command, .shift]
+    )
+
     private nonisolated(unsafe) var state = HotkeyState()
     private nonisolated(unsafe) var eventTap: CFMachPort?
     private nonisolated(unsafe) var runLoopSource: CFRunLoopSource?
@@ -611,6 +616,14 @@ final class GlobalHotkeyManager: NSObject {
         case .keyDown:
             self.markOtherInputDuringModifierOnly()
 
+            if self.handleMeetingDemoShortcutKeyDown(
+                keyCode: keyCode,
+                modifiers: eventModifiers,
+                isAutorepeat: event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+            ) {
+                return nil
+            }
+
             // Observe post-transcription edits (do not consume the event).
             Task {
                 await PostTranscriptionEditTracker.shared.handleKeyDown(keyCode: keyCode, modifiers: eventModifiers)
@@ -985,6 +998,19 @@ final class GlobalHotkeyManager: NSObject {
         }
 
         return Unmanaged.passUnretained(event)
+    }
+
+    private func handleMeetingDemoShortcutKeyDown(
+        keyCode: UInt16,
+        modifiers: NSEvent.ModifierFlags,
+        isAutorepeat: Bool
+    ) -> Bool {
+        guard Self.meetingDemoShortcut.matches(keyCode: keyCode, modifiers: modifiers) else { return false }
+
+        if !isAutorepeat {
+            NotificationService.showMeetingDetectedDemo()
+        }
+        return true
     }
 
     private func handleTapDisableEvent(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
