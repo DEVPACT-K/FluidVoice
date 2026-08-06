@@ -133,7 +133,9 @@ struct RewriteModeView: View {
                                 Spacer()
 
                                 Button("Replace Original") {
-                                    self.service.acceptRewrite()
+                                    Task { @MainActor in
+                                        await self.service.acceptRewrite()
+                                    }
                                     self.onClose?()
                                 }
                                 .buttonStyle(.borderedProminent)

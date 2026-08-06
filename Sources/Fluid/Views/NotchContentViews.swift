@@ -25,6 +25,9 @@ class NotchContentState: ObservableObject {
     @Published var isAIProcessingFailureVisible: Bool = false
     @Published private(set) var aiProcessingFailureMessage: String = "AI Enhancement failed"
     @Published private(set) var canRetryAIProcessingFailure: Bool = true
+    @Published var isTextDeliveryFailureVisible: Bool = false
+    @Published private(set) var textDeliveryFailureMessage: String = "Text could not be inserted"
+    private(set) var textDeliveryFailureTranscript: String = ""
     @Published var activeDictationShortcutSlot: SettingsStore.DictationShortcutSlot? = nil
     @Published var promptModeOverrideProfileName: String? = nil // Name shown in overlay when prompt mode hotkey is active
     @Published var promptModeOverrideProfileID: String? = nil // ID of the active override profile (for checkmark in menu)
@@ -39,6 +42,7 @@ class NotchContentState: ObservableObject {
     /// The PID of the app we should restore focus to after interacting with overlays.
     /// Captured at recording start to keep the target stable for the session.
     @Published var recordingTargetPID: pid_t? = nil
+    var recordingTargetContext: TypingService.RecordingTargetContext?
 
     /// Cached transcription preview text to avoid recomputing on every render
     @Published private(set) var cachedPreviewText: String = ""
@@ -94,6 +98,7 @@ class NotchContentState: ObservableObject {
     func setProcessing(_ processing: Bool) {
         if processing {
             self.clearAIProcessingFailure()
+            self.clearTextDeliveryFailure()
         }
         self.isProcessing = processing
     }
@@ -109,6 +114,16 @@ class NotchContentState: ObservableObject {
 
     func clearAIProcessingFailure() {
         self.isAIProcessingFailureVisible = false
+    }
+
+    func showTextDeliveryFailure(message: String, transcript: String) {
+        self.textDeliveryFailureMessage = message
+        self.textDeliveryFailureTranscript = transcript
+        self.isTextDeliveryFailureVisible = true
+    }
+
+    func clearTextDeliveryFailure() {
+        self.isTextDeliveryFailureVisible = false
     }
 
     /// Update transcription and recompute cached lines
@@ -167,6 +182,8 @@ class NotchContentState: ObservableObject {
     var onCopyLastRequested: (() -> Void)?
     /// Called when the user requests re-pasting the latest saved transcription entry.
     var onPasteLastRequested: (() -> Void)?
+    /// Called when the user retries the exact transcript from a delivery failure.
+    var onRetryTextDeliveryRequested: ((String) -> Void)?
     /// Called when the user requests undoing AI processing for the latest entry.
     var onUndoLastAIRequested: (() -> Void)?
     /// Called when the user requests opening Preferences.
@@ -623,9 +640,10 @@ struct NotchExpandedView: View {
     }
 
     private func restoreRecordingTargetFocus() {
-        let pid = NotchContentState.shared.recordingTargetPID
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            if let pid { _ = TypingService.activateApp(pid: pid) }
+        guard let context = NotchContentState.shared.recordingTargetContext else { return }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            _ = await TypingService.prepareTargetForDelivery(context)
         }
     }
 
@@ -910,7 +928,53 @@ struct NotchExpandedView: View {
 
             self.promptHoverMenuRow
 
-            if self.contentState.isAIProcessingFailureVisible && !self.contentState.isProcessing {
+            if self.contentState.isTextDeliveryFailureVisible && !self.contentState.isProcessing {
+                HStack(spacing: 6) {
+                    Text(self.contentState.textDeliveryFailureMessage)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Color.orange.opacity(0.9))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+
+                    Spacer(minLength: 2)
+
+                    Button {
+                        _ = ClipboardService.copyToClipboard(self.contentState.textDeliveryFailureTranscript)
+                    } label: {
+                        Image(systemName: "doc.on.doc")
+                            .font(.system(size: 9, weight: .bold))
+                            .frame(width: 16, height: 16)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Copy transcript")
+
+                    Button {
+                        let transcript = self.contentState.textDeliveryFailureTranscript
+                        self.contentState.clearTextDeliveryFailure()
+                        self.contentState.onRetryTextDeliveryRequested?(transcript)
+                    } label: {
+                        Image(systemName: "arrow.down.doc")
+                            .font(.system(size: 9, weight: .bold))
+                            .frame(width: 16, height: 16)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Paste last transcript")
+
+                    Button {
+                        self.contentState.clearTextDeliveryFailure()
+                        NotchOverlayManager.shared.hide()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9, weight: .bold))
+                            .frame(width: 16, height: 16)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Dismiss")
+                }
+                .foregroundStyle(.white.opacity(0.9))
+                .frame(width: self.previewMaxWidth, alignment: .leading)
+                .transition(.opacity.combined(with: .scale(scale: 0.95)))
+            } else if self.contentState.isAIProcessingFailureVisible && !self.contentState.isProcessing {
                 HStack(spacing: 6) {
                     Text(self.contentState.aiProcessingFailureMessage)
                         .font(.system(size: 10, weight: .semibold))
