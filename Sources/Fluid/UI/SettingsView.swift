@@ -7,6 +7,7 @@
 
 import AppKit
 import AVFoundation
+import Combine
 import PromiseKit
 import SwiftUI
 import UniformTypeIdentifiers
@@ -64,6 +65,14 @@ struct SettingsView: View {
     @State private var isRollingBack: Bool = false
     @State private var audioHistoryBudgetText: String = Self.audioBudgetText(for: SettingsStore.shared.audioHistoryBudgetGB)
     @State private var audioHistoryUsageBytes: Int64 = DictationAudioHistoryStore.shared.audioUsageBytes()
+#if DEBUG
+    @ObservedObject private var remoteMicController = RemoteMicController.shared
+    @ObservedObject private var remoteMicPairingModel = RemoteMicPairingModel.shared
+    @State private var showRemoteMicRegenerateConfirmation: Bool = false
+    @State private var showRemoteMicNeverConfirmation: Bool = false
+    @State private var remoteMicPairedDevicesRevision: Int = 0
+    @State private var remoteMicRevokeCandidate: (device: RemoteMicPairedDevice, childCount: Int)?
+#endif
 
     let hotkeyManager: GlobalHotkeyManager?
     let menuBarManager: MenuBarManager
@@ -1473,6 +1482,78 @@ struct SettingsView: View {
                     }
                     .padding(16)
                 }
+
+#if DEBUG
+                // Mirrors the DEBUG gating in ASRService.reconcileRemoteMicListener().
+                ThemedCard(style: .standard) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        Label("Remote Mic (Debug)", systemImage: "iphone.and.arrow.forward")
+                            .font(.headline)
+                            .foregroundStyle(.primary)
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            self.settingsToggleRow(
+                                title: "Enable Remote Mic",
+                                description: "Accept dictation audio from a paired iPhone or Apple Watch over the local network.",
+                                isOn: Binding(
+                                    get: { self.remoteMicController.isActive },
+                                    set: { isOn in
+                                        if isOn {
+                                            self.remoteMicController.enable()
+                                        } else {
+                                            self.remoteMicController.disable()
+                                        }
+                                    }
+                                )
+                            )
+
+                            Divider().padding(.vertical, 8)
+
+                            self.remoteMicIdleTimeoutRow()
+
+                            Divider().padding(.vertical, 8)
+
+                            self.remoteMicStatusRow()
+
+                            Divider().padding(.vertical, 8)
+
+                            self.remoteMicPairingRow()
+                        }
+                    }
+                    .padding(16)
+                }
+                .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
+                    self.remoteMicPairingModel.refresh()
+                }
+                // The pairing window must not outlive the screen that shows its digits/IP.
+                .onDisappear {
+                    RemoteMicPairing.shared.closeWindow()
+                }
+                .confirmationDialog(
+                    "Unpair all devices?",
+                    isPresented: self.$showRemoteMicRegenerateConfirmation,
+                    titleVisibility: .visible
+                ) {
+                    Button("Unpair All", role: .destructive) {
+                        RemoteMicCredentials.shared.regenerate()
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("Your iPhone and Apple Watch will stop working with this Mac until you pair them again.")
+                }
+                .confirmationDialog(
+                    "Never turn off Remote Mic automatically?",
+                    isPresented: self.$showRemoteMicNeverConfirmation,
+                    titleVisibility: .visible
+                ) {
+                    Button("Keep Listener On Indefinitely", role: .destructive) {
+                        RemoteMicController.shared.updateIdleTimeout(.never)
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("The listener stays open on your local network until you turn it off yourself — including across app relaunches and Mac restarts.")
+                }
+#endif
             }
             .padding(16)
         }
@@ -2540,6 +2621,301 @@ struct FlowLayout: Layout {
         cache.containerSize = CGSize(width: maxWidth, height: y + rowHeight)
         cache.lastWidth = maxWidth
     }
+}
+
+private extension SettingsView {
+#if DEBUG
+    /// Idle auto-off picker. Changes recompute any in-flight deadline via `updateIdleTimeout`.
+    /// "Never" is confirmed first; every other selection applies immediately.
+    func remoteMicIdleTimeoutRow() -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Turn off when idle for")
+                        .font(self.theme.typography.bodyStrong)
+                        .foregroundStyle(self.settingsTitleText)
+                    Text("How long the listener stays bound with no active session before it turns itself off.")
+                        .font(self.theme.typography.bodySmall)
+                        .foregroundStyle(self.settingsSecondaryText)
+                }
+                Spacer()
+                Picker(
+                    "",
+                    selection: Binding(
+                        get: { self.settings.remoteMicIdleTimeout },
+                        set: { newValue in
+                            if newValue == .never {
+                                self.showRemoteMicNeverConfirmation = true
+                            } else {
+                                RemoteMicController.shared.updateIdleTimeout(newValue)
+                            }
+                        }
+                    )
+                ) {
+                    ForEach(SettingsStore.RemoteMicIdleTimeout.allCases) { option in
+                        Text(option.displayName).tag(option)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 140)
+            }
+
+            TimelineView(.periodic(from: .now, by: 1)) { _ in
+                Text(self.remoteMicCountdownText())
+                    .font(self.theme.typography.bodySmall)
+                    .foregroundStyle(self.settingsSecondaryText)
+            }
+        }
+    }
+
+    /// Needs its own tick source: `SettingsStore` getters read `UserDefaults` and won't republish
+    /// per second. Must never write back to defaults on a tick.
+    private func remoteMicCountdownText() -> String {
+        guard self.settings.remoteMicEnabled else { return "Off" }
+        if self.settings.remoteMicIdleTimeout == .never {
+            return "Stays on until turned off"
+        }
+        let deadlines = [self.settings.remoteMicIdleDeadline, self.settings.remoteMicHardCapDeadline].compactMap { $0 }
+        guard let next = deadlines.min() else { return "Turning off…" }
+        let remaining = next.timeIntervalSinceNow
+        guard remaining > 0 else { return "Turning off…" }
+        return "Turns off in \(Self.remoteMicFormatRemaining(remaining))"
+    }
+
+    private static func remoteMicFormatRemaining(_ seconds: TimeInterval) -> String {
+        let totalMinutes = max(1, Int(seconds / 60))
+        if totalMinutes < 60 {
+            return "\(totalMinutes) minute\(totalMinutes == 1 ? "" : "s")"
+        }
+        let hours = totalMinutes / 60
+        let minutes = totalMinutes % 60
+        guard minutes > 0 else { return "\(hours) hour\(hours == 1 ? "" : "s")" }
+        return "\(hours)h \(minutes)m"
+    }
+
+    /// Bind/permission health, so a green toggle can't silently bind nothing.
+    func remoteMicStatusRow() -> some View {
+        HStack(spacing: 8) {
+            let bound = self.remoteMicController.isListenerBound
+            let enabled = self.settings.remoteMicEnabled
+            Image(systemName: bound ? "checkmark.circle.fill" : (enabled ? "exclamationmark.triangle.fill" : "circle"))
+                .foregroundStyle(bound ? Color.green : (enabled ? Color.orange : self.settingsSecondaryText))
+
+            if !enabled {
+                Text("Not listening.")
+                    .font(self.theme.typography.bodySmall)
+                    .foregroundStyle(self.settingsSecondaryText)
+            } else if bound {
+                Text("Listening for a paired device on the local network.")
+                    .font(self.theme.typography.bodySmall)
+                    .foregroundStyle(self.settingsSecondaryText)
+            } else if let bindError = self.remoteMicController.bindError {
+                Text("Couldn't start listening: \(bindError)")
+                    .font(self.theme.typography.bodySmall)
+                    .foregroundStyle(Color.red)
+            } else {
+                Text("Starting…")
+                    .font(self.theme.typography.bodySmall)
+                    .foregroundStyle(self.settingsSecondaryText)
+            }
+        }
+    }
+
+    /// Pairing blob, masked until clicked — it is a permanent LAN mic credential.
+    /// Re-read from the (non-`@Published`) singleton on each body evaluation.
+    var remoteMicPairingState: RemoteMicPairing.State {
+        self.remoteMicPairingModel.state
+    }
+
+    var remoteMicPairingActive: Bool {
+        switch self.remoteMicPairingState {
+        case .waitingForDevice, .awaitingReveal, .awaitingComparison, .localConfirmed: return true
+        case .closed, .paired, .failed: return false
+        }
+    }
+
+    func remoteMicPairingRow() -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Paired Devices")
+                .font(self.theme.typography.bodyStrong)
+                .foregroundStyle(self.settingsTitleText)
+
+            switch self.remoteMicPairingState {
+            case .closed, .paired, .failed:
+                Text("Open pairing, then choose this Mac in FluidVoice on your iPhone.")
+                    .font(self.theme.typography.bodySmall)
+                    .foregroundStyle(self.settingsSecondaryText)
+
+            case .waitingForDevice, .awaitingReveal:
+                Text("Waiting for your iPhone…")
+                    .font(self.theme.typography.bodySmall)
+                    .foregroundStyle(self.settingsSecondaryText)
+
+            case let .awaitingComparison(digits, deviceName, peerIP):
+                self.remoteMicComparisonView(digits: digits, deviceName: deviceName, peerIP: peerIP, awaitingLocalConfirm: true)
+
+            case let .localConfirmed(digits, deviceName, peerIP):
+                self.remoteMicComparisonView(digits: digits, deviceName: deviceName, peerIP: peerIP, awaitingLocalConfirm: false)
+                Text("Finishing up on your iPhone…")
+                    .font(self.theme.typography.bodySmall)
+                    .foregroundStyle(self.settingsSecondaryText)
+            }
+
+            if case let .paired(deviceName) = self.remoteMicPairingState {
+                Label("Paired with \(deviceName)", systemImage: "checkmark.circle.fill")
+                    .font(self.theme.typography.bodySmall)
+                    .foregroundStyle(Color.green)
+            }
+            if case let .failed(message) = self.remoteMicPairingState {
+                Label(message, systemImage: "exclamationmark.triangle.fill")
+                    .font(self.theme.typography.bodySmall)
+                    .foregroundStyle(Color.orange)
+            }
+
+            HStack(spacing: 8) {
+                if case .awaitingComparison = self.remoteMicPairingState {
+                    Button {
+                        RemoteMicPairing.shared.confirmLocally()
+                    } label: {
+                        Label("Numbers Match", systemImage: "checkmark")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.regular)
+                }
+
+                if self.remoteMicPairingActive {
+                    Button {
+                        RemoteMicPairing.shared.closeWindow()
+                    } label: {
+                        Label("Cancel", systemImage: "xmark")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.regular)
+                } else {
+                    Button {
+                        RemoteMicPairing.shared.openWindow()
+                    } label: {
+                        Label("Pair a Device…", systemImage: "iphone.and.arrow.forward")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.regular)
+                    .disabled(!self.remoteMicController.isListenerBound)
+                }
+
+                Button(role: .destructive) {
+                    self.showRemoteMicRegenerateConfirmation = true
+                } label: {
+                    Label("Unpair All…", systemImage: "trash")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
+            }
+
+            self.remoteMicPairedDevicesList()
+        }
+    }
+
+    /// Shown only while comparing (spec: peer IP is a security signal for the comparison step
+    /// only — it must not leak into the always-visible paired-device list as network jargon).
+    private func remoteMicComparisonView(digits: String, deviceName: String, peerIP: String, awaitingLocalConfirm: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(
+                awaitingLocalConfirm
+                    ? "Check that your iPhone shows this number, then confirm here."
+                    : "Waiting for you to confirm on your iPhone."
+            )
+            .font(self.theme.typography.bodySmall)
+            .foregroundStyle(self.settingsSecondaryText)
+
+            Text(Self.remoteMicFormatDigits(digits))
+                .font(.system(size: 34, weight: .semibold, design: .monospaced))
+                .foregroundStyle(self.settingsTitleText)
+                .textSelection(.disabled)
+                .padding(.vertical, 4)
+
+            Text("Claims to be \"\(deviceName)\" at \(peerIP)")
+                .font(self.theme.typography.caption)
+                .foregroundStyle(self.settingsSecondaryText)
+        }
+    }
+
+    /// Grouped 3-3 so the two screens are quick to compare without reading digit by digit.
+    private static func remoteMicFormatDigits(_ digits: String) -> String {
+        guard digits.count == 6 else { return digits }
+        let middle = digits.index(digits.startIndex, offsetBy: 3)
+        return "\(digits[digits.startIndex..<middle]) \(digits[middle...])"
+    }
+
+    private func remoteMicPairedDevicesList() -> some View {
+        let devices = RemoteMicCredentials.shared.pairedDevices
+        let knownIDs = Set(devices.map(\.id))
+        // A child whose parent record is gone (e.g. only the child survived a partial revoke)
+        // renders at top level rather than disappearing.
+        let topLevel = devices.filter { $0.parentID == nil || !knownIDs.contains($0.parentID!) }
+        let childrenByParent = Dictionary(grouping: devices.filter {
+            $0.parentID != nil && knownIDs.contains($0.parentID!)
+        }, by: { $0.parentID! })
+
+        return Group {
+            if !devices.isEmpty {
+                Divider().padding(.vertical, 4)
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(topLevel) { device in
+                        let children = childrenByParent[device.id] ?? []
+                        self.remoteMicDeviceRow(device, indented: false, childCount: children.count)
+                        ForEach(children) { child in
+                            self.remoteMicDeviceRow(child, indented: true, childCount: 0)
+                        }
+                    }
+                }
+            }
+        }
+        .id(self.remoteMicPairedDevicesRevision)
+        .confirmationDialog(
+            "Revoke this device?",
+            isPresented: Binding(
+                get: { self.remoteMicRevokeCandidate != nil },
+                set: { if !$0 { self.remoteMicRevokeCandidate = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Revoke", role: .destructive) {
+                if let candidate = self.remoteMicRevokeCandidate {
+                    RemoteMicCredentials.shared.revokeDevice(id: candidate.device.id)
+                    self.remoteMicPairedDevicesRevision += 1
+                }
+                self.remoteMicRevokeCandidate = nil
+            }
+            Button("Cancel", role: .cancel) { self.remoteMicRevokeCandidate = nil }
+        } message: {
+            if let candidate = self.remoteMicRevokeCandidate {
+                Text("\(candidate.childCount) linked device\(candidate.childCount == 1 ? "" : "s") will be removed too.")
+            }
+        }
+    }
+
+    private func remoteMicDeviceRow(_ device: RemoteMicPairedDevice, indented: Bool, childCount: Int) -> some View {
+        HStack {
+            Text(device.name)
+                .font(self.theme.typography.bodySmall)
+                .foregroundStyle(self.settingsTitleText)
+                .padding(.leading, indented ? 16 : 0)
+            Spacer()
+            Button(role: .destructive) {
+                if childCount > 0 {
+                    self.remoteMicRevokeCandidate = (device, childCount)
+                } else {
+                    RemoteMicCredentials.shared.revokeDevice(id: device.id)
+                    self.remoteMicPairedDevicesRevision += 1
+                }
+            } label: {
+                Text("Revoke")
+            }
+            .buttonStyle(.borderless)
+            .font(self.theme.typography.bodySmall)
+        }
+    }
+#endif
 }
 
 // MARK: - Analytics modal confirmation

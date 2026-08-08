@@ -3111,8 +3111,15 @@ struct ContentView: View {
                     source: "AppBenchmark"
                 )
             })
-            if startOutcome == .failed {
-                self.menuBarManager.hideRecordingOverlayImmediately(reason: "asr_start_failed")
+            if startOutcome == .failed || startOutcome == .alreadyActive {
+                self.menuBarManager.hideRecordingOverlayImmediately(
+                    reason: startOutcome == .failed ? "asr_start_failed" : "asr_start_already_active"
+                )
+                if startOutcome == .alreadyActive {
+                    self.asr.errorTitle = "Dictation Is Still Finishing"
+                    self.asr.errorMessage = "Please wait a moment before starting another dictation."
+                    self.asr.showError = true
+                }
             }
         }
 

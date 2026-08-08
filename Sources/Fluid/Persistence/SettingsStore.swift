@@ -1803,6 +1803,54 @@ final class SettingsStore: ObservableObject {
     /// crash while audio devices are changing.
     var experimentalDirectAudioCaptureEnabled: Bool { true }
 
+    /// Value store only — expiry policy lives in `RemoteMicController`, the sole writer of `false`.
+    var remoteMicEnabled: Bool {
+        get { self.defaults.object(forKey: Keys.remoteMicEnabled) as? Bool ?? false }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.remoteMicEnabled)
+        }
+    }
+
+    var remoteMicIdleTimeout: RemoteMicIdleTimeout {
+        get {
+            guard let raw = self.defaults.string(forKey: Keys.remoteMicIdleTimeout),
+                  let timeout = RemoteMicIdleTimeout(rawValue: raw)
+            else {
+                return .thirtyMinutes
+            }
+            return timeout
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue.rawValue, forKey: Keys.remoteMicIdleTimeout)
+        }
+    }
+
+    var remoteMicIdleDeadline: Date? {
+        get { self.defaults.object(forKey: Keys.remoteMicIdleDeadline) as? Date }
+        set {
+            objectWillChange.send()
+            if let newValue {
+                self.defaults.set(newValue, forKey: Keys.remoteMicIdleDeadline)
+            } else {
+                self.defaults.removeObject(forKey: Keys.remoteMicIdleDeadline)
+            }
+        }
+    }
+
+    var remoteMicHardCapDeadline: Date? {
+        get { self.defaults.object(forKey: Keys.remoteMicHardCapDeadline) as? Date }
+        set {
+            objectWillChange.send()
+            if let newValue {
+                self.defaults.set(newValue, forKey: Keys.remoteMicHardCapDeadline)
+            } else {
+                self.defaults.removeObject(forKey: Keys.remoteMicHardCapDeadline)
+            }
+        }
+    }
+
     var copyTranscriptionToClipboard: Bool {
         get { self.defaults.bool(forKey: Keys.copyTranscriptionToClipboard) }
         set { self.defaults.set(newValue, forKey: Keys.copyTranscriptionToClipboard) }
@@ -1848,6 +1896,40 @@ final class SettingsStore: ObservableObject {
             // Clamp between 0.0 and 0.95 to avoid division by zero issues in visualizers
             let clamped = max(min(newValue, 0.95), 0.0)
             self.defaults.set(clamped, forKey: Keys.visualizerNoiseThreshold)
+        }
+    }
+
+    // MARK: - Remote Mic (DEBUG only)
+
+    enum RemoteMicIdleTimeout: String, CaseIterable, Identifiable, Codable {
+        case tenMinutes
+        case thirtyMinutes
+        case sixtyMinutes
+        case twelveHours
+        case never
+
+        var id: String {
+            self.rawValue
+        }
+
+        var minutes: Int? {
+            switch self {
+            case .tenMinutes: return 10
+            case .thirtyMinutes: return 30
+            case .sixtyMinutes: return 60
+            case .twelveHours: return 12 * 60
+            case .never: return nil
+            }
+        }
+
+        var displayName: String {
+            switch self {
+            case .tenMinutes: return "10 minutes"
+            case .thirtyMinutes: return "30 minutes"
+            case .sixtyMinutes: return "1 hour"
+            case .twelveHours: return "12 hours"
+            case .never: return "Never"
+            }
         }
     }
 
@@ -4901,6 +4983,10 @@ private extension SettingsStore {
         static let enableStreamingPreview = "EnableStreamingPreview"
         static let skipSilentRecordingsEnabled = "SkipSilentRecordingsEnabled"
         static let enableAIStreaming = "EnableAIStreaming"
+        static let remoteMicEnabled = "RemoteMicEnabled"
+        static let remoteMicIdleTimeout = "RemoteMicIdleTimeout"
+        static let remoteMicIdleDeadline = "RemoteMicIdleDeadline"
+        static let remoteMicHardCapDeadline = "RemoteMicHardCapDeadline"
         static let copyTranscriptionToClipboard = "CopyTranscriptionToClipboard"
         static let textInsertionMode = "TextInsertionMode"
         static let autoUpdateCheckEnabled = "AutoUpdateCheckEnabled"

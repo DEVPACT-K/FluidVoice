@@ -200,6 +200,31 @@ final class ASRService: ObservableObject {
     private var audioCaptureStartGeneration: UInt64 = 0
     private var audioCaptureAttemptID: UInt64 = 0
     private var isTerminating = false
+
+    enum SessionOwner: Equatable {
+        case localMic
+        case remote
+    }
+    private var sessionOwner: SessionOwner?
+    private var finalizingOwner: SessionOwner?
+#if DEBUG
+    /// Frontmost app at arm, so a remote dictation session types where it started — never wherever
+    /// last local hotkey dictation happened to land.
+    private var remoteTypingTargetSnapshot: (pid: pid_t?, bundleID: String?)?
+    private static let remoteAIPostProcessTimeout: UInt64 = 20_000_000_000
+    /// At most one in flight; held while `finalizingOwner` stays `.remote` (see `deliverRemoteDictation`).
+    private var pendingRemoteDeliveryTask: Task<Void, Never>?
+    private var remoteMicDeviceRevokedObserver: NSObjectProtocol?
+#endif
+    private var sessionGeneration: UInt64 = 0
+#if DEBUG
+    private var remoteAudioHTTPIngest: RemoteAudioHTTPIngest?
+#endif
+    private var remoteAudioSettingsObserver: NSObjectProtocol?
+    #if DEBUG
+    private static let remoteMicIngestPort: UInt16 = 52_010
+    private let remoteMicController = RemoteMicController.shared
+    #endif
     private var hasCompletedFirstTranscription: Bool = false // Track if model has warmed up with first transcription
     private var lastBoostHitTerm: String?
     private var hasPendingParakeetVocabularyReload: Bool = false
@@ -290,6 +315,9 @@ final class ASRService: ObservableObject {
 
     func shutdownForTermination() async {
         self.isTerminating = true
+        #if DEBUG
+        self.remoteMicController.invalidateAll()
+        #endif
         let routeRecoveryShutdownStartedAt = Date().timeIntervalSince1970
         await self.cancelAudioRouteRecoveryAndWait()
         self.benchmarkLog(
@@ -299,7 +327,8 @@ final class ASRService: ObservableObject {
             await self.cancelPendingAudioCaptureStart(reason: "app_termination")
         }
         if self.isRunning {
-            await self.stopWithoutTranscription()
+            // The cross-owner guard blocks `.localMic` from stopping a `.remote` session.
+            await self.stopWithoutTranscription(requestedBy: self.sessionOwner ?? .localMic)
         }
         let audioEngineShutdownStartedAt = Date().timeIntervalSince1970
         await self.retireAudioEngineAndWait(reason: "app_termination")
@@ -725,6 +754,7 @@ final class ASRService: ObservableObject {
         case none
         case directCoreAudio
         case audioEngine
+        case remoteSource
     }
 
     private struct AudioRouteRecoveryRequest {
@@ -949,7 +979,12 @@ final class ASRService: ObservableObject {
         return snapshot
     }
 
-    private func startConfiguredAudioCapture() async throws {
+    private func startConfiguredAudioCapture(source: SessionOwner = .localMic) async throws {
+        if source == .remote {
+            // Remote PCM goes straight to AudioCapturePipeline; no local backend to configure.
+            self.activeAudioCaptureBackend = .remoteSource
+            return
+        }
         if SettingsStore.shared.experimentalDirectAudioCaptureEnabled {
             // A non-route path may have scheduled a fire-and-forget retirement.
             // Do not let direct capture startup overlap a queued AVAudioEngine
@@ -1028,10 +1063,17 @@ final class ASRService: ObservableObject {
             if let engine = self.engineStorage as? AVAudioEngine, engine.isRunning {
                 engine.stop()
             }
+        case .remoteSource:
+            // Runs before stop()'s finishRecording() and before the audio buffer is cleared.
+            #if DEBUG
+            self.remoteAudioHTTPIngest?.quiesceCurrentSession()
+            #endif
+            break
         case .none:
             break
         }
         self.activeAudioCaptureBackend = .none
+        self.sessionOwner = nil
     }
 
     private var inputFormat: AVAudioFormat?
@@ -1184,7 +1226,17 @@ final class ASRService: ObservableObject {
     }
 
     deinit {
+        #if DEBUG
+        self.pendingRemoteDeliveryTask?.cancel()
+        self.remoteAudioHTTPIngest?.stopListening()
+        if let observer = self.remoteMicDeviceRevokedObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        #endif
         if let observer = self.vocabularyChangeObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        if let observer = self.remoteAudioSettingsObserver {
             NotificationCenter.default.removeObserver(observer)
         }
         if let observer = self.engineConfigurationChangeObserver {
@@ -1293,6 +1345,40 @@ final class ASRService: ObservableObject {
         self.registerDefaultDeviceChangeListener()
         self.registerEngineConfigurationChangeObserver()
         self.registerDeviceListChangeListener()
+#if DEBUG
+        // Must precede reconcileRemoteMicListener(): migrates and re-checks expiry first.
+        self.remoteMicController.performLaunchSequence(
+            sessionInFlightProvider: { [weak self] in
+                guard let self else { return false }
+                return self.sessionOwner == .remote || self.finalizingOwner == .remote
+            },
+            forceTeardown: { [weak self] in
+                await self?.stopWithoutTranscription(requestedBy: .remote)
+            }
+        )
+#endif
+        self.reconcileRemoteMicListener()
+#if DEBUG
+        self.remoteAudioSettingsObserver = NotificationCenter.default.addObserver(
+            forName: .remoteMicSettingsDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.reconcileRemoteMicListener()
+            }
+        }
+        self.remoteMicDeviceRevokedObserver = NotificationCenter.default.addObserver(
+            forName: .remoteMicDeviceRevoked,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let deviceIDs = notification.userInfo?[RemoteMicSession.revokedDeviceIDsKey] as? Set<String> else { return }
+            Task { @MainActor [weak self] in
+                self?.remoteAudioHTTPIngest?.terminateSessionIfOwned(byAny: deviceIDs)
+            }
+        }
+#endif
 
         // Initialize device list cache
         self.cacheCurrentDeviceList(initialInputSnapshot.0)
@@ -1329,6 +1415,240 @@ final class ASRService: ObservableObject {
             }
         }
     }
+
+    private func reconcileRemoteMicListener() {
+#if !DEBUG
+        return
+#else
+        let desiredActive = self.remoteMicController.isActive
+
+        guard desiredActive else {
+            self.cancelPendingRemoteDelivery()
+            self.remoteAudioHTTPIngest?.stopListening()
+            self.remoteAudioHTTPIngest = nil
+            self.remoteMicController.reportListenerBindResult(bound: false, error: nil)
+            if self.sessionOwner == .remote || self.activeAudioCaptureBackend == .remoteSource {
+                Task { @MainActor [weak self] in
+                    await self?.stopWithoutTranscription(requestedBy: .remote)
+                }
+            }
+            return
+        }
+
+        // Bound and still desired: reconciling again would leak the live listener.
+        guard self.remoteAudioHTTPIngest == nil else { return }
+
+        let handlers = RemoteMicSession.Handlers(
+            onStartRequested: { [weak self] in
+                guard let self else { return .rejected(reason: "unavailable") }
+                return await self.armRemoteAudioSession()
+            },
+            onStopRequested: { [weak self] request in
+                guard let self else { return false }
+                return await self.deliverRemoteDictation(request: request)
+            },
+            onAbnormalDisconnect: { [weak self] in
+                guard let self else { return }
+                await self.stopWithoutTranscription(requestedBy: .remote)
+            }
+        )
+
+        // Auth reads `RemoteMicCredentials.shared` live at each /start, so a regenerate while this
+        // listener is running takes effect immediately.
+        let httpIngest = RemoteAudioHTTPIngest(
+            port: Self.remoteMicIngestPort,
+            handlers: handlers,
+            listenerStateHandler: { [weak self] bound, error in
+                Task { @MainActor [weak self] in
+                    self?.remoteMicController.reportListenerBindResult(bound: bound, error: error)
+                }
+            }
+        )
+        do {
+            try httpIngest.startListening()
+            self.remoteAudioHTTPIngest = httpIngest
+            Task { @MainActor [weak self] in
+                await self?.prewarmConfiguredAudioCaptureIfPossible(reason: "remote_listener_enabled")
+            }
+        } catch {
+            DebugLogger.shared.error("Failed to start remote audio HTTP ingest: \(error)", source: "ASRService")
+            self.remoteAudioHTTPIngest = nil
+            self.remoteMicController.reportListenerBindResult(bound: false, error: error.localizedDescription)
+        }
+#endif
+    }
+
+    private func finishRemoteAudioSessionFinalization() {
+        if self.finalizingOwner == .remote {
+            self.finalizingOwner = nil
+        }
+    }
+
+    private func armRemoteAudioSession() async -> RemoteMicSession.ArmOutcome {
+        guard SettingsStore.shared.remoteMicEnabled else {
+            return .rejected(reason: "disabled")
+        }
+        // Distinct from "disabled" and "busy" so the client can treat it as terminal.
+        #if DEBUG
+        guard self.remoteMicController.isActive, !self.remoteMicController.pendingTeardown else {
+            return .rejected(reason: "expired")
+        }
+        #endif
+        guard self.sessionOwner == nil, self.finalizingOwner == nil else {
+            return .rejected(reason: "busy")
+        }
+
+        let armedGeneration = self.sessionGeneration &+ 1
+        await self.start(source: .remote)
+        guard self.isRunning,
+              self.sessionOwner == .remote,
+              self.sessionGeneration == armedGeneration
+        else {
+            return .rejected(reason: self.sessionOwner == nil ? "start_failed" : "busy")
+        }
+
+        // Capture the nonisolated pipeline here; the ingest path never hops to MainActor.
+        let pipeline = self.audioCapturePipeline
+        let ingest: @Sendable ([Float], Double, UInt64, Int64) -> Void = { samples, sampleRate, generation, sampleOffset in
+            guard generation == armedGeneration else { return }
+            pipeline.handle(
+                samples: samples,
+                frameCount: samples.count,
+                sampleRate: sampleRate,
+                inputHostTime: 0,
+                inputSampleTime: sampleOffset
+            )
+        }
+        #if DEBUG
+        self.remoteMicController.noteSessionArmed()
+        self.remoteTypingTargetSnapshot = (
+            pid: TypingService.captureSystemFocusedPID() ?? NSWorkspace.shared.frontmostApplication?.processIdentifier,
+            bundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        )
+        #endif
+        return .armed(generation: armedGeneration, ingest: ingest)
+    }
+
+    #if DEBUG
+    private func cancelPendingRemoteDelivery() {
+        self.pendingRemoteDeliveryTask?.cancel()
+        self.pendingRemoteDeliveryTask = nil
+    }
+
+    /// After an AI round trip, focus may have moved on; typing into whatever replaced it would land
+    /// text in an unintended app, so a lost/backgrounded target must skip typing instead.
+    private func remoteTypingTargetStillValid(_ target: (pid: pid_t?, bundleID: String?)?) -> Bool {
+        guard let pid = target?.pid, NSRunningApplication(processIdentifier: pid) != nil else { return false }
+        return NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
+    }
+
+    /// Remote-only delivery tail (v3.2 spec Part 2). Deliberately NOT shared with
+    /// `ContentView.stopAndProcessTranscription`: that path reads `@State` a remote session must
+    /// never touch and would type nothing while Settings (i.e. FluidVoice) is frontmost.
+    /// `accepted` AI can only ever be a reduction of the Mac's own gate decision, never an
+    /// expansion of it — a remote device cannot force text out to a cloud provider the user has
+    /// not enabled locally.
+    /// Returns as soon as the transcript exists. AI post-processing is a multi-second LLM round
+    /// trip; awaiting it here would hold the `/stop` response open and leave the watch spinning.
+    /// `finishRemoteAudioSessionFinalization` is deferred until delivery — AI round trip included —
+    /// actually completes, so a second `/start` can't arm and overwrite the target mid-flight.
+    private func deliverRemoteDictation(request: RemoteMicSession.StopRequest) async -> Bool {
+        let target = self.remoteTypingTargetSnapshot
+        self.remoteTypingTargetSnapshot = nil
+
+        let text = await self.stop(requestedBy: .remote)
+        guard !text.isEmpty else {
+            self.finishRemoteAudioSessionFinalization()
+            return false
+        }
+
+        let macAllows = DictationAIPostProcessingGate.isConfigured(for: .primary, appBundleID: target?.bundleID)
+        let accepted = RemoteMicSession.acceptedAI(macAllows: macAllows, requested: request.aiRequested)
+        guard accepted else {
+            self.finishRemoteDelivery(rawText: text, outputText: text, target: target, wasAIProcessed: false)
+            self.finishRemoteAudioSessionFinalization()
+            return true
+        }
+
+        self.pendingRemoteDeliveryTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                self.finishRemoteAudioSessionFinalization()
+                self.pendingRemoteDeliveryTask = nil
+            }
+            let finalText = await self.remotePostProcessWithTimeout(text)
+            guard !Task.isCancelled else { return }
+            let targetStillValid = self.remoteTypingTargetStillValid(target)
+            if !targetStillValid {
+                DebugLogger.shared.info(
+                    "Remote mic: skipping external type, arm-time target is gone or no longer frontmost",
+                    source: "ASRService"
+                )
+            }
+            self.finishRemoteDelivery(
+                rawText: text,
+                outputText: finalText,
+                target: target,
+                wasAIProcessed: true,
+                typeExternally: targetStillValid
+            )
+        }
+        return true
+    }
+
+    /// Mirrors `ContentView.stopAndProcessTranscription`'s formatting/history/clipboard/typing tail
+    /// for the remote path, minus continuous-dictation formatting and focus restoration (both need
+    /// `ContentView` `@State` a remote session must never read).
+    private func finishRemoteDelivery(
+        rawText: String,
+        outputText: String,
+        target: (pid: pid_t?, bundleID: String?)?,
+        wasAIProcessed: Bool,
+        typeExternally: Bool = true
+    ) {
+        var finalText = ASRService.applyDictationLiteralFormatting(outputText, bundleID: target?.bundleID)
+        finalText = ASRService.applyGAAVFormatting(finalText)
+
+        if SettingsStore.shared.saveTranscriptionHistory {
+            TranscriptionHistoryStore.shared.addEntry(
+                rawText: rawText,
+                processedText: finalText,
+                appName: target?.bundleID ?? "Remote Mic",
+                windowTitle: "",
+                wasAIProcessed: wasAIProcessed
+            )
+        }
+
+        let isFluidTarget = target?.bundleID == Bundle.main.bundleIdentifier
+        if SettingsStore.shared.copyTranscriptionToClipboard, !isFluidTarget {
+            ClipboardService.copyToClipboard(finalText)
+        }
+
+        guard typeExternally else { return }
+        self.typeTextToActiveField(finalText, preferredTargetPID: target?.pid)
+    }
+
+    /// Bounded so a stalled AI provider can never hold the HTTP `/stop` response open —
+    /// `finishRemoteAudioSessionFinalization` must still run promptly or later sessions get
+    /// rejected as busy until the 5-minute force-teardown grace.
+    private func remotePostProcessWithTimeout(_ text: String) async -> String {
+        await withTaskGroup(of: String?.self) { group in
+            group.addTask {
+                try? await DictationPostProcessingService.shared.process(text, dictationSlot: .primary).text
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: Self.remoteAIPostProcessTimeout)
+                return nil
+            }
+            defer { group.cancelAll() }
+            for await result in group {
+                if let result, !result.isEmpty { return result }
+                return text
+            }
+            return text
+        }
+    }
+    #endif
 
     /// Check if models exist on disk without loading them (synchronous).
     ///
@@ -1413,12 +1733,13 @@ final class ASRService: ObservableObject {
     /// and `isRunning` will remain `false`. Check the debug logs for details.
     @discardableResult
     func start(
+        source: SessionOwner = .localMic,
         forDictionaryTraining: Bool = false,
         onCaptureStarted: (@MainActor () -> Void)? = nil
     ) async -> AudioCaptureStartOutcome {
         DebugLogger.shared.info("🎤 START() called - beginning recording session", source: "ASRService")
 
-        guard self.micStatus == .authorized else {
+        guard source == .remote || self.micStatus == .authorized else {
             DebugLogger.shared.error("❌ START() blocked - mic not authorized", source: "ASRService")
             return .failed
         }
@@ -1430,10 +1751,23 @@ final class ASRService: ObservableObject {
             DebugLogger.shared.warning("START() blocked - app is terminating", source: "ASRService")
             return .failed
         }
+        guard self.sessionOwner == nil, self.finalizingOwner == nil
+        else {
+            DebugLogger.shared.warning("⚠️ START() blocked - session is owned by another source", source: "ASRService")
+            return .alreadyActive
+        }
         self.audioCaptureStartGeneration &+= 1
         let startGeneration = self.audioCaptureStartGeneration
         self.isStarting = true
         defer { self.finishAudioCaptureStart() }
+        self.sessionOwner = source
+        self.sessionGeneration &+= 1
+        var didStartSession = false
+        defer {
+            if didStartSession == false, self.sessionOwner == source {
+                self.sessionOwner = nil
+            }
+        }
 
         // Reset media pause state for this session
         self.didPauseMediaForThisSession = false
@@ -1488,98 +1822,104 @@ final class ASRService: ObservableObject {
         self.isDictionaryTrainingCaptureActive = false
 
         do {
-            let maximumStartAttempts =
-                SettingsStore.shared.experimentalDirectAudioCaptureEnabled ? 3 : 1
-            var startAttempt = 1
-            while true {
-                let routeGenerationAtStart = self.audioRouteRecoveryGeneration
-                do {
-                    try await self.startConfiguredAudioCapture()
-                } catch {
-                    guard startAttempt < maximumStartAttempts,
-                          startGeneration == self.audioCaptureStartGeneration,
+            if source == .remote {
+                // The client only streams after /start returns, so the readiness gate would time out.
+                try await self.startConfiguredAudioCapture(source: source)
+            } else {
+                let maximumStartAttempts =
+                    SettingsStore.shared.experimentalDirectAudioCaptureEnabled ? 3 : 1
+                var startAttempt = 1
+                while true {
+                    let routeGenerationAtStart = self.audioRouteRecoveryGeneration
+                    do {
+                        try await self.startConfiguredAudioCapture()
+                    } catch {
+                        guard startAttempt < maximumStartAttempts,
+                              startGeneration == self.audioCaptureStartGeneration,
+                              self.isTerminating == false
+                        else {
+                            throw error
+                        }
+                        readinessAttemptID = try await self.prepareAudioCaptureStartRetry(
+                            sessionID: captureSessionID,
+                            startGeneration: startGeneration,
+                            completedAttempt: startAttempt,
+                            reason: "backend_start_error:\(error.localizedDescription)"
+                        )
+                        startAttempt += 1
+                        continue
+                    }
+                    self.benchmarkLog(
+                        "first_pcm_wait_begin attempt=\(startAttempt) " +
+                            "attemptID=\(readinessAttemptID) " +
+                            "timeoutMs=\(self.firstPCMTimeoutNanoseconds / 1_000_000) " +
+                            "routeGeneration=\(routeGenerationAtStart) " +
+                            "captureGeneration=\(self.directAudioLifecycleController.snapshot.generation)"
+                    )
+                    let readiness = await self.audioCaptureReadinessGate.wait(
+                        sessionID: captureSessionID,
+                        attemptID: readinessAttemptID,
+                        timeoutNanoseconds: self.firstPCMTimeoutNanoseconds
+                    )
+                    guard startGeneration == self.audioCaptureStartGeneration,
                           self.isTerminating == false
                     else {
-                        throw error
+                        throw CancellationError()
                     }
+                    let routeStayedStable =
+                        routeGenerationAtStart == self.audioRouteRecoveryGeneration &&
+                        self.pendingAudioRouteRecovery == nil &&
+                        self.isRecoveringAudioRoute == false
+                    if readiness == .ready, routeStayedStable {
+                        self.benchmarkLog(
+                            "first_pcm_wait_end result=ready attempt=\(startAttempt) " +
+                                "attemptID=\(readinessAttemptID) " +
+                                "bufferedSamples=\(self.audioBuffer.count)"
+                        )
+                        break
+                    }
+
+                    self.benchmarkLog(
+                        "first_pcm_wait_end result=\(readiness) attempt=\(startAttempt) " +
+                            "attemptID=\(readinessAttemptID) " +
+                            "routeStable=\(routeStayedStable)"
+                    )
+                    if readiness == .cancelled {
+                        throw CancellationError()
+                    }
+                    guard startAttempt < maximumStartAttempts else {
+                        let message: String
+                        switch readiness {
+                        case .timedOut:
+                            message = "The selected microphone started but did not deliver audio."
+                        case .formatInvalidated:
+                            message = "The microphone format did not stabilize after reconnecting."
+                        case .staleSession:
+                            message = "Audio capture was replaced before the microphone became ready."
+                        case .cancelled:
+                            message = "Audio capture was cancelled."
+                        case .ready:
+                            message = "The microphone route changed before capture became stable."
+                        }
+                        throw NSError(
+                            domain: "ASRService",
+                            code: -2,
+                            userInfo: [NSLocalizedDescriptionKey: message]
+                        )
+                    }
+
                     readinessAttemptID = try await self.prepareAudioCaptureStartRetry(
                         sessionID: captureSessionID,
                         startGeneration: startGeneration,
                         completedAttempt: startAttempt,
-                        reason: "backend_start_error:\(error.localizedDescription)"
+                        reason: "readiness_\(readiness)_routeStable_\(routeStayedStable)"
                     )
                     startAttempt += 1
-                    continue
                 }
-                self.benchmarkLog(
-                    "first_pcm_wait_begin attempt=\(startAttempt) " +
-                        "attemptID=\(readinessAttemptID) " +
-                        "timeoutMs=\(self.firstPCMTimeoutNanoseconds / 1_000_000) " +
-                        "routeGeneration=\(routeGenerationAtStart) " +
-                        "captureGeneration=\(self.directAudioLifecycleController.snapshot.generation)"
-                )
-                let readiness = await self.audioCaptureReadinessGate.wait(
-                    sessionID: captureSessionID,
-                    attemptID: readinessAttemptID,
-                    timeoutNanoseconds: self.firstPCMTimeoutNanoseconds
-                )
-                guard startGeneration == self.audioCaptureStartGeneration,
-                      self.isTerminating == false
-                else {
-                    throw CancellationError()
-                }
-                let routeStayedStable =
-                    routeGenerationAtStart == self.audioRouteRecoveryGeneration &&
-                    self.pendingAudioRouteRecovery == nil &&
-                    self.isRecoveringAudioRoute == false
-                if readiness == .ready, routeStayedStable {
-                    self.benchmarkLog(
-                        "first_pcm_wait_end result=ready attempt=\(startAttempt) " +
-                            "attemptID=\(readinessAttemptID) " +
-                            "bufferedSamples=\(self.audioBuffer.count)"
-                    )
-                    break
-                }
-
-                self.benchmarkLog(
-                    "first_pcm_wait_end result=\(readiness) attempt=\(startAttempt) " +
-                        "attemptID=\(readinessAttemptID) " +
-                        "routeStable=\(routeStayedStable)"
-                )
-                if readiness == .cancelled {
-                    throw CancellationError()
-                }
-                guard startAttempt < maximumStartAttempts else {
-                    let message: String
-                    switch readiness {
-                    case .timedOut:
-                        message = "The selected microphone started but did not deliver audio."
-                    case .formatInvalidated:
-                        message = "The microphone format did not stabilize after reconnecting."
-                    case .staleSession:
-                        message = "Audio capture was replaced before the microphone became ready."
-                    case .cancelled:
-                        message = "Audio capture was cancelled."
-                    case .ready:
-                        message = "The microphone route changed before capture became stable."
-                    }
-                    throw NSError(
-                        domain: "ASRService",
-                        code: -2,
-                        userInfo: [NSLocalizedDescriptionKey: message]
-                    )
-                }
-
-                readinessAttemptID = try await self.prepareAudioCaptureStartRetry(
-                    sessionID: captureSessionID,
-                    startGeneration: startGeneration,
-                    completedAttempt: startAttempt,
-                    reason: "readiness_\(readiness)_routeStable_\(routeStayedStable)"
-                )
-                startAttempt += 1
             }
             self.isDictionaryTrainingCaptureActive = forDictionaryTraining
             self.isRunning = true
+            didStartSession = true
             DebugLogger.shared.info(
                 "✅ Audio capture running after first PCM (session=\(captureSessionID))",
                 source: "ASRService"
@@ -1604,7 +1944,7 @@ final class ASRService: ObservableObject {
             }
 
             // Direct capture already owns a required device-liveness listener
-            // on its off-main lifecycle queue.
+            // on its off-main lifecycle queue. Remote capture has no local device.
             if self.activeAudioCaptureBackend == .audioEngine,
                let currentDevice = getCurrentlyBoundInputDevice()
             {
@@ -1804,10 +2144,16 @@ final class ASRService: ObservableObject {
     ///   shouldn't wait on finalization. Only invoked when capture was actually
     ///   running (i.e. not when `stop()` early-returns because `isRunning` is false).
     func stop(
+        requestedBy: SessionOwner = .localMic,
         onCaptureStopped: (@MainActor () -> Void)? = nil,
         forDictionaryTraining: Bool = false
     ) async -> String {
         DebugLogger.shared.info("🛑 STOP() called - beginning shutdown sequence", source: "ASRService")
+        guard !(self.sessionOwner == .remote && requestedBy == .localMic),
+              !(self.sessionOwner == .localMic && requestedBy == .remote)
+        else {
+            return ""
+        }
         if forDictionaryTraining || self.isDictionaryTrainingCaptureActive {
             self.lastDictionaryTrainingResult = nil
         }
@@ -1823,10 +2169,14 @@ final class ASRService: ObservableObject {
             DebugLogger.shared.warning("⚠️ STOP() - not running, returning empty string", source: "ASRService")
             return ""
         }
+        self.finalizingOwner = self.sessionOwner
         let useDictionaryTrainingPath = forDictionaryTraining || self.isDictionaryTrainingCaptureActive
         defer {
             self.applyPendingParakeetVocabularyReloadIfNeeded()
             self.isDictionaryTrainingCaptureActive = false
+            if requestedBy != .remote {
+                self.finalizingOwner = nil
+            }
         }
 
         await self.cancelAudioRouteRecoveryAndWait()
@@ -2189,14 +2539,25 @@ final class ASRService: ObservableObject {
         return (ASRTranscriptionResult(text: cleanedText, confidence: result.confidence), estimatedSamples)
     }
 
-    func stopWithoutTranscription() async {
+    func stopWithoutTranscription(requestedBy: SessionOwner = .localMic) async {
+        guard !(self.sessionOwner == .remote && requestedBy == .localMic),
+              !(self.sessionOwner == .localMic && requestedBy == .remote)
+        else { return }
+        #if DEBUG
+        // Audio is already torn down by now, so `isRunning` below won't catch this.
+        if requestedBy == .remote {
+            self.cancelPendingRemoteDelivery()
+        }
+        #endif
         if self.isStarting, self.isRunning == false {
             await self.cancelPendingAudioCaptureStart(reason: "stop_without_transcription")
         }
         guard self.isRunning else { return }
+        self.finalizingOwner = self.sessionOwner
         defer {
             self.applyPendingParakeetVocabularyReloadIfNeeded()
             self.isDictionaryTrainingCaptureActive = false
+            self.finalizingOwner = nil
         }
 
         await self.cancelAudioRouteRecoveryAndWait()
@@ -2712,6 +3073,10 @@ final class ASRService: ObservableObject {
             self.benchmarkLog("route_recovery_ignored reason=app_terminating event=\(reason)")
             return
         }
+        // Remote audio no-ops route recovery: it never uses AVAudioEngine/Core Audio.
+        guard self.activeAudioCaptureBackend != .remoteSource, self.sessionOwner != .remote else {
+            return
+        }
         self.audioRouteRecoveryGeneration &+= 1
         let requiresPrewarmAfterRecovery =
             requiresIdlePrewarm || self.pendingAudioRouteRecovery?.requiresIdlePrewarm == true
@@ -2810,6 +3175,7 @@ final class ASRService: ObservableObject {
               request.generation == self.audioRouteRecoveryGeneration,
               Task.isCancelled == false
         else { return }
+        guard self.activeAudioCaptureBackend != .remoteSource, self.sessionOwner != .remote else { return }
         guard self.isRecoveringAudioRoute == false else { return }
 
         self.isRecoveringAudioRoute = true
@@ -2911,10 +3277,13 @@ final class ASRService: ObservableObject {
         )
         self.audioCapturePipeline.setRecordingEnabled(false)
         self.stopMonitoringDevice()
+        // The session continues, but stopActiveAudioCapture() nils sessionOwner for terminal callers.
+        let preservedOwner = self.sessionOwner
         await self.stopActiveAudioCapture(
             retainDirectPreparedCapture: false,
             reason: "active_route_recovery"
         )
+        self.sessionOwner = preservedOwner
         await self.retireAudioEngineAndWait(reason: "audio_route_recovery")
 
         guard request.generation == self.audioRouteRecoveryGeneration, Task.isCancelled == false else { return }
