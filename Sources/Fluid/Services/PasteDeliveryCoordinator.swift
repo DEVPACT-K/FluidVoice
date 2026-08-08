@@ -50,8 +50,8 @@ final class SystemPasteboardManager: PasteboardManaging {
     private static let sessionType = NSPasteboard.PasteboardType(
         "\(Bundle.main.bundleIdentifier ?? "com.FluidApp.Fluid").PasteSession"
     )
-    static let maximumRepresentationBytes = 2 * 1024 * 1024
-    static let maximumSnapshotBytes = 8 * 1024 * 1024
+    static let maximumRepresentationBytes = 4 * 1024 * 1024
+    static let maximumSnapshotBytes = 16 * 1024 * 1024
     static let maximumItems = 100
 
     private let pasteboard: NSPasteboard
