@@ -2742,14 +2742,16 @@ private extension SettingsView {
 
             switch self.remoteMicPairingState {
             case .closed, .paired, .failed:
-                Text("Open pairing, then choose this Mac in FluidVoice on your iPhone.")
+                Text("**1.** Click \"Pair a Device\" below — your iPhone can't start until you do.\n**2.** On iPhone: FluidVoice → menu → Settings → Remote Mic (Debug).\n**3.** Tap this Mac in the list, then check the numbers match.")
                     .font(self.theme.typography.bodySmall)
                     .foregroundStyle(self.settingsSecondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
 
             case .waitingForDevice, .awaitingReveal:
-                Text("Waiting for your iPhone…")
+                Text("Ready for 2 minutes. Now on iPhone: FluidVoice → menu → Settings → Remote Mic (Debug), and tap this Mac.")
                     .font(self.theme.typography.bodySmall)
                     .foregroundStyle(self.settingsSecondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
 
             case let .awaitingComparison(digits, deviceName, peerIP):
                 self.remoteMicComparisonView(digits: digits, deviceName: deviceName, peerIP: peerIP, awaitingLocalConfirm: true)
