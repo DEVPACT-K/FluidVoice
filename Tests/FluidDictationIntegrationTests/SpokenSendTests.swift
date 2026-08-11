@@ -463,6 +463,32 @@ final class SpokenSendTests: XCTestCase {
         XCTAssertFalse(TypingService.DeliveryOutcome.insertedActionSuppressed.didDispatchAction)
     }
 
+    func testExactTargetInsertionPreservesUnselectedDraftText() {
+        XCTAssertEqual(
+            TypingService.valueByInserting(
+                "new ",
+                into: "existing draft",
+                selectedRange: CFRange(location: 9, length: 0)
+            ),
+            "existing new draft"
+        )
+        XCTAssertEqual(
+            TypingService.valueByInserting(
+                "replacement",
+                into: "keep old keep",
+                selectedRange: CFRange(location: 5, length: 3)
+            ),
+            "keep replacement keep"
+        )
+        XCTAssertNil(
+            TypingService.valueByInserting(
+                "unsafe",
+                into: "draft",
+                selectedRange: CFRange(location: 99, length: 0)
+            )
+        )
+    }
+
     func testOverlayIndicatorVisibilityCoversEveryActiveState() {
         XCTAssertFalse(SpokenSendIndicatorState.hidden.isVisible)
         XCTAssertTrue(SpokenSendIndicatorState.detected.isVisible)

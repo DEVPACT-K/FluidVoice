@@ -66,6 +66,27 @@ final class TypingService {
             insertionConfirmed
     }
 
+    nonisolated static func valueByInserting(
+        _ insertion: String,
+        into original: String,
+        selectedRange: CFRange
+    ) -> String? {
+        let originalValue = original as NSString
+        guard selectedRange.location >= 0,
+              selectedRange.length >= 0,
+              selectedRange.location <= originalValue.length,
+              selectedRange.length <= originalValue.length - selectedRange.location
+        else {
+            return nil
+        }
+        let value = NSMutableString(string: original)
+        value.replaceCharacters(
+            in: NSRange(location: selectedRange.location, length: selectedRange.length),
+            with: insertion
+        )
+        return value as String
+    }
+
     // Logging toggle (off by default). Enable by setting env FLUID_TYPING_LOGS=1
     // or UserDefaults bool for key "enableTypingLogs".
     private static var isLoggingEnabled: Bool {
@@ -717,19 +738,44 @@ final class TypingService {
               let snapshot = self.captureFocusedTextSnapshot(),
               snapshot.pid == target.pid,
               CFEqual(snapshot.element, target.element),
-              self.tryAllTextInsertionMethods(target.element, text),
+              let originalValue = snapshot.value,
+              let selectedRange = snapshot.selectedRange,
+              let expectedValue = Self.valueByInserting(
+                  text,
+                  into: originalValue,
+                  selectedRange: selectedRange
+              ),
+              self.insertTextAtCursorUsingSelectedRange(target.element, text),
               Self.isExactFocusTargetActive(target)
         else {
             return false
         }
 
-        let verification = self.waitForFocusedTextVerification(
-            from: snapshot,
-            expectedText: text,
+        let verified = self.waitForExactTargetValue(
+            expectedValue,
+            target: target,
             timeoutMicros: 500_000
         )
-        self.log("[TypingService] Exact-target Accessibility verification: \(verification.rawValue)")
-        return verification.isConfirmed
+        self.log("[TypingService] Exact-target preserving insertion verified: \(verified)")
+        return verified
+    }
+
+    private func waitForExactTargetValue(
+        _ expectedValue: String,
+        target: CapturedFocusTarget,
+        timeoutMicros: useconds_t
+    ) -> Bool {
+        let pollMicros: useconds_t = 50_000
+        var waited: useconds_t = 0
+        while waited < timeoutMicros {
+            usleep(pollMicros)
+            waited += pollMicros
+            guard Self.isExactFocusTargetActive(target) else { continue }
+            if self.getElementStringValue(target.element) == expectedValue {
+                return true
+            }
+        }
+        return false
     }
 
     private func waitForPhysicalModifiersToRelease(timeout: TimeInterval) -> Bool {
