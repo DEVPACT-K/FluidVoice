@@ -339,6 +339,22 @@ final class SpokenSendTests: XCTestCase {
         )
     }
 
+    func testTerminalClassifierRecognizesHostedTerminalContext() {
+        XCTAssertTrue(
+            TerminalAppClassifier.isTerminalContext(
+                labels: ["Visual Studio Code", "Integrated Terminal", "AXTextArea"]
+            )
+        )
+        XCTAssertTrue(
+            TerminalAppClassifier.isTerminalContext(labels: ["Web SSH Console"])
+        )
+        XCTAssertFalse(
+            TerminalAppClassifier.isTerminalContext(
+                labels: ["Visual Studio Code", "Source Editor", "AXTextArea"]
+            )
+        )
+    }
+
     func testGeneratedSendCommandsAreExcludedFromFluidVoiceHotkeys() throws {
         for key in SettingsStore.SpokenSendKey.allCases {
             let event = try XCTUnwrap(
@@ -394,6 +410,16 @@ final class SpokenSendTests: XCTestCase {
                 preferredTargetPID: 42,
                 requiredTargetPID: 42,
                 isSecureTextField: true,
+                modifiersReleased: true,
+                exactFocusIsActive: true
+            )
+        )
+        XCTAssertFalse(
+            TypingService.canDispatchPostInsertionAction(
+                preferredTargetPID: 42,
+                requiredTargetPID: 42,
+                isSecureTextField: false,
+                isTerminalLikeContext: true,
                 modifiersReleased: true,
                 exactFocusIsActive: true
             )

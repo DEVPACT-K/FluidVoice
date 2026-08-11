@@ -49,6 +49,7 @@ final class TypingService {
         preferredTargetPID: pid_t?,
         requiredTargetPID: pid_t?,
         isSecureTextField: Bool,
+        isTerminalLikeContext: Bool = false,
         modifiersReleased: Bool,
         exactFocusIsActive: Bool,
         insertionConfirmed: Bool = true
@@ -58,7 +59,11 @@ final class TypingService {
         else {
             return false
         }
-        return !isSecureTextField && modifiersReleased && exactFocusIsActive && insertionConfirmed
+        return !isSecureTextField &&
+            !isTerminalLikeContext &&
+            modifiersReleased &&
+            exactFocusIsActive &&
+            insertionConfirmed
     }
 
     // Logging toggle (off by default). Enable by setting env FLUID_TYPING_LOGS=1
@@ -530,11 +535,14 @@ final class TypingService {
                 preferredTargetPID: preferredTargetPID,
                 requiredTargetPID: requiredFocusTarget.pid,
                 isSecureTextField: requiredFocusTarget.isSecureTextField,
+                isTerminalLikeContext: Self.hasTerminalLikeContext(requiredFocusTarget),
                 modifiersReleased: self.waitForPhysicalModifiersToRelease(
                     timeout: Self.postInsertionModifierReleaseTimeout
                 ),
                 exactFocusIsActive: Self.isExactFocusTargetActive(requiredFocusTarget),
-                insertionConfirmed: !hasTextToInsert || outcome.didInsert
+                insertionConfirmed: hasTextToInsert
+                    ? outcome.didInsert
+                    : Self.hasNonemptyEditableDraft(requiredFocusTarget)
             ),
                 self.postReturnKey(postInsertionKey, target: requiredFocusTarget)
             else {
@@ -755,12 +763,8 @@ final class TypingService {
         guard Self.isExactFocusTargetActive(target) else { return false }
         keyDown.postToPid(target.pid)
         usleep(10_000)
-        guard Self.isExactFocusTargetActive(target) else {
-            keyUp.postToPid(target.pid)
-            return false
-        }
         keyUp.postToPid(target.pid)
-        return Self.isExactFocusTargetActive(target)
+        return true
     }
 
     private func tryReliablePasteInsertion(_ text: String, preferredTargetPID: pid_t?) -> Bool {
@@ -812,6 +816,65 @@ final class TypingService {
         let result = AXUIElementCopyAttributeValue(element, attribute, &value)
         guard result == .success else { return nil }
         return value as? String
+    }
+
+    private static func accessibilityContextLabels(
+        for element: AXUIElement,
+        window: AXUIElement?
+    ) -> [String] {
+        let attributes = [
+            kAXRoleDescriptionAttribute as CFString,
+            kAXDescriptionAttribute as CFString,
+            kAXTitleAttribute as CFString,
+            kAXIdentifierAttribute as CFString,
+            kAXHelpAttribute as CFString,
+        ]
+        var labels: [String] = []
+        var current: AXUIElement? = element
+        for _ in 0..<6 {
+            guard let currentElement = current else { break }
+            labels.append(contentsOf: attributes.compactMap {
+                Self.stringAXAttribute(from: currentElement, attribute: $0)
+            })
+            if let window, CFEqual(currentElement, window) {
+                break
+            }
+            current = Self.copyAXElementAttribute(
+                from: currentElement,
+                attribute: kAXParentAttribute as CFString
+            )
+        }
+        if let window {
+            labels.append(contentsOf: attributes.compactMap {
+                Self.stringAXAttribute(from: window, attribute: $0)
+            })
+        }
+        return labels
+    }
+
+    private static func hasNonemptyEditableDraft(_ target: CapturedFocusTarget) -> Bool {
+        let editableRoles = ["AXTextField", "AXTextArea", "AXSearchField", "AXComboBox"]
+        guard self.isExactFocusTargetActive(target),
+              !target.isSecureTextField,
+              let role = self.stringAXAttribute(
+                  from: target.element,
+                  attribute: kAXRoleAttribute as CFString
+              ),
+              editableRoles.contains(role),
+              let value = self.stringAXAttribute(
+                  from: target.element,
+                  attribute: kAXValueAttribute as CFString
+              )
+        else {
+            return false
+        }
+        return !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private static func hasTerminalLikeContext(_ target: CapturedFocusTarget) -> Bool {
+        TerminalAppClassifier.isTerminalContext(
+            labels: self.accessibilityContextLabels(for: target.element, window: target.window)
+        )
     }
 
     private static func currentFocusDebugDescription() -> String {

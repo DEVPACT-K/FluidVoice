@@ -12,12 +12,25 @@ enum TerminalAppClassifier {
         "hyper",
         "termius",
     ]
+    private static let contextMarkers = [
+        "terminal",
+        "shell",
+        "ssh",
+        "console",
+        "xterm",
+        "hterm",
+    ]
 
     static func isTerminal(appName: String?, bundleID: String?) -> Bool {
         let identity = [appName, bundleID]
             .compactMap { $0?.lowercased() }
             .joined(separator: " ")
         return self.identityMarkers.contains { identity.contains($0) }
+    }
+
+    static func isTerminalContext(labels: [String]) -> Bool {
+        let context = labels.joined(separator: " ").lowercased()
+        return self.contextMarkers.contains { context.contains($0) }
     }
 }
 
