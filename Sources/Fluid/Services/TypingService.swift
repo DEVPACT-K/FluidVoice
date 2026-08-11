@@ -553,6 +553,9 @@ final class TypingService {
                 return
             }
 
+            let capturedActionOnlyDraftValue = hasTextToInsert
+                ? nil
+                : Self.nonemptyEditableDraftValue(requiredFocusTarget)
             usleep(50_000)
             let modifiersReleased = self.waitForPhysicalModifiersToRelease(
                 timeout: Self.postInsertionModifierReleaseTimeout
@@ -560,7 +563,7 @@ final class TypingService {
             let expectedActionValue: String? = if hasTextToInsert {
                 expectedInsertedValue
             } else {
-                Self.nonemptyEditableDraftValue(requiredFocusTarget)
+                capturedActionOnlyDraftValue
             }
             let insertionConfirmed = expectedActionValue != nil &&
                 self.getElementStringValue(requiredFocusTarget.element) == expectedActionValue
