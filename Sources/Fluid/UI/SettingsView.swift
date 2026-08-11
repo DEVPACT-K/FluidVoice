@@ -1471,6 +1471,37 @@ struct SettingsView: View {
                     }
                     .padding(16)
                 }
+
+                ThemedCard(style: .standard) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack(spacing: 8) {
+                            Label("Long Dictation", systemImage: "waveform.badge.plus")
+                                .font(.headline)
+                                .foregroundStyle(.primary)
+
+                            Text("EXPERIMENTAL")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(self.theme.palette.accent)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(
+                                    Capsule()
+                                        .fill(self.theme.palette.accent.opacity(0.12))
+                                )
+                        }
+
+                        self.settingsToggleRow(
+                            title: "Reuse Live Parakeet Transcription",
+                            description: "For long recordings, reuse completed live windows and process only the remaining tail when you stop.",
+                            footnote: "Falls back to the normal full transcription if reuse is unavailable or fails.",
+                            isOn: Binding(
+                                get: { SettingsStore.shared.experimentalParakeetUnifiedFinalEnabled },
+                                set: { SettingsStore.shared.experimentalParakeetUnifiedFinalEnabled = $0 }
+                            )
+                        )
+                    }
+                    .padding(16)
+                }
             }
             .padding(16)
         }
