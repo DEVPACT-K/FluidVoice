@@ -244,6 +244,7 @@ struct ContentView: View {
     @State private var recordingAppInfo: (name: String, bundleId: String, windowTitle: String)? = nil
     @State private var recordingPrecedingText: String = ""
     @State private var recordingFocusTarget: TypingService.CapturedFocusTarget? = nil
+    @State private var recordingSessionID = UUID()
 
     // Command Mode State
     // @State private var showCommandMode: Bool = false
@@ -290,6 +291,7 @@ struct ContentView: View {
     @State private var spokenSendVoiceActivityGeneration: UInt64 = 0
     @State private var activeSpokenSendVoiceActivityID: UInt64?
     @State private var isStoppingAndProcessingTranscription = false
+    @State private var stopProcessingOperationID: UUID?
 
     private var isRecordingAnyShortcutCapture: Bool {
         self.activeShortcutRecordingTarget != nil
@@ -1623,6 +1625,20 @@ struct ContentView: View {
         return (name: "Unknown", bundleId: "unknown", windowTitle: "")
     }
 
+    nonisolated static func canDeliverCompletedRecording(
+        stoppedSessionID: UUID,
+        currentSessionID: UUID
+    ) -> Bool {
+        stoppedSessionID == currentSessionID
+    }
+
+    nonisolated static func canFinishStopProcessingOperation(
+        completingOperationID: UUID,
+        currentOperationID: UUID?
+    ) -> Bool {
+        completingOperationID == currentOperationID
+    }
+
     private func isSpokenSendBlockedTarget(_ target: TypingService.CapturedFocusTarget?) -> Bool {
         guard let target,
               let app = NSRunningApplication(processIdentifier: target.pid)
@@ -1638,7 +1654,8 @@ struct ContentView: View {
     private func deliverSpokenSend(
         _ outputPlan: DictationLiteralOutputPlan,
         targetPID: pid_t?,
-        textReadyAt: TimeInterval
+        textReadyAt: TimeInterval,
+        requiredFocusTarget: TypingService.CapturedFocusTarget?
     ) async -> TypingService.DeliveryOutcome {
         let sendsExistingDraft = outputPlan.plainText.isEmpty
         let outcome = await self.asr.typeOutputPlanToActiveFieldAndWait(
@@ -1646,7 +1663,7 @@ struct ContentView: View {
             preferredTargetPID: targetPID,
             textReadyAt: textReadyAt,
             postInsertionKey: self.settings.spokenSendKey,
-            requiredFocusTarget: self.recordingFocusTarget
+            requiredFocusTarget: requiredFocusTarget
         )
         if outcome.didDispatchAction {
             NotchContentState.shared.setSpokenSendIndicatorState(.sent)
@@ -1685,6 +1702,7 @@ struct ContentView: View {
     private func captureRecordingTargetContext() {
         // Capture the focused target PID BEFORE any overlay/UI changes.
         // Used to restore focus when the user interacts with overlay dropdowns.
+        self.recordingSessionID = UUID()
         let focusTarget = TypingService.captureSystemFocusTarget()
         self.recordingFocusTarget = focusTarget
         let focusedPID = focusTarget?.pid
@@ -1719,7 +1737,12 @@ struct ContentView: View {
     }
 
     private func resolveTypingTargetPID() -> (pid: pid_t?, shouldRestoreOriginalFocus: Bool) {
-        let originalPID = NotchContentState.shared.recordingTargetPID
+        self.resolveTypingTargetPID(originalPID: NotchContentState.shared.recordingTargetPID)
+    }
+
+    private func resolveTypingTargetPID(
+        originalPID: pid_t?
+    ) -> (pid: pid_t?, shouldRestoreOriginalFocus: Bool) {
         let currentFocusedPID = TypingService.captureSystemFocusedPID()
             ?? NSWorkspace.shared.frontmostApplication?.processIdentifier
 
@@ -2095,15 +2118,27 @@ struct ContentView: View {
             DebugLogger.shared.debug("Ignoring duplicate stop-and-process request", source: "ContentView")
             return
         }
+        let operationID = UUID()
+        self.stopProcessingOperationID = operationID
         self.isStoppingAndProcessingTranscription = true
-        defer { self.isStoppingAndProcessingTranscription = false }
-        await self.performStopAndProcessTranscription(route: route)
+        defer { self.finishStopProcessingOperationIfCurrent(operationID) }
+        await self.performStopAndProcessTranscription(route: route, operationID: operationID)
     }
 
-    private func performStopAndProcessTranscription(route: DictationOutputRoute) async {
+    // swiftlint:disable:next function_body_length
+    private func performStopAndProcessTranscription(
+        route: DictationOutputRoute,
+        operationID: UUID
+    ) async {
         DebugLogger.shared.debug("stopAndProcessTranscription called", source: "ContentView")
         DebugLogger.shared.info("Output route selected: \(route.rawValue)", source: "ContentView")
         self.appBench("stop_path_enter route=\(route.rawValue)")
+
+        let stoppedSessionID = self.recordingSessionID
+        let stoppedFocusTarget = self.recordingFocusTarget
+        let stoppedTargetPID = NotchContentState.shared.recordingTargetPID
+        let stoppedAppInfo = self.recordingAppInfo
+        let stoppedPrecedingText = self.recordingPrecedingText
 
         // Check if we're in rewrite or command mode
         let modeAtStop = self.activeRecordingMode
@@ -2159,7 +2194,7 @@ struct ContentView: View {
         self.appBench("asr_stop_return elapsedMs=\(Int(((ProcessInfo.processInfo.systemUptime - asrStopStartedAt) * 1000).rounded()))")
         // The duplicate-stop race ends when ASR reports that it is no longer running.
         // Do not hold this guard across delivery or a new recording's stop can be swallowed.
-        self.isStoppingAndProcessingTranscription = false
+        self.finishStopProcessingOperationIfCurrent(operationID)
         let audioSnapshot = self.asr.consumeLastCompletedAudioSnapshot()
         DebugLogger.shared.info(
             "Stop transcription result | chars=\(transcribedText.count) | empty=\(transcribedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)",
@@ -2252,7 +2287,7 @@ struct ContentView: View {
         var finalText: String
         var aiFallbackReason: String?
         var postProcessingModel: String?
-        let appInfo = self.recordingAppInfo ?? self.getCurrentAppInfo()
+        let appInfo = stoppedAppInfo ?? self.getCurrentAppInfo()
         let punctuationFormattedText = ASRService.applySpokenPunctuationFormatting(
             transcribedText,
             appName: appInfo.name,
@@ -2369,13 +2404,23 @@ struct ContentView: View {
         finalText = ASRService.applyGAAVFormatting(finalText)
         // Apply Continuous Dictation Mode after GAAV so smart caps use the field
         // context captured at recording start, and the trailing space enables chaining.
-        finalText = ASRService.applyContinuousDictationFormatting(finalText, precedingText: self.recordingPrecedingText)
+        finalText = ASRService.applyContinuousDictationFormatting(finalText, precedingText: stoppedPrecedingText)
         finalText = ASRService.applyTerminalLiteralAutocompleteSpacing(
             finalText,
             appName: appInfo.name,
             bundleID: appInfo.bundleId,
             windowTitle: appInfo.windowTitle
         )
+        guard Self.canDeliverCompletedRecording(
+            stoppedSessionID: stoppedSessionID,
+            currentSessionID: self.recordingSessionID
+        ) else {
+            DebugLogger.shared.warning(
+                "Completed dictation output suppressed because a newer recording session started",
+                source: "ContentView"
+            )
+            return
+        }
         self.recordingPrecedingText = ""
         self.asr.finalText = finalText
         if route == .onboardingSandbox,
@@ -2480,19 +2525,33 @@ struct ContentView: View {
         )
 
         if shouldTypeExternally {
-            let typingTarget = self.resolveTypingTargetPID()
             let spokenSendRequested = spokenSendParse.shouldSend
+            let typingTarget = self.resolveTypingTargetPID(originalPID: stoppedTargetPID)
             let targetMatchesRecordingFocus = typingTarget.pid != nil
-                && typingTarget.pid == self.recordingFocusTarget?.pid
+                && typingTarget.pid == stoppedFocusTarget?.pid
             let spokenSendAllowed = spokenSendRequested
                 && aiFallbackReason == nil
                 && (sendsExistingDraft || !finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 && targetMatchesRecordingFocus
-                && !self.isSpokenSendBlockedTarget(self.recordingFocusTarget)
+                && !self.isSpokenSendBlockedTarget(stoppedFocusTarget)
             // Dispatch insertion as soon as the destination app is ready; the
             // overlay hides asynchronously after output so it cannot delay paste.
             if typingTarget.shouldRestoreOriginalFocus {
-                await self.restoreFocusToRecordingTarget(requireExactTarget: spokenSendAllowed)
+                await self.restoreFocusToRecordingTarget(
+                    requireExactTarget: spokenSendAllowed,
+                    targetPID: stoppedTargetPID,
+                    focusTarget: stoppedFocusTarget
+                )
+            }
+            guard Self.canDeliverCompletedRecording(
+                stoppedSessionID: stoppedSessionID,
+                currentSessionID: self.recordingSessionID
+            ) else {
+                DebugLogger.shared.warning(
+                    "Dictation delivery suppressed because a newer recording session started",
+                    source: "ContentView"
+                )
+                return
             }
             if spokenSendAllowed {
                 NotchContentState.shared.setSpokenSendIndicatorState(.sending)
@@ -2505,7 +2564,8 @@ struct ContentView: View {
                 let deliveryOutcome = await self.deliverSpokenSend(
                     finalOutputPlan,
                     targetPID: typingTarget.pid,
-                    textReadyAt: finalTextReadyAt
+                    textReadyAt: finalTextReadyAt,
+                    requiredFocusTarget: stoppedFocusTarget
                 )
                 didTypeExternally = deliveryOutcome.didInsert || deliveryOutcome.didDispatchAction
             } else {
@@ -2573,6 +2633,15 @@ struct ContentView: View {
         if !didTypeExternally, !shouldShowAIProcessingFailure, !didRequestOverlayHideOnStop {
             self.hideOverlayAfterOutput()
         }
+    }
+
+    private func finishStopProcessingOperationIfCurrent(_ operationID: UUID) {
+        guard Self.canFinishStopProcessingOperation(
+            completingOperationID: operationID,
+            currentOperationID: self.stopProcessingOperationID
+        ) else { return }
+        self.stopProcessingOperationID = nil
+        self.isStoppingAndProcessingTranscription = false
     }
 
     private func hideOverlayAfterOutput() {
@@ -3459,10 +3528,22 @@ struct ContentView: View {
     /// Best-effort: re-activate the app that was focused when recording started.
     /// Skips the AX restore work when the captured text element is already focused.
     private func restoreFocusToRecordingTarget(requireExactTarget: Bool = false) async {
-        guard let pid = NotchContentState.shared.recordingTargetPID else { return }
+        await self.restoreFocusToRecordingTarget(
+            requireExactTarget: requireExactTarget,
+            targetPID: NotchContentState.shared.recordingTargetPID,
+            focusTarget: self.recordingFocusTarget
+        )
+    }
+
+    private func restoreFocusToRecordingTarget(
+        requireExactTarget: Bool,
+        targetPID: pid_t?,
+        focusTarget: TypingService.CapturedFocusTarget?
+    ) async {
+        guard let pid = targetPID else { return }
         let startedAt = ProcessInfo.processInfo.systemUptime
         self.appBench("focus_restore_start targetPID=\(pid)")
-        if let focusTarget = self.recordingFocusTarget, focusTarget.pid == pid {
+        if let focusTarget, focusTarget.pid == pid {
             // Ordinary dictation keeps the legacy PID/editable-focus check because some apps
             // vend a fresh AX element for the same field. Spoken Send remains exact-target only.
             let targetIsStillActive = requireExactTarget

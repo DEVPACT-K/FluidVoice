@@ -463,6 +463,41 @@ final class SpokenSendTests: XCTestCase {
         XCTAssertFalse(TypingService.DeliveryOutcome.insertedActionSuppressed.didDispatchAction)
     }
 
+    func testCompletedRecordingIsSuppressedAfterANewerSessionStarts() {
+        let stoppedSessionID = UUID()
+
+        XCTAssertTrue(
+            ContentView.canDeliverCompletedRecording(
+                stoppedSessionID: stoppedSessionID,
+                currentSessionID: stoppedSessionID
+            )
+        )
+        XCTAssertFalse(
+            ContentView.canDeliverCompletedRecording(
+                stoppedSessionID: stoppedSessionID,
+                currentSessionID: UUID()
+            )
+        )
+    }
+
+    func testOlderStopOperationCannotClearNewerStopGuard() {
+        let olderOperationID = UUID()
+        let newerOperationID = UUID()
+
+        XCTAssertTrue(
+            ContentView.canFinishStopProcessingOperation(
+                completingOperationID: newerOperationID,
+                currentOperationID: newerOperationID
+            )
+        )
+        XCTAssertFalse(
+            ContentView.canFinishStopProcessingOperation(
+                completingOperationID: olderOperationID,
+                currentOperationID: newerOperationID
+            )
+        )
+    }
+
     func testExactTargetInsertionPreservesUnselectedDraftText() {
         XCTAssertEqual(
             TypingService.valueByInserting(
