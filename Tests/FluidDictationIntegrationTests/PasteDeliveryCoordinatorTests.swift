@@ -317,10 +317,12 @@ private final class FakePasteboardManager: PasteboardManaging {
         self.temporaryWriteSucceeds = temporaryWriteSucceeds
     }
 
-    func captureBoundedSnapshot() -> PasteboardSnapshot? {
+    func captureSnapshot() -> PasteboardSnapshot? {
         guard self.snapshotSucceeds else { return nil }
         return PasteboardSnapshot(items: [
-            .init(representations: [NSPasteboard.PasteboardType.string.rawValue: Data(self.text.utf8)]),
+            .init(representations: [
+                .init(type: .string, data: Data(self.text.utf8)),
+            ]),
         ])
     }
 
@@ -348,7 +350,7 @@ private final class FakePasteboardManager: PasteboardManaging {
         self.restoreCount += 1
         self.sessionID = nil
         self.isTemporary = false
-        guard let data = snapshot.items.first?.representations[NSPasteboard.PasteboardType.string.rawValue],
+        guard let data = snapshot.items.first?.representations.first(where: { $0.type == .string })?.data,
               let restoredText = String(data: data, encoding: .utf8)
         else {
             self.text = ""

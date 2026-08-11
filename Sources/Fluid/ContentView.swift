@@ -2436,7 +2436,7 @@ struct ContentView: View {
         case .targetUnavailable, .targetRestoreFailed:
             "Could not restore the target text field"
         case .clipboardSnapshotFailed:
-            "Clipboard is too large or complex to preserve"
+            "Clipboard contents could not be preserved exactly"
         case .clipboardWriteFailed:
             "Could not prepare the clipboard"
         case .pasteCommandFailed:

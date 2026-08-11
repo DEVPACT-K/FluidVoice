@@ -22,7 +22,13 @@ enum TextDeliveryResult: Equatable {
 
 struct PasteboardSnapshot: Equatable {
     struct Item: Equatable {
-        let representations: [String: Data]
+        struct Representation: Equatable {
+            let type: NSPasteboard.PasteboardType
+            let data: Data
+        }
+
+        /// AppKit uses source order as representation preference, so this must remain ordered.
+        let representations: [Representation]
     }
 
     let items: [Item]
@@ -30,7 +36,7 @@ struct PasteboardSnapshot: Equatable {
 
 @MainActor
 protocol PasteboardManaging: AnyObject {
-    func captureBoundedSnapshot() -> PasteboardSnapshot?
+    func captureSnapshot() -> PasteboardSnapshot?
     func writeTemporaryText(_ text: String, sessionID: String) -> Bool
     func writeIntentionalText(_ text: String) -> Bool
     func isOwned(sessionID: String, expectedText: String) -> Bool
@@ -50,9 +56,6 @@ final class SystemPasteboardManager: PasteboardManaging {
     private static let sessionType = NSPasteboard.PasteboardType(
         "\(Bundle.main.bundleIdentifier ?? "com.FluidApp.Fluid").PasteSession"
     )
-    static let maximumRepresentationBytes = 4 * 1024 * 1024
-    static let maximumSnapshotBytes = 16 * 1024 * 1024
-    static let maximumItems = 100
 
     private let pasteboard: NSPasteboard
 
@@ -60,62 +63,82 @@ final class SystemPasteboardManager: PasteboardManaging {
         self.pasteboard = pasteboard
     }
 
-    func captureBoundedSnapshot() -> PasteboardSnapshot? {
-        var totalBytes = 0
-        let sourceItems = self.pasteboard.pasteboardItems ?? []
-        guard sourceItems.count <= Self.maximumItems else {
-            self.logSnapshotFailure(reason: "too_many_items", itemCount: sourceItems.count, totalBytes: totalBytes)
-            return nil
-        }
+    func captureSnapshot() -> PasteboardSnapshot? {
+        for attempt in 1...2 {
+            let startingChangeCount = self.pasteboard.changeCount
+            guard let sourceItems = self.pasteboard.pasteboardItems else {
+                let endingChangeCount = self.pasteboard.changeCount
+                if endingChangeCount != startingChangeCount {
+                    self.logSnapshotRetry(
+                        attempt: attempt,
+                        startingChangeCount: startingChangeCount,
+                        endingChangeCount: endingChangeCount
+                    )
+                    continue
+                }
+                self.logSnapshotFailure(
+                    reason: "pasteboard_items_unavailable",
+                    itemCount: 0,
+                    itemIndex: -1,
+                    totalBytes: 0
+                )
+                return nil
+            }
+            var items: [PasteboardSnapshot.Item] = []
+            var totalBytes = 0
+            var totalRepresentations = 0
+            var failure: (reason: String, itemIndex: Int, type: NSPasteboard.PasteboardType?)?
 
-        var items: [PasteboardSnapshot.Item] = []
-        for sourceItem in sourceItems {
-            guard !sourceItem.types.isEmpty else {
-                self.logSnapshotFailure(reason: "empty_item", itemCount: sourceItems.count, totalBytes: totalBytes)
+            itemLoop: for (itemIndex, sourceItem) in sourceItems.enumerated() {
+                let sourceTypes = sourceItem.types
+                guard !sourceTypes.isEmpty else {
+                    failure = ("empty_item", itemIndex, nil)
+                    break
+                }
+
+                var representations: [PasteboardSnapshot.Item.Representation] = []
+                representations.reserveCapacity(sourceTypes.count)
+                for type in sourceTypes {
+                    guard let data = sourceItem.data(forType: type) else {
+                        failure = ("unavailable_representation", itemIndex, type)
+                        break itemLoop
+                    }
+                    representations.append(.init(type: type, data: data))
+                    totalBytes += data.count
+                    totalRepresentations += 1
+                }
+                items.append(.init(representations: representations))
+            }
+
+            let endingChangeCount = self.pasteboard.changeCount
+            guard endingChangeCount == startingChangeCount else {
+                self.logSnapshotRetry(
+                    attempt: attempt,
+                    startingChangeCount: startingChangeCount,
+                    endingChangeCount: endingChangeCount
+                )
+                continue
+            }
+
+            if let failure {
+                self.logSnapshotFailure(
+                    reason: failure.reason,
+                    itemCount: sourceItems.count,
+                    itemIndex: failure.itemIndex,
+                    totalBytes: totalBytes,
+                    type: failure.type
+                )
                 return nil
             }
 
-            var representations: [String: Data] = [:]
-            for type in sourceItem.types {
-                guard let data = sourceItem.data(forType: type) else {
-                    self.logSnapshotFailure(
-                        reason: "unavailable_representation",
-                        itemCount: sourceItems.count,
-                        totalBytes: totalBytes,
-                        type: type
-                    )
-                    return nil
-                }
-                guard data.count <= Self.maximumRepresentationBytes else {
-                    self.logSnapshotFailure(
-                        reason: "representation_too_large",
-                        itemCount: sourceItems.count,
-                        totalBytes: totalBytes,
-                        type: type
-                    )
-                    return nil
-                }
-                guard data.count <= Self.maximumSnapshotBytes - totalBytes else {
-                    self.logSnapshotFailure(
-                        reason: "snapshot_too_large",
-                        itemCount: sourceItems.count,
-                        totalBytes: totalBytes,
-                        type: type
-                    )
-                    return nil
-                }
-                representations[type.rawValue] = data
-                totalBytes += data.count
-            }
-            items.append(PasteboardSnapshot.Item(representations: representations))
+            self.log(
+                "clipboard_snapshot_complete items=\(items.count) representations=\(totalRepresentations) bytes=\(totalBytes)"
+            )
+            return PasteboardSnapshot(items: items)
         }
 
-        DebugLogger.shared.benchmark(
-            "TYPING_BENCH",
-            message: "clipboard_snapshot_complete items=\(items.count) bytes=\(totalBytes)",
-            source: "TypingBenchmark"
-        )
-        return PasteboardSnapshot(items: items)
+        self.log("clipboard_snapshot_failed reason=clipboard_changed_during_snapshot")
+        return nil
     }
 
     func writeTemporaryText(_ text: String, sessionID: String) -> Bool {
@@ -150,8 +173,8 @@ final class SystemPasteboardManager: PasteboardManaging {
         var items: [NSPasteboardItem] = []
         for snapshotItem in snapshot.items {
             let item = NSPasteboardItem()
-            for (rawType, data) in snapshotItem.representations {
-                guard item.setData(data, forType: NSPasteboard.PasteboardType(rawType)) else {
+            for representation in snapshotItem.representations {
+                guard item.setData(representation.data, forType: representation.type) else {
                     return false
                 }
             }
@@ -165,14 +188,27 @@ final class SystemPasteboardManager: PasteboardManaging {
     private func logSnapshotFailure(
         reason: String,
         itemCount: Int,
+        itemIndex: Int,
         totalBytes: Int,
         type: NSPasteboard.PasteboardType? = nil
     ) {
-        DebugLogger.shared.benchmark(
-            "TYPING_BENCH",
-            message: "clipboard_snapshot_failed reason=\(reason) items=\(itemCount) bytes=\(totalBytes) type=\(type?.rawValue ?? "nil")",
-            source: "TypingBenchmark"
+        self.log(
+            "clipboard_snapshot_failed reason=\(reason) items=\(itemCount) itemIndex=\(itemIndex) bytes=\(totalBytes) type=\(type?.rawValue ?? "nil")"
         )
+    }
+
+    private func logSnapshotRetry(
+        attempt: Int,
+        startingChangeCount: Int,
+        endingChangeCount: Int
+    ) {
+        self.log(
+            "clipboard_snapshot_retry attempt=\(attempt) startChangeCount=\(startingChangeCount) endChangeCount=\(endingChangeCount)"
+        )
+    }
+
+    private func log(_ message: String) {
+        DebugLogger.shared.benchmark("TYPING_BENCH", message: message, source: "TypingBenchmark")
     }
 }
 
@@ -378,7 +414,7 @@ final class PasteDeliveryCoordinator {
         {
             return lease.originalSnapshot
         }
-        return self.pasteboard.captureBoundedSnapshot()
+        return self.pasteboard.captureSnapshot()
     }
 
     private func restoreAfterFailure(

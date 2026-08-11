@@ -120,37 +120,112 @@ final class TypingServiceTransientPasteboardTests: XCTestCase {
         let secondItem = NSPasteboardItem()
         XCTAssertTrue(secondItem.setString("second", forType: .string))
         XCTAssertTrue(pasteboard.writeObjects([originalItem, secondItem]))
+        let originalItems = try XCTUnwrap(pasteboard.pasteboardItems)
+        let originalTypes = originalItems.map(\.types)
+        let originalRepresentations = originalItems.map { item in
+            item.types.map { type in item.data(forType: type) }
+        }
 
         let manager = SystemPasteboardManager(pasteboard: pasteboard)
-        let snapshot = try XCTUnwrap(manager.captureBoundedSnapshot())
+        let snapshot = try XCTUnwrap(manager.captureSnapshot())
         XCTAssertTrue(manager.writeTemporaryText("temporary", sessionID: "session"))
         XCTAssertTrue(manager.restore(snapshot))
 
         let restoredItems = try XCTUnwrap(pasteboard.pasteboardItems)
         XCTAssertEqual(restoredItems.count, 2)
+        XCTAssertEqual(restoredItems.map(\.types), originalTypes)
+        XCTAssertEqual(
+            restoredItems.map { item in item.types.map { type in item.data(forType: type) } },
+            originalRepresentations
+        )
         let restoredItem = restoredItems[0]
         XCTAssertEqual(restoredItem.string(forType: .string), "original")
         XCTAssertEqual(restoredItem.data(forType: customType), customData)
         XCTAssertEqual(restoredItems[1].string(forType: .string), "second")
     }
 
-    func testOversizedSnapshotFailsWithoutChangingPasteboard() {
+    func testSnapshotRestoresImageBeforeTextInOriginalPreferenceOrder() throws {
         let pasteboard = self.makePasteboard()
         defer { pasteboard.releaseGlobally() }
-        let customType = NSPasteboard.PasteboardType("com.fluidvoice.tests.oversized")
-        let originalData = Data(
-            repeating: 0xab,
-            count: SystemPasteboardManager.maximumRepresentationBytes + 1
+
+        let bitmap = try XCTUnwrap(
+            NSBitmapImageRep(
+                bitmapDataPlanes: nil,
+                pixelsWide: 2,
+                pixelsHigh: 2,
+                bitsPerSample: 8,
+                samplesPerPixel: 4,
+                hasAlpha: true,
+                isPlanar: false,
+                colorSpaceName: .deviceRGB,
+                bytesPerRow: 0,
+                bitsPerPixel: 0
+            )
         )
+        bitmap.setColor(NSColor(deviceRed: 0, green: 0, blue: 1, alpha: 1), atX: 0, y: 0)
+        bitmap.setColor(NSColor(deviceRed: 1, green: 0, blue: 0, alpha: 1), atX: 1, y: 0)
+        bitmap.setColor(NSColor(deviceRed: 0, green: 1, blue: 0, alpha: 1), atX: 0, y: 1)
+        bitmap.setColor(NSColor(deviceRed: 1, green: 1, blue: 1, alpha: 1), atX: 1, y: 1)
+        let imageData = try XCTUnwrap(bitmap.representation(using: .tiff, properties: [:]))
+        let originalItem = NSPasteboardItem()
+        XCTAssertTrue(originalItem.setData(imageData, forType: .tiff))
+        XCTAssertTrue(originalItem.setString("image text fallback", forType: .string))
+        XCTAssertTrue(pasteboard.writeObjects([originalItem]))
+        let originalTypes = try XCTUnwrap(pasteboard.pasteboardItems?.first?.types)
+        XCTAssertEqual(originalTypes.first, .tiff)
+
+        let manager = SystemPasteboardManager(pasteboard: pasteboard)
+        let snapshot = try XCTUnwrap(manager.captureSnapshot())
+        XCTAssertEqual(snapshot.items.first?.representations.map(\.type), originalTypes)
+        XCTAssertTrue(manager.writeTemporaryText("temporary", sessionID: "session"))
+        XCTAssertTrue(manager.restore(snapshot))
+
+        let restoredItem = try XCTUnwrap(pasteboard.pasteboardItems?.first)
+        XCTAssertEqual(restoredItem.types, originalTypes)
+        XCTAssertEqual(restoredItem.data(forType: .tiff), imageData)
+        XCTAssertEqual(restoredItem.string(forType: .string), "image text fallback")
+        let restoredImageData = try XCTUnwrap(restoredItem.data(forType: .tiff))
+        XCTAssertNotNil(NSImage(data: restoredImageData))
+    }
+
+    func testLargeRepresentationIsSnapshottedAndRestoredWithoutSizeLimit() throws {
+        let pasteboard = self.makePasteboard()
+        defer { pasteboard.releaseGlobally() }
+        let customType = NSPasteboard.PasteboardType("com.fluidvoice.tests.large")
+        let originalData = Data(repeating: 0xab, count: 20 * 1024 * 1024)
         let originalItem = NSPasteboardItem()
         XCTAssertTrue(originalItem.setData(originalData, forType: customType))
         XCTAssertTrue(pasteboard.writeObjects([originalItem]))
-        let changeCount = pasteboard.changeCount
 
-        XCTAssertNil(SystemPasteboardManager(pasteboard: pasteboard).captureBoundedSnapshot())
+        let manager = SystemPasteboardManager(pasteboard: pasteboard)
+        let snapshot = try XCTUnwrap(manager.captureSnapshot())
+        XCTAssertEqual(snapshot.items.first?.representations.first?.data, originalData)
+        XCTAssertTrue(manager.writeTemporaryText("temporary", sessionID: "session"))
+        XCTAssertTrue(manager.restore(snapshot))
 
-        XCTAssertEqual(pasteboard.changeCount, changeCount)
         XCTAssertEqual(pasteboard.data(forType: customType), originalData)
+    }
+
+    func testMoreThanOneHundredItemsAreSnapshottedAndRestored() throws {
+        let pasteboard = self.makePasteboard()
+        defer { pasteboard.releaseGlobally() }
+        let originalItems = (0..<101).map { index in
+            let item = NSPasteboardItem()
+            XCTAssertTrue(item.setString("item \(index)", forType: .string))
+            return item
+        }
+        XCTAssertTrue(pasteboard.writeObjects(originalItems))
+
+        let manager = SystemPasteboardManager(pasteboard: pasteboard)
+        let snapshot = try XCTUnwrap(manager.captureSnapshot())
+        XCTAssertEqual(snapshot.items.count, 101)
+        XCTAssertTrue(manager.writeTemporaryText("temporary", sessionID: "session"))
+        XCTAssertTrue(manager.restore(snapshot))
+
+        let restoredItems = try XCTUnwrap(pasteboard.pasteboardItems)
+        XCTAssertEqual(restoredItems.count, 101)
+        XCTAssertEqual(restoredItems.first?.string(forType: .string), "item 0")
+        XCTAssertEqual(restoredItems.last?.string(forType: .string), "item 100")
     }
 
     private func makePasteboard() -> NSPasteboard {
