@@ -18,12 +18,6 @@ final class TypingService {
 
     private var isCurrentlyTyping = false
 
-    private struct FocusSnapshot {
-        let pid: pid_t
-        let window: AXUIElement?
-        let element: AXUIElement?
-    }
-
     private struct PasteboardItemSnapshot {
         let dataByType: [NSPasteboard.PasteboardType: Data]
     }
@@ -41,6 +35,18 @@ final class TypingService {
         let appScriptSelectedRange: CFRange?
     }
 
+    private struct ResolvedInsertionTarget {
+        let element: AXUIElement
+        let pid: pid_t
+        let window: AXUIElement?
+    }
+
+    private enum InsertionTargetPreparation {
+        case ready(ResolvedInsertionTarget)
+        case legacy
+        case refused
+    }
+
     private enum PasteVerificationResult: String {
         case appScriptContainsText = "appscript_contains_text"
         case appScriptCaretMovedExpectedDistance = "appscript_caret_moved_expected_distance"
@@ -50,11 +56,10 @@ final class TypingService {
         case unavailable
     }
 
-    private static let focusSnapshotQueue = DispatchQueue(label: "TypingService.FocusSnapshot")
     private static let pasteboardSessionSemaphore = DispatchSemaphore(value: 1)
     private static let pasteboardRestoreQueue = DispatchQueue(label: "TypingService.PasteboardRestore", qos: .utility)
-    private static var focusSnapshot: FocusSnapshot?
     private static let ghosttyBundleIdentifier = "com.mitchellh.ghostty"
+    static let textFieldResolver = SystemTextFieldTargetResolver.shared
 
     private var textInsertionMode: SettingsStore.TextInsertionMode {
         SettingsStore.shared.textInsertionMode
@@ -133,41 +138,14 @@ final class TypingService {
     /// This is more reliable than NSWorkspace.frontmostApplication for floating overlays/launchers.
     static func captureSystemFocusedPID() -> pid_t? {
         // Accessibility is required to query system-focused AX element.
-        guard AXIsProcessTrusted() else {
-            self.storeFocusSnapshot(nil)
-            return nil
-        }
-
-        let systemWideElement = AXUIElementCreateSystemWide()
-        var focusedElementRef: CFTypeRef?
-
-        let result = AXUIElementCopyAttributeValue(
-            systemWideElement,
-            kAXFocusedUIElementAttribute as CFString,
-            &focusedElementRef
-        )
-        guard result == .success, let focusedElementRef else {
-            Self.storeFocusSnapshot(nil)
-            return nil
-        }
-        guard CFGetTypeID(focusedElementRef) == AXUIElementGetTypeID() else {
-            Self.storeFocusSnapshot(nil)
-            return nil
-        }
-
-        let element = unsafeBitCast(focusedElementRef, to: AXUIElement.self)
-        var pid: pid_t = 0
-        AXUIElementGetPid(element, &pid)
-        guard pid > 0 else {
-            Self.storeFocusSnapshot(nil)
-            return nil
-        }
-        let appElement = AXUIElementCreateApplication(pid)
-        let window = Self.copyAXElementAttribute(from: appElement, attribute: kAXFocusedWindowAttribute as CFString)
-            ?? Self.copyAXElementAttribute(from: appElement, attribute: kAXMainWindowAttribute as CFString)
-        Self.storeFocusSnapshot(FocusSnapshot(pid: pid, window: window, element: element))
+        guard AXIsProcessTrusted(), let pid = textFieldResolver.captureSystemFocus() else { return nil }
         Self.logFocusState("[TypingService] Captured focus snapshot")
         return pid
+    }
+
+    static func systemFocusedPID() -> pid_t? {
+        guard AXIsProcessTrusted() else { return nil }
+        return self.textFieldResolver.systemFocusedPID()
     }
 
     /// Best-effort: returns the text immediately before the caret in the currently focused
@@ -180,49 +158,14 @@ final class TypingService {
     @discardableResult
     static func restoreCapturedFocus(in pid: pid_t) -> Bool {
         guard AXIsProcessTrusted() else { return false }
-        guard let snapshot = loadFocusSnapshot(),
-              snapshot.pid == pid else { return false }
-
-        Self.logFocusState("[TypingService] Before restoreCapturedFocus")
-        let appElement = AXUIElementCreateApplication(pid)
-
-        if let window = snapshot.window {
-            _ = AXUIElementPerformAction(window, kAXRaiseAction as CFString)
-            _ = AXUIElementSetAttributeValue(appElement, kAXMainWindowAttribute as CFString, window)
-            _ = AXUIElementSetAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, window)
-            usleep(40_000)
-        }
-
-        guard let element = snapshot.element else { return false }
-
-        for _ in 0..<3 {
-            let result = AXUIElementSetAttributeValue(
-                element,
-                kAXFocusedAttribute as CFString,
-                kCFBooleanTrue
-            )
-            if result == .success, Self.isCurrentlyFocusedElement(element, expectedPID: pid) {
-                Self.logFocusState("[TypingService] After restoreCapturedFocus success")
-                return true
-            }
-            usleep(50_000)
-        }
-
-        let isFocused = Self.isCurrentlyFocusedElement(element, expectedPID: pid)
-        Self.logFocusState("[TypingService] After restoreCapturedFocus final result=\(isFocused)")
-        return isFocused
+        self.logFocusState("[TypingService] Before restoreCapturedFocus")
+        let restored = Self.textFieldResolver.restoreCapturedFocus(forPID: pid)
+        Self.logFocusState("[TypingService] After restoreCapturedFocus result=\(restored)")
+        return restored
     }
 
     static func isCapturedFocusStillActive(for pid: pid_t) -> Bool {
-        guard AXIsProcessTrusted(),
-              let snapshot = loadFocusSnapshot(),
-              snapshot.pid == pid,
-              let element = snapshot.element
-        else {
-            return false
-        }
-
-        return Self.isCurrentlyFocusedElement(element, expectedPID: pid)
+        AXIsProcessTrusted() && self.textFieldResolver.isCapturedFocusStillActive(forPID: pid)
     }
 
     private func isGhosttyApplication(pid: pid_t) -> Bool {
@@ -397,12 +340,40 @@ final class TypingService {
         self.log("[TypingService] insertTextInstantly called with \(text.count) characters")
         self.log("[TypingService] Attempting to type text: \"\(text.prefix(50))\(text.count > 50 ? "..." : "")\"")
 
+        let targetPreparation = self.prepareInsertionTarget()
+        if case .refused = targetPreparation {
+            self.log("[TypingService] Remembered field could not be resolved safely; refusing insertion")
+            return
+        }
+        let resolvedTarget: ResolvedInsertionTarget? = if case let .ready(target) = targetPreparation {
+            target
+        } else {
+            nil
+        }
+        guard self.isResolvedTargetStillForeground(resolvedTarget) else { return }
+        let effectiveTargetPID = resolvedTarget?.pid ?? preferredTargetPID
+        var didDispatchText = false
+        defer {
+            if didDispatchText, let resolvedTarget {
+                Self.textFieldResolver.recordSuccessfulInsertion(
+                    element: resolvedTarget.element,
+                    pid: resolvedTarget.pid,
+                    window: resolvedTarget.window
+                )
+            }
+        }
+
         if self.textInsertionMode == .standard,
-           let ghosttyTargetPID = self.ghosttyTargetPID(preferredTargetPID: preferredTargetPID)
+           let ghosttyTargetPID = self.ghosttyTargetPID(preferredTargetPID: effectiveTargetPID)
         {
             self.log("[TypingService] Ghostty target detected in standard mode (PID \(ghosttyTargetPID)); forcing Reliable Paste path")
-            if self.tryReliablePasteInsertion(text, preferredTargetPID: ghosttyTargetPID) {
+            if self.tryReliablePasteInsertion(
+                text,
+                preferredTargetPID: ghosttyTargetPID,
+                requiredForegroundPID: resolvedTarget?.pid
+            ) {
                 self.log("[TypingService] SUCCESS: Ghostty Reliable Paste path completed")
+                didDispatchText = true
                 return
             }
             self.log("[TypingService] Ghostty Reliable Paste path fell through to direct-typing fallbacks")
@@ -410,19 +381,28 @@ final class TypingService {
 
         if self.textInsertionMode == .reliablePaste {
             self.log("[TypingService] Reliable Paste mode enabled")
-            if self.tryReliablePasteInsertion(text, preferredTargetPID: preferredTargetPID) {
+            if self.tryReliablePasteInsertion(
+                text,
+                preferredTargetPID: effectiveTargetPID,
+                requiredForegroundPID: resolvedTarget?.pid
+            ) {
                 self.log("[TypingService] SUCCESS: Reliable Paste mode completed")
+                didDispatchText = true
                 return
             }
             self.log("[TypingService] Reliable Paste mode fell through to direct-typing fallbacks")
-        } else if let preferredTargetPID, preferredTargetPID > 0 {
+        } else if let effectiveTargetPID, effectiveTargetPID > 0 {
+            guard self.isResolvedTargetStillForeground(resolvedTarget) else { return }
             self.log("[TypingService] Experimental Direct Typing mode: trying preferred PID unicode insertion first")
-            if self.insertTextBulkInstant(text, targetPID: preferredTargetPID) {
+            if self.insertTextBulkInstant(text, targetPID: effectiveTargetPID) {
                 self.log("[TypingService] SUCCESS: Preferred PID CGEvent insertion completed")
+                didDispatchText = true
                 return
             }
             self.log("[TypingService] Preferred PID CGEvent insertion failed, continuing fallback pipeline")
         }
+
+        guard self.isResolvedTargetStillForeground(resolvedTarget) else { return }
 
         // Get frontmost app info
         if let frontApp = NSWorkspace.shared.frontmostApplication {
@@ -432,7 +412,8 @@ final class TypingService {
         }
 
         // Determine the actual focused element + owning PID (more reliable than "frontmost app" for floating launchers)
-        let focusInfo = self.getSystemFocusedElementAndPID()
+        let focusInfo = resolvedTarget.map { (element: $0.element, pid: $0.pid) }
+            ?? self.getSystemFocusedElementAndPID()
         if let focusedPID = focusInfo?.pid {
             self.log("[TypingService] Focused AX element PID: \(focusedPID)")
         } else {
@@ -450,37 +431,46 @@ final class TypingService {
         // Primary: Try CGEvent unicode insertion, targeting the focused PID when available
         // This is the most reliable method for Terminals, Electron apps (Discord, VSCode), etc.
         if let focusedPID = focusInfo?.pid {
+            guard self.isResolvedTargetStillForeground(resolvedTarget) else { return }
             self.log("[TypingService] Trying CGEvent insertion targeting focused PID \(focusedPID)")
             if self.insertTextBulkInstant(text, targetPID: focusedPID) {
                 self.log("[TypingService] SUCCESS: CGEvent focused-PID insertion completed")
+                didDispatchText = true
                 return
             }
         }
 
         // Secondary: Try Accessibility insertion into the actual focused element
+        guard self.isResolvedTargetStillForeground(resolvedTarget) else { return }
         self.log("[TypingService] Trying Accessibility focused-element insertion")
-        if self.insertTextViaAccessibility(text) {
+        if self.insertTextViaAccessibility(text, preferredElement: resolvedTarget?.element) {
             self.log("[TypingService] SUCCESS: Accessibility insertion completed")
+            didDispatchText = true
             return
         }
 
         // HID Fallback if PID targeting failed
         if focusInfo?.pid == nil {
+            guard self.isResolvedTargetStillForeground(resolvedTarget) else { return }
             self.log("[TypingService] No focused PID available, trying HID CGEvent insertion")
             if self.insertTextBulkHIDInstant(text) {
                 self.log("[TypingService] SUCCESS: CGEvent HID insertion completed")
+                didDispatchText = true
                 return
             }
         }
 
         // Fallback: Use clipboard-based insertion (more reliable)
+        guard self.isResolvedTargetStillForeground(resolvedTarget) else { return }
         self.log("[TypingService] CGEvent failed, trying clipboard fallback")
         if self.insertTextViaClipboard(text) {
             self.log("[TypingService] SUCCESS: Clipboard insertion completed")
+            didDispatchText = true
             return
         }
 
         // Last resort: Character-by-character
+        guard self.isResolvedTargetStillForeground(resolvedTarget) else { return }
         self.log("[TypingService] WARNING: All methods failed, trying character-by-character")
         for (index, char) in text.enumerated() {
             if index % 10 == 0 {
@@ -489,24 +479,61 @@ final class TypingService {
             self.typeCharacter(char)
             usleep(1000)
         }
+        didDispatchText = true
         self.log("[TypingService] Character-by-character typing completed")
     }
 
-    private func tryReliablePasteInsertion(_ text: String, preferredTargetPID: pid_t?) -> Bool {
+    private func prepareInsertionTarget() -> InsertionTargetPreparation {
+        guard let frontmostApp = NSWorkspace.shared.frontmostApplication,
+              frontmostApp.bundleIdentifier != Bundle.main.bundleIdentifier
+        else { return .legacy }
+        let frontmostPID = frontmostApp.processIdentifier
+
+        switch Self.textFieldResolver.resolveTarget(forPID: frontmostPID) {
+        case let .current(element, window), let .remembered(element, window):
+            return .ready(ResolvedInsertionTarget(element: element, pid: frontmostPID, window: window))
+        case .noHistory:
+            return .legacy
+        case .refused:
+            return .refused
+        }
+    }
+
+    private func isResolvedTargetStillForeground(_ target: ResolvedInsertionTarget?) -> Bool {
+        guard let target else { return true }
+        let isForeground = NSWorkspace.shared.frontmostApplication?.processIdentifier == target.pid
+        if !isForeground {
+            self.log("[TypingService] Resolved target is no longer foreground; refusing insertion")
+        }
+        return isForeground
+    }
+
+    private func tryReliablePasteInsertion(
+        _ text: String,
+        preferredTargetPID: pid_t?,
+        requiredForegroundPID: pid_t? = nil
+    ) -> Bool {
+        guard self.isPIDStillForeground(requiredForegroundPID) else { return false }
         if let preferredTargetPID, preferredTargetPID > 0 {
             self.log("[TypingService] Trying clipboard-to-PID insertion first")
-            if self.insertTextViaClipboardToPid(text, targetPID: preferredTargetPID) {
+            if self.insertTextViaClipboardToPid(
+                text,
+                targetPID: preferredTargetPID,
+                activateTargetFirst: requiredForegroundPID == nil
+            ) {
                 self.log("[TypingService] Reliable Paste dispatched via clipboard-to-PID")
                 return true
             }
         }
 
+        guard self.isPIDStillForeground(requiredForegroundPID) else { return false }
         self.log("[TypingService] Trying global clipboard insertion")
         if self.insertTextViaClipboard(text) {
             self.log("[TypingService] Reliable Paste dispatched via global clipboard paste")
             return true
         }
 
+        guard self.isPIDStillForeground(requiredForegroundPID) else { return false }
         self.log("[TypingService] Global clipboard insertion failed, trying menu paste")
         if self.insertTextViaMenuPaste(text) {
             self.log("[TypingService] Reliable Paste dispatched via menu paste")
@@ -516,25 +543,12 @@ final class TypingService {
         return false
     }
 
+    private func isPIDStillForeground(_ pid: pid_t?) -> Bool {
+        guard let pid else { return true }
+        return NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
+    }
+
     private static let cgEventUnicodeChunkSize = 200
-
-    private static func storeFocusSnapshot(_ snapshot: FocusSnapshot?) {
-        self.focusSnapshotQueue.sync {
-            Self.focusSnapshot = snapshot
-        }
-    }
-
-    private static func loadFocusSnapshot() -> FocusSnapshot? {
-        self.focusSnapshotQueue.sync { Self.focusSnapshot }
-    }
-
-    private static func copyAXElementAttribute(from element: AXUIElement, attribute: CFString) -> AXUIElement? {
-        var value: CFTypeRef?
-        let result = AXUIElementCopyAttributeValue(element, attribute, &value)
-        guard result == .success, let value else { return nil }
-        guard CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
-        return unsafeBitCast(value, to: AXUIElement.self)
-    }
 
     private static func stringAXAttribute(from element: AXUIElement, attribute: CFString) -> String? {
         var value: CFTypeRef?
@@ -571,34 +585,6 @@ final class TypingService {
     private static func logFocusState(_ prefix: String) {
         guard self.isLoggingEnabled else { return }
         DebugLogger.shared.debug("\(prefix) | \(self.currentFocusDebugDescription())", source: "TypingService")
-    }
-
-    private static func isCurrentlyFocusedElement(_ expectedElement: AXUIElement, expectedPID: pid_t) -> Bool {
-        let systemWideElement = AXUIElementCreateSystemWide()
-        var focusedElementRef: CFTypeRef?
-        let result = AXUIElementCopyAttributeValue(
-            systemWideElement,
-            kAXFocusedUIElementAttribute as CFString,
-            &focusedElementRef
-        )
-        guard result == .success, let focusedElementRef else { return false }
-        guard CFGetTypeID(focusedElementRef) == AXUIElementGetTypeID() else { return false }
-
-        let currentElement = unsafeBitCast(focusedElementRef, to: AXUIElement.self)
-        if CFEqual(currentElement, expectedElement) { return true }
-
-        var currentPID: pid_t = 0
-        AXUIElementGetPid(currentElement, &currentPID)
-        guard currentPID == expectedPID else { return false }
-
-        var currentRoleRef: CFTypeRef?
-        let roleResult = AXUIElementCopyAttributeValue(
-            currentElement,
-            kAXRoleAttribute as CFString,
-            &currentRoleRef
-        )
-        guard roleResult == .success, let currentRole = currentRoleRef as? String else { return false }
-        return ["AXTextField", "AXTextArea", "AXSearchField", "AXComboBox", "AXWebArea", "AXGroup"].contains(currentRole)
     }
 
     private func capturePasteboardSnapshot(_ pasteboard: NSPasteboard) -> PasteboardSnapshot {
@@ -874,10 +860,13 @@ final class TypingService {
         }
     }
 
-    private func insertTextViaAccessibility(_ text: String) -> Bool {
+    private func insertTextViaAccessibility(_ text: String, preferredElement: AXUIElement?) -> Bool {
         self.log("[TypingService] Starting Accessibility API insertion")
 
-        // Try multiple strategies to find text input element
+        if let preferredElement {
+            self.log("[TypingService] Trying resolved insertion target")
+            if self.tryAllTextInsertionMethods(preferredElement, text) { return true }
+        }
 
         // Strategy 1: Get focused element directly (system-wide)
         self.log("[TypingService] Strategy 1: Getting focused UI element...")
@@ -888,17 +877,8 @@ final class TypingService {
             }
         }
 
-        // Strategy 2: Traverse frontmost app UI hierarchy to find text elements
-        self.log("[TypingService] Strategy 2: Traversing app UI hierarchy...")
-        if let textElement = findTextElementInFrontmostApp() {
-            self.log("[TypingService] Found text element in app hierarchy")
-            if self.tryAllTextInsertionMethods(textElement, text) {
-                return true
-            }
-        }
-
-        // Strategy 3: Find element with keyboard focus
-        self.log("[TypingService] Strategy 3: Looking for keyboard focus...")
+        // Strategy 2: Find element with keyboard focus
+        self.log("[TypingService] Strategy 2: Looking for keyboard focus...")
         if let textElement = findKeyboardFocusedElement() {
             self.log("[TypingService] Found keyboard focused element")
             if self.tryAllTextInsertionMethods(textElement, text) {
@@ -925,43 +905,6 @@ final class TypingService {
             }
         } else {
             self.log("[TypingService] Could not get focused UI element - result: \(result.rawValue)")
-        }
-
-        return nil
-    }
-
-    private func findTextElementInFrontmostApp() -> AXUIElement? {
-        guard let frontmostApp = NSWorkspace.shared.frontmostApplication else {
-            self.log("[TypingService] Could not get frontmost app")
-            return nil
-        }
-
-        let appElement = AXUIElementCreateApplication(frontmostApp.processIdentifier)
-        return self.findTextElementRecursively(appElement, depth: 0, maxDepth: 8)
-    }
-
-    private func findTextElementRecursively(_ element: AXUIElement, depth: Int, maxDepth: Int) -> AXUIElement? {
-        if depth > maxDepth { return nil }
-
-        // Check if this element is a text input element
-        if let role = getElementAttribute(element, kAXRoleAttribute as CFString) {
-            let textRoles = ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField", "AXStaticText"]
-            if textRoles.contains(role) {
-                self.log("[TypingService] Found text element at depth \(depth) with role: \(role)")
-                return element
-            }
-        }
-
-        // Get children and search recursively
-        var children: CFTypeRef?
-        let result = AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &children)
-
-        if result == .success, let childrenArray = children as? [AXUIElement] {
-            for child in childrenArray.prefix(10) { // Limit to first 10 children per level
-                if let found = findTextElementRecursively(child, depth: depth + 1, maxDepth: maxDepth) {
-                    return found
-                }
-            }
         }
 
         return nil

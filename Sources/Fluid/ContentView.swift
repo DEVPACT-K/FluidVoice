@@ -1661,7 +1661,7 @@ struct ContentView: View {
 
     private func resolveTypingTargetPID() -> (pid: pid_t?, shouldRestoreOriginalFocus: Bool) {
         let originalPID = NotchContentState.shared.recordingTargetPID
-        let currentFocusedPID = TypingService.captureSystemFocusedPID()
+        let currentFocusedPID = TypingService.systemFocusedPID()
             ?? NSWorkspace.shared.frontmostApplication?.processIdentifier
 
         let selfBundleID = Bundle.main.bundleIdentifier
