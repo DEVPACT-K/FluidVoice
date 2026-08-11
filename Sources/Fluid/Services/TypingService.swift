@@ -516,6 +516,7 @@ final class TypingService {
             }
             self.bench("settle_delay_done delayMs=\(settleDelayMs) elapsedMs=\(Self.elapsedMs(since: requestedAt))")
             let hasTextToInsert = !text.isEmpty
+            var expectedInsertedValue: String?
 
             if hasTextToInsert {
                 self.log("[TypingService] Delay completed, calling insertTextInstantly")
@@ -524,7 +525,8 @@ final class TypingService {
                 let inserted = self.insertTextInstantly(
                     text,
                     preferredTargetPID: preferredTargetPID,
-                    requiredFocusTarget: postInsertionKey == nil ? nil : requiredFocusTarget
+                    requiredFocusTarget: postInsertionKey == nil ? nil : requiredFocusTarget,
+                    expectedExactTargetValue: &expectedInsertedValue
                 )
                 self.bench(
                     "insert_return elapsedMs=\(Self.elapsedMs(since: insertStartedAt)) totalMs=\(Self.elapsedMs(since: requestedAt))"
@@ -552,20 +554,30 @@ final class TypingService {
             }
 
             usleep(50_000)
+            let modifiersReleased = self.waitForPhysicalModifiersToRelease(
+                timeout: Self.postInsertionModifierReleaseTimeout
+            )
+            let expectedActionValue: String? = if hasTextToInsert {
+                expectedInsertedValue
+            } else {
+                Self.nonemptyEditableDraftValue(requiredFocusTarget)
+            }
+            let insertionConfirmed = expectedActionValue != nil &&
+                self.getElementStringValue(requiredFocusTarget.element) == expectedActionValue
             guard Self.canDispatchPostInsertionAction(
                 preferredTargetPID: preferredTargetPID,
                 requiredTargetPID: requiredFocusTarget.pid,
                 isSecureTextField: requiredFocusTarget.isSecureTextField,
                 isTerminalLikeContext: Self.hasTerminalLikeContext(requiredFocusTarget),
-                modifiersReleased: self.waitForPhysicalModifiersToRelease(
-                    timeout: Self.postInsertionModifierReleaseTimeout
-                ),
+                modifiersReleased: modifiersReleased,
                 exactFocusIsActive: Self.isExactFocusTargetActive(requiredFocusTarget),
-                insertionConfirmed: hasTextToInsert
-                    ? outcome.didInsert
-                    : Self.hasNonemptyEditableDraft(requiredFocusTarget)
+                insertionConfirmed: insertionConfirmed
             ),
-                self.postReturnKey(postInsertionKey, target: requiredFocusTarget)
+                self.postReturnKey(
+                    postInsertionKey,
+                    target: requiredFocusTarget,
+                    expectedValue: expectedActionValue
+                )
             else {
                 outcome = hasTextToInsert ? .insertedActionSuppressed : .actionSuppressed
                 return
@@ -591,7 +603,8 @@ final class TypingService {
     private func insertTextInstantly(
         _ text: String,
         preferredTargetPID: pid_t?,
-        requiredFocusTarget: CapturedFocusTarget?
+        requiredFocusTarget: CapturedFocusTarget?,
+        expectedExactTargetValue: inout String?
     ) -> Bool {
         self.log("[TypingService] insertTextInstantly called with \(text.count) characters")
         self.log("[TypingService] Attempting to type text: \"\(text.prefix(50))\(text.count > 50 ? "..." : "")\"")
@@ -600,7 +613,8 @@ final class TypingService {
             return self.insertTextIntoExactFocusTarget(
                 text,
                 preferredTargetPID: preferredTargetPID,
-                requiredFocusTarget: requiredFocusTarget
+                requiredFocusTarget: requiredFocusTarget,
+                expectedValue: &expectedExactTargetValue
             )
         }
 
@@ -714,7 +728,8 @@ final class TypingService {
     private func insertTextIntoExactFocusTarget(
         _ text: String,
         preferredTargetPID: pid_t?,
-        requiredFocusTarget: CapturedFocusTarget
+        requiredFocusTarget: CapturedFocusTarget,
+        expectedValue: inout String?
     ) -> Bool {
         guard preferredTargetPID == requiredFocusTarget.pid,
               !requiredFocusTarget.isSecureTextField,
@@ -726,13 +741,15 @@ final class TypingService {
 
         return self.performVerifiedExactTargetAccessibilityInsertion(
             text,
-            target: requiredFocusTarget
+            target: requiredFocusTarget,
+            expectedValue: &expectedValue
         )
     }
 
     private func performVerifiedExactTargetAccessibilityInsertion(
         _ text: String,
-        target: CapturedFocusTarget
+        target: CapturedFocusTarget,
+        expectedValue: inout String?
     ) -> Bool {
         guard Self.isExactFocusTargetActive(target),
               let snapshot = self.captureFocusedTextSnapshot(),
@@ -740,7 +757,7 @@ final class TypingService {
               CFEqual(snapshot.element, target.element),
               let originalValue = snapshot.value,
               let selectedRange = snapshot.selectedRange,
-              let expectedValue = Self.valueByInserting(
+              let expectedValueAfterInsertion = Self.valueByInserting(
                   text,
                   into: originalValue,
                   selectedRange: selectedRange
@@ -752,11 +769,14 @@ final class TypingService {
         }
 
         let verified = self.waitForExactTargetValue(
-            expectedValue,
+            expectedValueAfterInsertion,
             target: target,
             timeoutMicros: 500_000
         )
         self.log("[TypingService] Exact-target preserving insertion verified: \(verified)")
+        if verified {
+            expectedValue = expectedValueAfterInsertion
+        }
         return verified
     }
 
@@ -792,9 +812,15 @@ final class TypingService {
 
     private func postReturnKey(
         _ key: SettingsStore.SpokenSendKey,
-        target: CapturedFocusTarget
+        target: CapturedFocusTarget,
+        expectedValue: String?
     ) -> Bool {
-        guard Self.isExactFocusTargetActive(target) else { return false }
+        guard let expectedValue,
+              Self.isExactFocusTargetActive(target),
+              self.getElementStringValue(target.element) == expectedValue
+        else {
+            return false
+        }
         let returnKeyCode = CGKeyCode(kVK_Return)
         guard let keyDown = CGEvent(keyboardEventSource: nil, virtualKey: returnKeyCode, keyDown: true),
               let keyUp = CGEvent(keyboardEventSource: nil, virtualKey: returnKeyCode, keyDown: false)
@@ -806,7 +832,11 @@ final class TypingService {
         keyUp.flags = key.eventFlags
         keyDown.setIntegerValueField(.eventSourceUserData, value: Self.synthesizedEventUserData)
         keyUp.setIntegerValueField(.eventSourceUserData, value: Self.synthesizedEventUserData)
-        guard Self.isExactFocusTargetActive(target) else { return false }
+        guard Self.isExactFocusTargetActive(target),
+              self.getElementStringValue(target.element) == expectedValue
+        else {
+            return false
+        }
         keyDown.postToPid(target.pid)
         usleep(10_000)
         keyUp.postToPid(target.pid)
@@ -898,7 +928,7 @@ final class TypingService {
         return labels
     }
 
-    private static func hasNonemptyEditableDraft(_ target: CapturedFocusTarget) -> Bool {
+    private static func nonemptyEditableDraftValue(_ target: CapturedFocusTarget) -> String? {
         let editableRoles = ["AXTextField", "AXTextArea", "AXSearchField", "AXComboBox"]
         guard self.isExactFocusTargetActive(target),
               !target.isSecureTextField,
@@ -912,9 +942,9 @@ final class TypingService {
                   attribute: kAXValueAttribute as CFString
               )
         else {
-            return false
+            return nil
         }
-        return !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : value
     }
 
     private static func hasTerminalLikeContext(_ target: CapturedFocusTarget) -> Bool {

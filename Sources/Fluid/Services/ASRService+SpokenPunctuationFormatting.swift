@@ -65,6 +65,7 @@ private enum SpokenPunctuationFormatter {
                 .compactMap { $0?.lowercased() }
                 .joined(separator: " ")
             return TerminalAppClassifier.isTerminal(appName: self.appName, bundleID: self.bundleID) ||
+                TerminalAppClassifier.isTerminalContext(labels: [self.windowTitle ?? ""]) ||
                 haystack.contains("codex") ||
                 haystack.contains("chatgpt") ||
                 haystack.contains("claude") ||
