@@ -23,14 +23,10 @@ struct FluidApp: App {
 
     var body: some Scene {
         WindowGroup(id: "main") {
-            if let benchmarkConfiguration = InsertionLatencyBenchmarkConfiguration.current {
-                InsertionLatencyBenchmarkView(configuration: benchmarkConfiguration)
-            } else {
-                AdaptiveAppTheme(accent: self.settings.accentColor) {
-                    ContentView()
-                        .environmentObject(self.menuBarManager)
-                        .environmentObject(self.appServices)
-                }
+            AdaptiveAppTheme(accent: self.settings.accentColor) {
+                ContentView()
+                    .environmentObject(self.menuBarManager)
+                    .environmentObject(self.appServices)
             }
         }
         .defaultSize(width: 1000, height: 700)
