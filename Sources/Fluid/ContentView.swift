@@ -1620,12 +1620,15 @@ struct ContentView: View {
         return (name: "Unknown", bundleId: "unknown", windowTitle: "")
     }
 
-    private func isSpokenSendBlockedApp(
-        _ appInfo: (name: String, bundleId: String, windowTitle: String)
-    ) -> Bool {
-        TerminalAppClassifier.isTerminal(
-            appName: appInfo.name,
-            bundleID: appInfo.bundleId
+    private func isSpokenSendBlockedTarget(_ target: TypingService.CapturedFocusTarget?) -> Bool {
+        guard let target,
+              let app = NSRunningApplication(processIdentifier: target.pid)
+        else {
+            return true
+        }
+        return TerminalAppClassifier.isTerminal(
+            appName: app.localizedName ?? "",
+            bundleID: app.bundleIdentifier ?? ""
         )
     }
 
@@ -2469,7 +2472,7 @@ struct ContentView: View {
                 && aiFallbackReason == nil
                 && (sendsExistingDraft || !finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 && targetMatchesRecordingFocus
-                && !self.isSpokenSendBlockedApp(appInfo)
+                && !self.isSpokenSendBlockedTarget(self.recordingFocusTarget)
             // Dispatch insertion as soon as the destination app is ready; the
             // overlay hides asynchronously after output so it cannot delay paste.
             if typingTarget.shouldRestoreOriginalFocus {

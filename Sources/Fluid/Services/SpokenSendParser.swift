@@ -100,6 +100,11 @@ enum SpokenSendParser {
         }
 
         var commandPrefix = String(text[..<commandRange.lowerBound])
+        let commandSuffix = String(text[firstPhraseRange.upperBound..<commandRange.upperBound])
+        Self.removePairedOpeningDelimiters(
+            from: &commandPrefix,
+            closedBy: commandSuffix
+        )
         if let literalPrefixRegex = try? NSRegularExpression(
             pattern: #"(?i)(?<![\p{L}\p{N}_])literal\s*$"#
         ), let literalMatch = literalPrefixRegex.firstMatch(
@@ -111,6 +116,33 @@ enum SpokenSendParser {
 
         let cleaned = Self.polishCommandPrefix(commandPrefix)
         return SpokenSendParseResult(text: cleaned, shouldSend: true)
+    }
+
+    private static func removePairedOpeningDelimiters(
+        from text: inout String,
+        closedBy commandSuffix: String
+    ) {
+        let delimiterPairs: [Character: Character] = [
+            "(": ")", "[": "]", "{": "}",
+            "\"": "\"", "'": "'", "“": "”", "‘": "’", "«": "»",
+        ]
+        while true {
+            var candidate = text
+            while candidate.last?.isWhitespace == true {
+                candidate.removeLast()
+            }
+            guard let opener = candidate.last,
+                  let closer = delimiterPairs[opener],
+                  commandSuffix.contains(closer)
+            else {
+                return
+            }
+            candidate.removeLast()
+            text = candidate
+            while text.last?.isWhitespace == true {
+                text.removeLast()
+            }
+        }
     }
 
     private static func polishCommandPrefix(_ text: String) -> String {

@@ -31,6 +31,28 @@ final class SpokenSendTests: XCTestCase {
         )
     }
 
+    func testPairedDelimitersAroundTerminalPhraseAreRemoved() {
+        XCTAssertEqual(
+            SpokenSendParser.parse("Ready (send it)", phrase: "send it", enabled: true),
+            SpokenSendParseResult(text: "Ready.", shouldSend: true)
+        )
+        XCTAssertEqual(
+            SpokenSendParser.parse("Ready “send it”", phrase: "send it", enabled: true),
+            SpokenSendParseResult(text: "Ready.", shouldSend: true)
+        )
+        XCTAssertEqual(
+            SpokenSendParser.parse(#"Ready ["send it"]"#, phrase: "send it", enabled: true),
+            SpokenSendParseResult(text: "Ready.", shouldSend: true)
+        )
+    }
+
+    func testClosingQuoteBeforeTerminalPhraseIsPreserved() {
+        XCTAssertEqual(
+            SpokenSendParser.parse(#"He said "Ready" send it"#, phrase: "send it", enabled: true),
+            SpokenSendParseResult(text: #"He said "Ready"."#, shouldSend: true)
+        )
+    }
+
     func testPhraseInMiddleDoesNotArmSend() {
         XCTAssertEqual(
             SpokenSendParser.parse("Send it when you are ready", phrase: "send it", enabled: true),
