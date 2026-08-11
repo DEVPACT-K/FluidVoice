@@ -256,6 +256,40 @@ final class SpokenSendTests: XCTestCase {
         XCTAssertEqual(SettingsStore.SpokenSendKey.commandEnter.eventFlags, .maskCommand)
     }
 
+    func testTerminalClassifierBlocksEveryRecognizedTerminal() {
+        let terminals = [
+            ("Terminal", "com.apple.Terminal"),
+            ("iTerm2", "com.googlecode.iterm2"),
+            ("Warp", "dev.warp.Warp-Stable"),
+            ("Ghostty", "com.mitchellh.ghostty"),
+            ("kitty", "net.kovidgoyal.kitty"),
+            ("Alacritty", "org.alacritty"),
+            ("WezTerm", "com.github.wez.wezterm"),
+        ]
+
+        for (name, bundleID) in terminals {
+            XCTAssertTrue(
+                TerminalAppClassifier.isTerminal(appName: name, bundleID: bundleID),
+                "Spoken Send must stay disabled in \(name)"
+            )
+        }
+    }
+
+    func testTerminalClassifierDoesNotBlockOrdinaryEditors() {
+        XCTAssertFalse(
+            TerminalAppClassifier.isTerminal(
+                appName: "TextEdit",
+                bundleID: "com.apple.TextEdit"
+            )
+        )
+        XCTAssertFalse(
+            TerminalAppClassifier.isTerminal(
+                appName: "Codex",
+                bundleID: "com.openai.codex"
+            )
+        )
+    }
+
     func testGeneratedSendCommandsAreExcludedFromFluidVoiceHotkeys() throws {
         for key in SettingsStore.SpokenSendKey.allCases {
             let event = try XCTUnwrap(
@@ -331,6 +365,16 @@ final class SpokenSendTests: XCTestCase {
                 isSecureTextField: false,
                 modifiersReleased: true,
                 exactFocusIsActive: false
+            )
+        )
+        XCTAssertFalse(
+            TypingService.canDispatchPostInsertionAction(
+                preferredTargetPID: 42,
+                requiredTargetPID: 42,
+                isSecureTextField: false,
+                modifiersReleased: true,
+                exactFocusIsActive: true,
+                insertionConfirmed: false
             )
         )
     }

@@ -1623,11 +1623,10 @@ struct ContentView: View {
     private func isSpokenSendBlockedApp(
         _ appInfo: (name: String, bundleId: String, windowTitle: String)
     ) -> Bool {
-        let identity = "\(appInfo.name) \(appInfo.bundleId)".lowercased()
-        return identity.contains("terminal")
-            || identity.contains("iterm")
-            || identity.contains("warp")
-            || identity.contains("ghostty")
+        TerminalAppClassifier.isTerminal(
+            appName: appInfo.name,
+            bundleID: appInfo.bundleId
+        )
     }
 
     private func deliverSpokenSend(

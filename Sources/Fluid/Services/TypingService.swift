@@ -49,14 +49,15 @@ final class TypingService {
         requiredTargetPID: pid_t?,
         isSecureTextField: Bool,
         modifiersReleased: Bool,
-        exactFocusIsActive: Bool
+        exactFocusIsActive: Bool,
+        insertionConfirmed: Bool = true
     ) -> Bool {
         guard let preferredTargetPID, preferredTargetPID > 0,
               requiredTargetPID == preferredTargetPID
         else {
             return false
         }
-        return !isSecureTextField && modifiersReleased && exactFocusIsActive
+        return !isSecureTextField && modifiersReleased && exactFocusIsActive && insertionConfirmed
     }
 
     // Logging toggle (off by default). Enable by setting env FLUID_TYPING_LOGS=1
@@ -89,6 +90,7 @@ final class TypingService {
 
     private struct FocusedTextSnapshot {
         let pid: pid_t
+        let element: AXUIElement
         let bundleIdentifier: String?
         let value: String?
         let selectedRange: CFRange?
@@ -103,6 +105,18 @@ final class TypingService {
         case caretMovedExpectedDistance = "caret_moved_expected_distance"
         case timeout
         case unavailable
+
+        var isConfirmed: Bool {
+            switch self {
+            case .appScriptContainsText,
+                 .appScriptCaretMovedExpectedDistance,
+                 .fieldContainsText,
+                 .caretMovedExpectedDistance:
+                return true
+            case .timeout, .unavailable:
+                return false
+            }
+        }
     }
 
     private static let focusSnapshotQueue = DispatchQueue(label: "TypingService.FocusSnapshot")
@@ -498,7 +512,11 @@ final class TypingService {
                 self.log("[TypingService] Delay completed, calling insertTextInstantly")
                 let insertStartedAt = ProcessInfo.processInfo.systemUptime
                 self.bench("insert_call")
-                let inserted = self.insertTextInstantly(text, preferredTargetPID: preferredTargetPID)
+                let inserted = self.insertTextInstantly(
+                    text,
+                    preferredTargetPID: preferredTargetPID,
+                    requiredFocusTarget: postInsertionKey == nil ? nil : requiredFocusTarget
+                )
                 self.bench(
                     "insert_return elapsedMs=\(Self.elapsedMs(since: insertStartedAt)) totalMs=\(Self.elapsedMs(since: requestedAt))"
                 )
@@ -522,8 +540,15 @@ final class TypingService {
             guard let preferredTargetPID, let requiredFocusTarget else { return }
 
             usleep(50_000)
-            guard Self.isExactFocusTargetActive(requiredFocusTarget),
-                  self.postReturnKey(postInsertionKey, targetPID: preferredTargetPID)
+            guard Self.canDispatchPostInsertionAction(
+                preferredTargetPID: preferredTargetPID,
+                requiredTargetPID: requiredFocusTarget.pid,
+                isSecureTextField: requiredFocusTarget.isSecureTextField,
+                modifiersReleased: self.waitForPhysicalModifiersToRelease(timeout: 0.2),
+                exactFocusIsActive: Self.isExactFocusTargetActive(requiredFocusTarget),
+                insertionConfirmed: !hasTextToInsert || outcome.didInsert
+            ),
+                self.postReturnKey(postInsertionKey, targetPID: preferredTargetPID)
             else {
                 outcome = hasTextToInsert ? .insertedActionSuppressed : .actionSuppressed
                 return
@@ -546,9 +571,21 @@ final class TypingService {
 
     // MARK: - Internal insertion pipeline
 
-    private func insertTextInstantly(_ text: String, preferredTargetPID: pid_t?) -> Bool {
+    private func insertTextInstantly(
+        _ text: String,
+        preferredTargetPID: pid_t?,
+        requiredFocusTarget: CapturedFocusTarget?
+    ) -> Bool {
         self.log("[TypingService] insertTextInstantly called with \(text.count) characters")
         self.log("[TypingService] Attempting to type text: \"\(text.prefix(50))\(text.count > 50 ? "..." : "")\"")
+
+        if let requiredFocusTarget {
+            return self.insertTextIntoExactFocusTarget(
+                text,
+                preferredTargetPID: preferredTargetPID,
+                requiredFocusTarget: requiredFocusTarget
+            )
+        }
 
         if self.textInsertionMode == .standard,
            let ghosttyTargetPID = self.ghosttyTargetPID(preferredTargetPID: preferredTargetPID)
@@ -634,16 +671,108 @@ final class TypingService {
         }
 
         // Last resort: Character-by-character
-        self.log("[TypingService] WARNING: All methods failed, trying character-by-character")
+        self.log("[TypingService] WARNING: All methods failed, trying verified character-by-character")
+        let focusedTextSnapshot = self.captureFocusedTextSnapshot()
+        var postedEveryCharacter = true
         for (index, char) in text.enumerated() {
             if index % 10 == 0 {
                 self.log("[TypingService] Typing character \(index + 1)/\(text.count)")
             }
-            self.typeCharacter(char)
+            postedEveryCharacter = self.typeCharacter(char) && postedEveryCharacter
             usleep(1000)
         }
-        self.log("[TypingService] Character-by-character typing completed")
-        return true
+        guard postedEveryCharacter else {
+            self.log("[TypingService] Character-by-character event creation failed")
+            return false
+        }
+        let verification = self.waitForFocusedTextVerification(
+            from: focusedTextSnapshot,
+            expectedText: text,
+            timeoutMicros: 500_000
+        )
+        self.log("[TypingService] Character-by-character verification: \(verification.rawValue)")
+        return verification.isConfirmed
+    }
+
+    private func insertTextIntoExactFocusTarget(
+        _ text: String,
+        preferredTargetPID: pid_t?,
+        requiredFocusTarget: CapturedFocusTarget
+    ) -> Bool {
+        guard preferredTargetPID == requiredFocusTarget.pid,
+              !requiredFocusTarget.isSecureTextField,
+              Self.isExactFocusTargetActive(requiredFocusTarget)
+        else {
+            self.log("[TypingService] Exact-target insertion rejected before dispatch")
+            return false
+        }
+
+        let eventAttempt: ExactTargetEventAttempt
+        switch self.textInsertionMode {
+        case .standard:
+            eventAttempt = self.performVerifiedExactTargetEventInsertion(
+                text,
+                target: requiredFocusTarget
+            ) {
+                self.insertTextBulkInstant(text, targetPID: requiredFocusTarget.pid)
+            }
+        case .reliablePaste:
+            eventAttempt = self.performVerifiedExactTargetEventInsertion(
+                text,
+                target: requiredFocusTarget
+            ) {
+                self.insertTextViaClipboardToPid(
+                    text,
+                    targetPID: requiredFocusTarget.pid,
+                    activateTargetFirst: false
+                )
+            }
+        }
+
+        switch eventAttempt {
+        case .confirmed:
+            return true
+        case .dispatchedUnverified:
+            self.log("[TypingService] Exact-target event insertion could not be confirmed; suppressing action")
+            return false
+        case .notDispatched:
+            break
+        }
+
+        guard Self.isExactFocusTargetActive(requiredFocusTarget) else {
+            self.log("[TypingService] Exact target changed before Accessibility fallback")
+            return false
+        }
+        return self.tryAllTextInsertionMethods(requiredFocusTarget.element, text)
+    }
+
+    private enum ExactTargetEventAttempt {
+        case notDispatched
+        case dispatchedUnverified
+        case confirmed
+    }
+
+    private func performVerifiedExactTargetEventInsertion(
+        _ text: String,
+        target: CapturedFocusTarget,
+        action: () -> Bool
+    ) -> ExactTargetEventAttempt {
+        guard Self.isExactFocusTargetActive(target) else { return .notDispatched }
+        guard let snapshot = self.captureFocusedTextSnapshot(),
+              snapshot.pid == target.pid,
+              action()
+        else {
+            return .notDispatched
+        }
+        guard Self.isExactFocusTargetActive(target) else { return .dispatchedUnverified }
+
+        let verification = self.waitForFocusedTextVerification(
+            from: snapshot,
+            expectedText: text,
+            timeoutMicros: 500_000
+        )
+        self.log("[TypingService] Exact-target event verification: \(verification.rawValue)")
+        return verification.isConfirmed ? .confirmed : .dispatchedUnverified
     }
 
     private func waitForPhysicalModifiersToRelease(timeout: TimeInterval) -> Bool {
@@ -1253,6 +1382,7 @@ final class TypingService {
         let appScriptSnapshot = self.captureAppScriptTextSnapshot(forBundleIdentifier: bundleIdentifier)
         return FocusedTextSnapshot(
             pid: focusInfo.pid,
+            element: focusInfo.element,
             bundleIdentifier: bundleIdentifier,
             value: self.getElementStringValue(focusInfo.element),
             selectedRange: self.getSelectedTextRange(focusInfo.element),
@@ -1311,7 +1441,8 @@ final class TypingService {
             waited += pollMicros
 
             guard let current = self.captureFocusedTextSnapshot(),
-                  current.pid == snapshot.pid
+                  current.pid == snapshot.pid,
+                  CFEqual(current.element, snapshot.element)
             else {
                 continue
             }
@@ -1512,7 +1643,7 @@ final class TypingService {
         }
     }
 
-    private func typeCharacter(_ char: Character) {
+    private func typeCharacter(_ char: Character) -> Bool {
         let charString = String(char)
         let utf16Array = Array(charString.utf16)
 
@@ -1521,7 +1652,7 @@ final class TypingService {
               let keyUpEvent = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false)
         else {
             self.log("[TypingService] ERROR: Failed to create CGEvents for character: \(char)")
-            return
+            return false
         }
 
         // Set the unicode string for both events
@@ -1532,5 +1663,6 @@ final class TypingService {
         keyDownEvent.post(tap: .cghidEventTap)
         usleep(2000) // Short delay between key down and up (2ms)
         keyUpEvent.post(tap: .cghidEventTap)
+        return true
     }
 }

@@ -1,5 +1,24 @@
 import Foundation
 
+enum TerminalAppClassifier {
+    private static let identityMarkers = [
+        "terminal",
+        "iterm",
+        "warp",
+        "ghostty",
+        "kitty",
+        "alacritty",
+        "wezterm",
+    ]
+
+    static func isTerminal(appName: String?, bundleID: String?) -> Bool {
+        let identity = [appName, bundleID]
+            .compactMap { $0?.lowercased() }
+            .joined(separator: " ")
+        return self.identityMarkers.contains { identity.contains($0) }
+    }
+}
+
 extension ASRService {
     static func applySpokenPunctuationFormatting(
         _ text: String,
@@ -30,7 +49,8 @@ private enum SpokenPunctuationFormatter {
             let haystack = [self.appName, self.bundleID, self.windowTitle]
                 .compactMap { $0?.lowercased() }
                 .joined(separator: " ")
-            return haystack.contains("codex") ||
+            return TerminalAppClassifier.isTerminal(appName: self.appName, bundleID: self.bundleID) ||
+                haystack.contains("codex") ||
                 haystack.contains("chatgpt") ||
                 haystack.contains("claude") ||
                 haystack.contains("cursor") ||
@@ -38,12 +58,6 @@ private enum SpokenPunctuationFormatter {
                 haystack.contains("xcode") ||
                 haystack.contains("visual studio code") ||
                 haystack.contains("vscode") ||
-                haystack.contains("terminal") ||
-                haystack.contains("iterm") ||
-                haystack.contains("warp") ||
-                haystack.contains("ghostty") ||
-                haystack.contains("kitty") ||
-                haystack.contains("alacritty") ||
                 haystack.contains("slack") ||
                 haystack.contains("discord") ||
                 haystack.contains("teams")
