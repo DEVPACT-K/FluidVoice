@@ -2157,6 +2157,9 @@ struct ContentView: View {
             TranscriptionSoundPlayer.shared.playStopSound()
         })
         self.appBench("asr_stop_return elapsedMs=\(Int(((ProcessInfo.processInfo.systemUptime - asrStopStartedAt) * 1000).rounded()))")
+        // The duplicate-stop race ends when ASR reports that it is no longer running.
+        // Do not hold this guard across delivery or a new recording's stop can be swallowed.
+        self.isStoppingAndProcessingTranscription = false
         let audioSnapshot = self.asr.consumeLastCompletedAudioSnapshot()
         DebugLogger.shared.info(
             "Stop transcription result | chars=\(transcribedText.count) | empty=\(transcribedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)",
@@ -2489,7 +2492,7 @@ struct ContentView: View {
             // Dispatch insertion as soon as the destination app is ready; the
             // overlay hides asynchronously after output so it cannot delay paste.
             if typingTarget.shouldRestoreOriginalFocus {
-                await self.restoreFocusToRecordingTarget()
+                await self.restoreFocusToRecordingTarget(requireExactTarget: spokenSendAllowed)
             }
             if spokenSendAllowed {
                 NotchContentState.shared.setSpokenSendIndicatorState(.sending)
@@ -3455,12 +3458,17 @@ struct ContentView: View {
 
     /// Best-effort: re-activate the app that was focused when recording started.
     /// Skips the AX restore work when the captured text element is already focused.
-    private func restoreFocusToRecordingTarget() async {
+    private func restoreFocusToRecordingTarget(requireExactTarget: Bool = false) async {
         guard let pid = NotchContentState.shared.recordingTargetPID else { return }
         let startedAt = ProcessInfo.processInfo.systemUptime
         self.appBench("focus_restore_start targetPID=\(pid)")
         if let focusTarget = self.recordingFocusTarget, focusTarget.pid == pid {
-            if TypingService.isExactFocusTargetActive(focusTarget) {
+            // Ordinary dictation keeps the legacy PID/editable-focus check because some apps
+            // vend a fresh AX element for the same field. Spoken Send remains exact-target only.
+            let targetIsStillActive = requireExactTarget
+                ? TypingService.isExactFocusTargetActive(focusTarget)
+                : TypingService.isCapturedFocusStillActive(for: pid)
+            if targetIsStillActive {
                 self.appBench("focus_restore_result activated=false element=true elapsedMs=0 reason=already_focused")
                 return
             }
@@ -4051,13 +4059,6 @@ extension ContentView {
             return
         }
         self.advanceOverlayLifecycle()
-        if self.asr.micStatus == .authorized {
-            self.appBench("overlay_mode_request mode=Dictation")
-            self.menuBarManager.setOverlayMode(.dictation)
-            self.menuBarManager.showRecordingOverlayImmediately()
-            self.appBench("overlay_mode_requested mode=Dictation")
-            self.appBench("overlay_phase phase=connecting")
-        }
         Task {
             let asrStartStartedAt = ProcessInfo.processInfo.systemUptime
             DebugLogger.shared.benchmark("APP_BENCH", message: "asr_start_call", source: "AppBenchmark")
@@ -4067,6 +4068,12 @@ extension ContentView {
                 }
                 self.captureRecordingContext()
                 self.prewarmPrivateAIDictationIfNeeded(for: slot)
+                // Capture owns the critical path. Showing the overlay before asr.start()
+                // previously blocked the main actor for 58-87 ms before first PCM.
+                self.appBench("overlay_mode_request mode=Dictation")
+                self.menuBarManager.setOverlayMode(.dictation)
+                self.menuBarManager.showRecordingOverlayImmediately()
+                self.appBench("overlay_mode_requested mode=Dictation")
                 self.appBench("overlay_phase phase=recording trigger=first_pcm")
             })
             if startOutcome == .failed {
