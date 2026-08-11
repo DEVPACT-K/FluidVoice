@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import UniformTypeIdentifiers
 
 enum TextDeliveryFailure: String, Equatable {
     case emptyText = "empty_text"
@@ -29,6 +30,13 @@ struct PasteboardSnapshot: Equatable {
 
         /// AppKit uses source order as representation preference, so this must remain ordered.
         let representations: [Representation]
+        /// Materialized while the original owner still provides file access or promised image data.
+        let portableImage: Representation?
+
+        init(representations: [Representation], portableImage: Representation? = nil) {
+            self.representations = representations
+            self.portableImage = portableImage
+        }
     }
 
     let items: [Item]
@@ -56,6 +64,13 @@ final class SystemPasteboardManager: PasteboardManaging {
     private static let sessionType = NSPasteboard.PasteboardType(
         "\(Bundle.main.bundleIdentifier ?? "com.FluidApp.Fluid").PasteSession"
     )
+    private static let fileSemanticTypes: Set<NSPasteboard.PasteboardType> = [
+        .fileURL,
+        NSPasteboard.PasteboardType("NSFilenamesPboardType"),
+        NSPasteboard.PasteboardType("com.apple.pasteboard.promised-file-url"),
+        NSPasteboard.PasteboardType("com.apple.pasteboard.promised-file-content-type"),
+        NSPasteboard.PasteboardType("com.apple.filepromise"),
+    ]
 
     private let pasteboard: NSPasteboard
 
@@ -107,7 +122,13 @@ final class SystemPasteboardManager: PasteboardManaging {
                     totalBytes += data.count
                     totalRepresentations += 1
                 }
-                items.append(.init(representations: representations))
+                let item = PasteboardSnapshot.Item(representations: representations)
+                items.append(
+                    .init(
+                        representations: representations,
+                        portableImage: Self.portableImageRepresentation(for: item)
+                    )
+                )
             }
 
             let endingChangeCount = self.pasteboard.changeCount
@@ -132,7 +153,7 @@ final class SystemPasteboardManager: PasteboardManaging {
             }
 
             self.log(
-                "clipboard_snapshot_complete items=\(items.count) representations=\(totalRepresentations) bytes=\(totalBytes)"
+                "clipboard_snapshot_complete items=\(items.count) representations=\(totalRepresentations) bytes=\(totalBytes) firstItem=\(Self.representationSummary(items.first))"
             )
             return PasteboardSnapshot(items: items)
         }
@@ -173,16 +194,215 @@ final class SystemPasteboardManager: PasteboardManaging {
         var items: [NSPasteboardItem] = []
         for snapshotItem in snapshot.items {
             let item = NSPasteboardItem()
+            let portableImage = snapshotItem.portableImage
+            let hasFileURL = snapshotItem.representations.contains { $0.type == .fileURL }
+
+            if !hasFileURL,
+               let portableImage,
+               !item.setData(portableImage.data, forType: portableImage.type)
+            {
+                self.log("clipboard_restore_failed reason=portable_image_write_failed type=\(portableImage.type.rawValue)")
+                return false
+            }
             for representation in snapshotItem.representations {
-                guard item.setData(representation.data, forType: representation.type) else {
+                guard Self.writeRestoredRepresentation(representation, to: item) else {
+                    self.log("clipboard_restore_failed reason=representation_write_failed type=\(representation.type.rawValue)")
                     return false
                 }
+                if representation.type == .fileURL,
+                   let portableImage,
+                   !item.setData(portableImage.data, forType: portableImage.type)
+                {
+                    self.log("clipboard_restore_failed reason=portable_image_write_failed type=\(portableImage.type.rawValue)")
+                    return false
+                }
+            }
+            guard Self.addRestorationMarkers(to: item) else {
+                self.log("clipboard_restore_failed reason=marker_write_failed")
+                return false
             }
             items.append(item)
         }
 
         self.pasteboard.clearContents()
-        return items.isEmpty || self.pasteboard.writeObjects(items)
+        guard items.isEmpty || self.pasteboard.writeObjects(items) else {
+            self.log("clipboard_restore_failed reason=pasteboard_write_failed")
+            return false
+        }
+        guard self.containsRestoredSnapshot(snapshot) else {
+            self.log("clipboard_restore_failed reason=post_write_verification_failed")
+            return false
+        }
+
+        let fileURLFallbacks = zip(self.pasteboard.pasteboardItems ?? [], snapshot.items).reduce(into: 0) {
+            count, pair in
+            let (restoredItem, snapshotItem) = pair
+            if snapshotItem.representations.contains(where: { $0.type == .fileURL }),
+               restoredItem.data(forType: .fileURL) == nil,
+               snapshotItem.portableImage != nil
+            {
+                count += 1
+            }
+        }
+        self.log(
+            "clipboard_restore_verified items=\(snapshot.items.count) changeCount=\(self.pasteboard.changeCount) fileURLFallbacks=\(fileURLFallbacks) firstItem=\(Self.representationSummary(snapshot.items.first))"
+        )
+        if let portableImage = snapshot.items.first?.portableImage {
+            self.log("clipboard_restore_portable_image type=\(portableImage.type.rawValue) bytes=\(portableImage.data.count)")
+        }
+        return true
+    }
+
+    private func containsRestoredSnapshot(_ snapshot: PasteboardSnapshot) -> Bool {
+        let restoredItems = self.pasteboard.pasteboardItems ?? []
+        guard restoredItems.count == snapshot.items.count else { return false }
+
+        for (restoredItem, snapshotItem) in zip(restoredItems, snapshot.items) {
+            for representation in snapshotItem.representations {
+                if representation.type == .fileURL,
+                   restoredItem.data(forType: .fileURL) == nil,
+                   snapshotItem.portableImage != nil
+                {
+                    continue
+                }
+                guard Self.restoredData(restoredItem, matches: representation) else {
+                    return false
+                }
+            }
+            if let portableImage = snapshotItem.portableImage,
+               restoredItem.data(forType: portableImage.type) != portableImage.data
+            {
+                return false
+            }
+            guard restoredItem.types.contains(Self.transientType),
+                  restoredItem.types.contains(Self.autoGeneratedType)
+            else {
+                return false
+            }
+        }
+        return true
+    }
+
+    private static func restoredData(
+        _ restoredItem: NSPasteboardItem,
+        matches representation: PasteboardSnapshot.Item.Representation
+    ) -> Bool {
+        if representation.type == .fileURL,
+           let expectedURL = URL(dataRepresentation: representation.data, relativeTo: nil, isAbsolute: true),
+           let restoredURL = restoredItem.string(forType: .fileURL).flatMap(URL.init(string:))
+        {
+            return restoredURL == expectedURL
+        }
+        return restoredItem.data(forType: representation.type) == representation.data
+    }
+
+    private static func portableImageRepresentation(
+        for item: PasteboardSnapshot.Item
+    ) -> PasteboardSnapshot.Item.Representation? {
+        let sourceTypes = Set(item.representations.map(\.type))
+        guard !sourceTypes.contains(.png),
+              !sourceTypes.contains(.tiff)
+        else {
+            return nil
+        }
+
+        if !sourceTypes.isDisjoint(with: Self.fileSemanticTypes) {
+            guard Self.fileItemContainsImage(item) else { return nil }
+
+            if let fileURL = Self.fileURL(in: item),
+               let image = NSImage(contentsOf: fileURL),
+               let pngData = Self.pngData(from: image)
+            {
+                return .init(type: .png, data: pngData)
+            }
+        }
+
+        for representation in item.representations {
+            guard UTType(representation.type.rawValue)?.conforms(to: .image) == true,
+                  let pngData = Self.pngData(from: representation.data)
+            else {
+                continue
+            }
+            return .init(type: .png, data: pngData)
+        }
+        return nil
+    }
+
+    private static func fileItemContainsImage(_ item: PasteboardSnapshot.Item) -> Bool {
+        if let fileURL = Self.fileURL(in: item),
+           Self.isImageFilename(fileURL.lastPathComponent)
+        {
+            return true
+        }
+
+        guard let textRepresentation = item.representations.first(where: { $0.type == .string }),
+              let filename = String(data: textRepresentation.data, encoding: .utf8)
+        else {
+            return false
+        }
+        return Self.isImageFilename(filename)
+    }
+
+    private static func fileURL(in item: PasteboardSnapshot.Item) -> URL? {
+        guard let representation = item.representations.first(where: { $0.type == .fileURL }) else {
+            return nil
+        }
+        return URL(dataRepresentation: representation.data, relativeTo: nil, isAbsolute: true)
+    }
+
+    private static func isImageFilename(_ filename: String) -> Bool {
+        let pathExtension = (filename as NSString).pathExtension
+        return !pathExtension.isEmpty && UTType(filenameExtension: pathExtension)?.conforms(to: .image) == true
+    }
+
+    private static func writeRestoredRepresentation(
+        _ representation: PasteboardSnapshot.Item.Representation,
+        to item: NSPasteboardItem
+    ) -> Bool {
+        if representation.type == .fileURL,
+           let fileURL = URL(dataRepresentation: representation.data, relativeTo: nil, isAbsolute: true)
+        {
+            // A file URL is a semantic pasteboard property-list value. Re-emitting its
+            // opaque bytes can appear valid to this process while disappearing for readers.
+            return item.setString(fileURL.absoluteString, forType: .fileURL)
+        }
+        return item.setData(representation.data, forType: representation.type)
+    }
+
+    private static func pngData(from sourceData: Data) -> Data? {
+        if let bitmap = NSBitmapImageRep(data: sourceData) {
+            return bitmap.representation(using: .png, properties: [:])
+        }
+
+        guard let image = NSImage(data: sourceData) else { return nil }
+        return Self.pngData(from: image)
+    }
+
+    private static func pngData(from image: NSImage) -> Data? {
+        var proposedRect = NSRect(origin: .zero, size: image.size)
+        guard let cgImage = image.cgImage(
+            forProposedRect: &proposedRect,
+            context: nil,
+            hints: nil
+        ) else {
+            return nil
+        }
+        return NSBitmapImageRep(cgImage: cgImage).representation(using: .png, properties: [:])
+    }
+
+    private static func addRestorationMarkers(to item: NSPasteboardItem) -> Bool {
+        let transientWasWritten = item.types.contains(Self.transientType) ||
+            item.setData(Data(), forType: Self.transientType)
+        let autoGeneratedWasWritten = item.types.contains(Self.autoGeneratedType) ||
+            item.setData(Data(), forType: Self.autoGeneratedType)
+        return transientWasWritten && autoGeneratedWasWritten
+    }
+
+    private static func representationSummary(_ item: PasteboardSnapshot.Item?) -> String {
+        guard let item else { return "none" }
+        return item.representations
+            .map { "\($0.type.rawValue):\($0.data.count)" }
+            .joined(separator: ",")
     }
 
     private func logSnapshotFailure(
