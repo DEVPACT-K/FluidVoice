@@ -548,7 +548,7 @@ final class TypingService {
                 exactFocusIsActive: Self.isExactFocusTargetActive(requiredFocusTarget),
                 insertionConfirmed: !hasTextToInsert || outcome.didInsert
             ),
-                self.postReturnKey(postInsertionKey, targetPID: preferredTargetPID)
+                self.postReturnKey(postInsertionKey, target: requiredFocusTarget)
             else {
                 outcome = hasTextToInsert ? .insertedActionSuppressed : .actionSuppressed
                 return
@@ -707,75 +707,10 @@ final class TypingService {
             return false
         }
 
-        let eventAttempt: ExactTargetEventAttempt
-        switch self.textInsertionMode {
-        case .standard:
-            eventAttempt = self.performVerifiedExactTargetEventInsertion(
-                text,
-                target: requiredFocusTarget
-            ) {
-                self.insertTextBulkInstant(text, targetPID: requiredFocusTarget.pid)
-            }
-        case .reliablePaste:
-            eventAttempt = self.performVerifiedExactTargetEventInsertion(
-                text,
-                target: requiredFocusTarget
-            ) {
-                self.insertTextViaClipboardToPid(
-                    text,
-                    targetPID: requiredFocusTarget.pid,
-                    activateTargetFirst: false
-                )
-            }
-        }
-
-        switch eventAttempt {
-        case .confirmed:
-            return true
-        case .dispatchedUnverified:
-            self.log("[TypingService] Exact-target event insertion could not be confirmed; suppressing action")
-            return false
-        case .notDispatched:
-            break
-        }
-
-        guard Self.isExactFocusTargetActive(requiredFocusTarget) else {
-            self.log("[TypingService] Exact target changed before Accessibility fallback")
-            return false
-        }
         return self.performVerifiedExactTargetAccessibilityInsertion(
             text,
             target: requiredFocusTarget
         )
-    }
-
-    private enum ExactTargetEventAttempt {
-        case notDispatched
-        case dispatchedUnverified
-        case confirmed
-    }
-
-    private func performVerifiedExactTargetEventInsertion(
-        _ text: String,
-        target: CapturedFocusTarget,
-        action: () -> Bool
-    ) -> ExactTargetEventAttempt {
-        guard Self.isExactFocusTargetActive(target) else { return .notDispatched }
-        guard let snapshot = self.captureFocusedTextSnapshot(),
-              snapshot.pid == target.pid,
-              action()
-        else {
-            return .notDispatched
-        }
-        guard Self.isExactFocusTargetActive(target) else { return .dispatchedUnverified }
-
-        let verification = self.waitForFocusedTextVerification(
-            from: snapshot,
-            expectedText: text,
-            timeoutMicros: 500_000
-        )
-        self.log("[TypingService] Exact-target event verification: \(verification.rawValue)")
-        return verification.isConfirmed ? .confirmed : .dispatchedUnverified
     }
 
     private func performVerifiedExactTargetAccessibilityInsertion(
@@ -813,7 +748,11 @@ final class TypingService {
         return false
     }
 
-    private func postReturnKey(_ key: SettingsStore.SpokenSendKey, targetPID: pid_t) -> Bool {
+    private func postReturnKey(
+        _ key: SettingsStore.SpokenSendKey,
+        target: CapturedFocusTarget
+    ) -> Bool {
+        guard Self.isExactFocusTargetActive(target) else { return false }
         let returnKeyCode = CGKeyCode(kVK_Return)
         guard let keyDown = CGEvent(keyboardEventSource: nil, virtualKey: returnKeyCode, keyDown: true),
               let keyUp = CGEvent(keyboardEventSource: nil, virtualKey: returnKeyCode, keyDown: false)
@@ -825,10 +764,15 @@ final class TypingService {
         keyUp.flags = key.eventFlags
         keyDown.setIntegerValueField(.eventSourceUserData, value: Self.synthesizedEventUserData)
         keyUp.setIntegerValueField(.eventSourceUserData, value: Self.synthesizedEventUserData)
-        keyDown.postToPid(targetPID)
+        guard Self.isExactFocusTargetActive(target) else { return false }
+        keyDown.postToPid(target.pid)
         usleep(10_000)
-        keyUp.postToPid(targetPID)
-        return true
+        guard Self.isExactFocusTargetActive(target) else {
+            keyUp.postToPid(target.pid)
+            return false
+        }
+        keyUp.postToPid(target.pid)
+        return Self.isExactFocusTargetActive(target)
     }
 
     private func tryReliablePasteInsertion(_ text: String, preferredTargetPID: pid_t?) -> Bool {
