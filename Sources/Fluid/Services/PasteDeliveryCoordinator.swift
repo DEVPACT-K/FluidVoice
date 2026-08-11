@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import Foundation
 import UniformTypeIdentifiers
 
@@ -433,21 +434,78 @@ final class SystemPasteboardManager: PasteboardManaging {
 }
 
 @MainActor
+enum KeyboardLayoutKeyCodeResolver {
+    static func keyCode(for character: Character, qwertyFallback: CGKeyCode) -> CGKeyCode {
+        guard let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
+              let rawLayoutData = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData)
+        else {
+            return qwertyFallback
+        }
+
+        let layoutData = Unmanaged<CFData>.fromOpaque(rawLayoutData).takeUnretainedValue() as Data
+        return layoutData.withUnsafeBytes { buffer in
+            guard let layout = buffer.baseAddress?.assumingMemoryBound(to: UCKeyboardLayout.self) else {
+                return qwertyFallback
+            }
+            return self.keyCode(for: character, qwertyFallback: qwertyFallback) { keyCode in
+                self.unmodifiedScalar(for: keyCode, layout: layout)
+            }
+        }
+    }
+
+    static func keyCode(
+        for character: Character,
+        qwertyFallback: CGKeyCode,
+        translatedScalar: (CGKeyCode) -> Unicode.Scalar?
+    ) -> CGKeyCode {
+        guard let targetScalar = character.unicodeScalars.first else { return qwertyFallback }
+
+        for keyCode: CGKeyCode in 0..<128 where translatedScalar(keyCode) == targetScalar {
+            return keyCode
+        }
+        return qwertyFallback
+    }
+
+    private static func unmodifiedScalar(
+        for keyCode: CGKeyCode,
+        layout: UnsafePointer<UCKeyboardLayout>
+    ) -> Unicode.Scalar? {
+        var deadKeyState: UInt32 = 0
+        var characters = [UniChar](repeating: 0, count: 4)
+        var length = 0
+        let status = UCKeyTranslate(
+            layout,
+            keyCode,
+            UInt16(kUCKeyActionDisplay),
+            0,
+            UInt32(LMGetKbdType()),
+            UInt32(kUCKeyTranslateNoDeadKeysMask),
+            &deadKeyState,
+            characters.count,
+            &length,
+            &characters
+        )
+        guard status == noErr, length > 0 else { return nil }
+        return Unicode.Scalar(characters[0])
+    }
+}
+
+@MainActor
 final class SystemPasteCommandPoster: PasteCommandPosting {
-    private static let vKeyCode: CGKeyCode = 0x09
     nonisolated static let clipboardSettleDelayNanoseconds: UInt64 = 50_000_000
 
     func postGlobalPasteCommand() async -> Bool {
         guard AXIsProcessTrusted() else { return false }
 
+        let pasteKeyCode = KeyboardLayoutKeyCodeResolver.keyCode(for: "v", qwertyFallback: 0x09)
         let source = CGEventSource(stateID: .combinedSessionState)
         guard let vDown = CGEvent(
             keyboardEventSource: source,
-            virtualKey: Self.vKeyCode,
+            virtualKey: pasteKeyCode,
             keyDown: true
         ), let vUp = CGEvent(
             keyboardEventSource: source,
-            virtualKey: Self.vKeyCode,
+            virtualKey: pasteKeyCode,
             keyDown: false
         ) else {
             return false

@@ -230,6 +230,27 @@ final class PasteDeliveryCoordinatorTests: XCTestCase {
         XCTAssertEqual(PasteDeliveryCoordinator.defaultSettlementDelayNanoseconds, 500_000_000)
     }
 
+    func testPasteKeyResolverUsesTheKeyThatProducesVInTheActiveLayout() {
+        let resolvedKeyCode = KeyboardLayoutKeyCodeResolver.keyCode(
+            for: "v",
+            qwertyFallback: 0x09
+        ) { keyCode in
+            keyCode == 0x2a ? "v" : nil
+        }
+
+        XCTAssertEqual(resolvedKeyCode, 0x2a)
+    }
+
+    func testPasteKeyResolverFallsBackWhenTheLayoutDoesNotExposeV() {
+        let resolvedKeyCode = KeyboardLayoutKeyCodeResolver.keyCode(
+            for: "v",
+            qwertyFallback: 0x09,
+            translatedScalar: { _ in nil }
+        )
+
+        XCTAssertEqual(resolvedKeyCode, 0x09)
+    }
+
     func testRecoveryActivationNeverRequestsAllWindows() {
         XCTAssertTrue(TypingService.recoveryActivationOptions.contains(.activateIgnoringOtherApps))
         XCTAssertFalse(TypingService.recoveryActivationOptions.contains(.activateAllWindows))
