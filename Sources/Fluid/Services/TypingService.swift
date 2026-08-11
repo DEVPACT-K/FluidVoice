@@ -743,7 +743,10 @@ final class TypingService {
             self.log("[TypingService] Exact target changed before Accessibility fallback")
             return false
         }
-        return self.tryAllTextInsertionMethods(requiredFocusTarget.element, text)
+        return self.performVerifiedExactTargetAccessibilityInsertion(
+            text,
+            target: requiredFocusTarget
+        )
     }
 
     private enum ExactTargetEventAttempt {
@@ -773,6 +776,29 @@ final class TypingService {
         )
         self.log("[TypingService] Exact-target event verification: \(verification.rawValue)")
         return verification.isConfirmed ? .confirmed : .dispatchedUnverified
+    }
+
+    private func performVerifiedExactTargetAccessibilityInsertion(
+        _ text: String,
+        target: CapturedFocusTarget
+    ) -> Bool {
+        guard Self.isExactFocusTargetActive(target),
+              let snapshot = self.captureFocusedTextSnapshot(),
+              snapshot.pid == target.pid,
+              CFEqual(snapshot.element, target.element),
+              self.tryAllTextInsertionMethods(target.element, text),
+              Self.isExactFocusTargetActive(target)
+        else {
+            return false
+        }
+
+        let verification = self.waitForFocusedTextVerification(
+            from: snapshot,
+            expectedText: text,
+            timeoutMicros: 500_000
+        )
+        self.log("[TypingService] Exact-target Accessibility verification: \(verification.rawValue)")
+        return verification.isConfirmed
     }
 
     private func waitForPhysicalModifiersToRelease(timeout: TimeInterval) -> Bool {
