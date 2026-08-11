@@ -1817,6 +1817,18 @@ final class SettingsStore: ObservableObject {
         set { self.defaults.set(newValue, forKey: Keys.copyTranscriptionToClipboard) }
     }
 
+    var rememberTextFieldsEnabled: Bool {
+        get { self.defaults.object(forKey: Keys.rememberTextFieldsEnabled) as? Bool ?? true }
+        set {
+            guard newValue != self.rememberTextFieldsEnabled else { return }
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.rememberTextFieldsEnabled)
+            if !newValue {
+                TypingService.clearRememberedTextFieldHistory()
+            }
+        }
+    }
+
     var preferredInputDeviceUID: String? {
         get { self.defaults.string(forKey: Keys.preferredInputDeviceUID) }
         set { self.defaults.set(newValue, forKey: Keys.preferredInputDeviceUID) }
@@ -3194,6 +3206,7 @@ final class SettingsStore: ObservableObject {
             skipSilentRecordingsEnabled: self.skipSilentRecordingsEnabled,
             enableAIStreaming: self.enableAIStreaming,
             copyTranscriptionToClipboard: self.copyTranscriptionToClipboard,
+            rememberTextFieldsEnabled: self.rememberTextFieldsEnabled,
             textInsertionMode: self.textInsertionMode,
             preferredInputDeviceUID: self.preferredInputDeviceUID,
             microphonePriority: self.microphonePriority,
@@ -3317,6 +3330,9 @@ final class SettingsStore: ObservableObject {
         }
         self.enableAIStreaming = payload.enableAIStreaming
         self.copyTranscriptionToClipboard = payload.copyTranscriptionToClipboard
+        if let rememberTextFieldsEnabled = payload.rememberTextFieldsEnabled {
+            self.rememberTextFieldsEnabled = rememberTextFieldsEnabled
+        }
         self.textInsertionMode = payload.textInsertionMode
         self.preferredInputDeviceUID = payload.preferredInputDeviceUID
         self.suppressedMicrophoneUIDs = Set(payload.suppressedMicrophoneUIDs ?? [])
@@ -5093,6 +5109,7 @@ private extension SettingsStore {
         static let skipSilentRecordingsEnabled = "SkipSilentRecordingsEnabled"
         static let enableAIStreaming = "EnableAIStreaming"
         static let copyTranscriptionToClipboard = "CopyTranscriptionToClipboard"
+        static let rememberTextFieldsEnabled = "RememberTextFieldsEnabled"
         static let textInsertionMode = "TextInsertionMode"
         static let autoUpdateCheckEnabled = "AutoUpdateCheckEnabled"
         static let betaReleasesEnabled = "BetaReleasesEnabled"

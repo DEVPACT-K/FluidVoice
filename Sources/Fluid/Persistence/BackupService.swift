@@ -61,6 +61,7 @@ struct SettingsBackupPayload: Codable, Equatable {
     let skipSilentRecordingsEnabled: Bool?
     let enableAIStreaming: Bool
     let copyTranscriptionToClipboard: Bool
+    let rememberTextFieldsEnabled: Bool?
     let textInsertionMode: SettingsStore.TextInsertionMode
     let preferredInputDeviceUID: String?
     // Optional so backups created before microphone priority ordering still decode.

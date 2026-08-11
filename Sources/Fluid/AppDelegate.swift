@@ -37,6 +37,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 
         // Initialize app settings (dock visibility, etc.)
         SettingsStore.shared.initializeAppSettings()
+        TypingService.prepareRememberedTextFieldHistory()
         let shouldOfferMLXUpgrade = PrivateAIMLXUpgradeCoordinator.prepareOfferIfNeeded()
         LocalAPIServer.shared.start()
 
@@ -78,6 +79,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 
     func applicationWillTerminate(_ notification: Notification) {
         DebugLogger.shared.info("Application will terminate", source: "AppDelegate")
+        TypingService.restorePendingPasteboardForTermination()
+        TypingService.flushRememberedTextFieldHistory()
         self.shutdownPrivateAIRuntimeForTermination()
         self.shutdownASRRuntimeForTermination()
         LocalAPIServer.shared.stop()

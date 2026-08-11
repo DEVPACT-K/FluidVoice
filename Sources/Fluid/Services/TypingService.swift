@@ -47,17 +47,14 @@ final class TypingService {
         case refused
     }
 
-    private enum PasteVerificationResult: String {
-        case appScriptContainsText = "appscript_contains_text"
-        case appScriptCaretMovedExpectedDistance = "appscript_caret_moved_expected_distance"
-        case fieldContainsText = "field_contains_text"
-        case caretMovedExpectedDistance = "caret_moved_expected_distance"
-        case timeout
-        case unavailable
-    }
-
-    private static let pasteboardSessionSemaphore = DispatchSemaphore(value: 1)
+    private static let pasteboardSessionLock = NSLock()
     private static let pasteboardRestoreQueue = DispatchQueue(label: "TypingService.PasteboardRestore", qos: .utility)
+    private static var pasteboardSessionGeneration: UInt64 = 0
+    private static var pasteboardOriginalSnapshot: PasteboardSnapshot?
+    private static var pasteboardTemporaryChangeCount: Int?
+    private static var pasteboardTemporaryText: String?
+    private static var pendingPasteboardRestore: DispatchWorkItem?
+    private static let pasteboardRestoreDelay: TimeInterval = 0.15
     private static let ghosttyBundleIdentifier = "com.mitchellh.ghostty"
     static let textFieldResolver = SystemTextFieldTargetResolver.shared
 
@@ -133,6 +130,20 @@ final class TypingService {
     }
 
     // MARK: - Focus helpers (shared)
+
+    /// Starts the asynchronous persisted-history load during normal app launch, never on the
+    /// recording-start path.
+    static func prepareRememberedTextFieldHistory() {
+        _ = self.textFieldResolver
+    }
+
+    static func clearRememberedTextFieldHistory() {
+        self.textFieldResolver.clearHistory()
+    }
+
+    static func flushRememberedTextFieldHistory() {
+        self.textFieldResolver.flushPersistence()
+    }
 
     /// Best-effort: returns the PID owning the currently focused accessibility element.
     /// This is more reliable than NSWorkspace.frontmostApplication for floating overlays/launchers.
@@ -587,7 +598,7 @@ final class TypingService {
         DebugLogger.shared.debug("\(prefix) | \(self.currentFocusDebugDescription())", source: "TypingService")
     }
 
-    private func capturePasteboardSnapshot(_ pasteboard: NSPasteboard) -> PasteboardSnapshot {
+    private static func capturePasteboardSnapshot(_ pasteboard: NSPasteboard) -> PasteboardSnapshot {
         let items: [PasteboardItemSnapshot] = pasteboard.pasteboardItems?.map { item in
             var dataByType: [NSPasteboard.PasteboardType: Data] = [:]
             for type in item.types {
@@ -600,7 +611,7 @@ final class TypingService {
         return PasteboardSnapshot(items: items)
     }
 
-    private func restorePasteboardSnapshot(_ snapshot: PasteboardSnapshot, to pasteboard: NSPasteboard) {
+    private static func restorePasteboardSnapshot(_ snapshot: PasteboardSnapshot, to pasteboard: NSPasteboard) {
         pasteboard.clearContents()
         guard !snapshot.items.isEmpty else { return }
 
@@ -626,57 +637,115 @@ final class TypingService {
         return item
     }
 
-    private func withTemporaryPasteboardString(
+    @discardableResult
+    func withTemporaryPasteboardString(
         _ text: String,
-        restoreDelayMicros: useconds_t,
+        pasteboard: NSPasteboard = .general,
+        restoreDelay: TimeInterval = TypingService.pasteboardRestoreDelay,
         action: () -> Bool
     ) -> Bool {
-        Self.pasteboardSessionSemaphore.wait()
-        var releasesPasteboardSessionOnReturn = true
-        defer {
-            if releasesPasteboardSessionOnReturn {
-                Self.pasteboardSessionSemaphore.signal()
-            }
-        }
+        Self.pasteboardSessionLock.lock()
 
-        let pasteboard = NSPasteboard.general
-        let snapshot = self.capturePasteboardSnapshot(pasteboard)
+        // A rapid follow-up insertion supersedes the pending restore. Preserve the original user
+        // clipboard across the whole burst, unless the user changed it between insertions.
+        if Self.pendingPasteboardRestore == nil
+            || !Self.pasteboardStillContainsTemporaryText(pasteboard)
+        {
+            Self.pasteboardOriginalSnapshot = Self.capturePasteboardSnapshot(pasteboard)
+        }
+        Self.pendingPasteboardRestore?.cancel()
+        Self.pasteboardSessionGeneration &+= 1
+        let generation = Self.pasteboardSessionGeneration
 
         pasteboard.clearContents()
         guard pasteboard.writeObjects([Self.makeTransientPasteboardItem(text)]) else {
             self.log("[TypingService] ERROR: Failed to set temporary clipboard string")
-            self.restorePasteboardSnapshot(snapshot, to: pasteboard)
+            if let snapshot = Self.pasteboardOriginalSnapshot {
+                Self.restorePasteboardSnapshot(snapshot, to: pasteboard)
+            }
+            Self.clearPasteboardSessionLocked()
+            Self.pasteboardSessionLock.unlock()
             return false
         }
-        let temporaryChangeCount = pasteboard.changeCount
-        let focusedTextSnapshot = self.captureFocusedTextSnapshot()
+        Self.pasteboardTemporaryChangeCount = pasteboard.changeCount
+        Self.pasteboardTemporaryText = text
         let actionResult = action()
         guard actionResult else {
-            self.restorePasteboardSnapshot(snapshot, to: pasteboard)
+            if let snapshot = Self.pasteboardOriginalSnapshot,
+               Self.pasteboardStillContainsTemporaryText(pasteboard)
+            {
+                Self.restorePasteboardSnapshot(snapshot, to: pasteboard)
+            }
+            Self.clearPasteboardSessionLocked()
+            Self.pasteboardSessionLock.unlock()
             self.log("[TypingService] Restored previous clipboard snapshot after paste dispatch failure")
             return false
         }
 
-        releasesPasteboardSessionOnReturn = false
-        Self.pasteboardRestoreQueue.async {
-            defer { Self.pasteboardSessionSemaphore.signal() }
-            _ = self.waitForFocusedTextVerification(
-                from: focusedTextSnapshot,
-                expectedText: text,
-                timeoutMicros: restoreDelayMicros
+        let restore = DispatchWorkItem { [weak self] in
+            Self.restorePasteboardSessionIfCurrent(
+                generation: generation,
+                pasteboard: pasteboard,
+                log: { self?.log($0) }
             )
-            let pasteboard = NSPasteboard.general
-
-            // Avoid clobbering user clipboard changes that happened after our insertion.
-            if pasteboard.changeCount == temporaryChangeCount || pasteboard.string(forType: .string) == text {
-                self.restorePasteboardSnapshot(snapshot, to: pasteboard)
-                self.log("[TypingService] Restored previous clipboard snapshot")
-            } else {
-                self.log("[TypingService] Skipped clipboard restore because clipboard changed externally")
-            }
         }
+        Self.pendingPasteboardRestore = restore
+        Self.pasteboardSessionLock.unlock()
+        Self.pasteboardRestoreQueue.asyncAfter(deadline: .now() + max(0, restoreDelay), execute: restore)
 
         return true
+    }
+
+    private static func pasteboardStillContainsTemporaryText(_ pasteboard: NSPasteboard) -> Bool {
+        guard let temporaryChangeCount = self.pasteboardTemporaryChangeCount,
+              let temporaryText = self.pasteboardTemporaryText
+        else { return false }
+        return pasteboard.changeCount == temporaryChangeCount
+            && pasteboard.string(forType: .string) == temporaryText
+    }
+
+    private static func restorePasteboardSessionIfCurrent(
+        generation: UInt64,
+        pasteboard: NSPasteboard,
+        log: (String) -> Void
+    ) {
+        self.pasteboardSessionLock.lock()
+        defer { self.pasteboardSessionLock.unlock() }
+        guard generation == self.pasteboardSessionGeneration else { return }
+
+        if let snapshot = self.pasteboardOriginalSnapshot,
+           self.pasteboardStillContainsTemporaryText(pasteboard)
+        {
+            self.restorePasteboardSnapshot(snapshot, to: pasteboard)
+            log("[TypingService] Restored previous clipboard snapshot")
+        } else {
+            log("[TypingService] Skipped clipboard restore because clipboard changed externally")
+        }
+        self.clearPasteboardSessionLocked()
+    }
+
+    private static func clearPasteboardSessionLocked() {
+        self.pendingPasteboardRestore = nil
+        self.pasteboardOriginalSnapshot = nil
+        self.pasteboardTemporaryChangeCount = nil
+        self.pasteboardTemporaryText = nil
+    }
+
+    /// Restores a pending temporary pasteboard write during a normal app shutdown. The normal
+    /// insertion path never waits for restoration; this only closes the narrow window where the
+    /// process could exit before the scheduled restore runs.
+    static func restorePendingPasteboardForTermination(pasteboard: NSPasteboard = .general) {
+        self.pasteboardSessionLock.lock()
+        defer { self.pasteboardSessionLock.unlock() }
+
+        self.pendingPasteboardRestore?.cancel()
+        self.pasteboardSessionGeneration &+= 1
+        if let snapshot = self.pasteboardOriginalSnapshot,
+           self.pasteboardStillContainsTemporaryText(pasteboard)
+        {
+            self.restorePasteboardSnapshot(snapshot, to: pasteboard)
+        }
+        self.clearPasteboardSessionLocked()
     }
 
     /// Clipboard-paste insertion targeted at a specific PID.
@@ -694,7 +763,7 @@ final class TypingService {
             usleep(80_000)
         }
 
-        return self.withTemporaryPasteboardString(text, restoreDelayMicros: 5_000_000) {
+        return self.withTemporaryPasteboardString(text) {
             let vKey = Self.pasteVirtualKeyCode
             guard let cmdVDown = CGEvent(keyboardEventSource: nil, virtualKey: vKey, keyDown: true),
                   let cmdVUp = CGEvent(keyboardEventSource: nil, virtualKey: vKey, keyDown: false)
@@ -806,7 +875,7 @@ final class TypingService {
     /// More reliable but slightly slower - copies text to clipboard then pastes
     private func insertTextViaClipboard(_ text: String) -> Bool {
         self.log("[TypingService] Starting clipboard-based insertion")
-        return self.withTemporaryPasteboardString(text, restoreDelayMicros: 5_000_000) {
+        return self.withTemporaryPasteboardString(text) {
             let vKey = Self.pasteVirtualKeyCode
             guard let cmdVDown = CGEvent(keyboardEventSource: nil, virtualKey: vKey, keyDown: true),
                   let cmdVUp = CGEvent(keyboardEventSource: nil, virtualKey: vKey, keyDown: false)
@@ -833,7 +902,7 @@ final class TypingService {
             return false
         }
 
-        return self.withTemporaryPasteboardString(text, restoreDelayMicros: 5_000_000) {
+        return self.withTemporaryPasteboardString(text) {
             let escapedAppName = appName.replacingOccurrences(of: "\"", with: "\\\"")
             let script = """
             tell application "System Events"
@@ -1048,71 +1117,6 @@ final class TypingService {
     private struct AppScriptTextSnapshot {
         let value: String?
         let selectedRange: CFRange?
-    }
-
-    private func waitForFocusedTextVerification(
-        from snapshot: FocusedTextSnapshot?,
-        expectedText: String,
-        timeoutMicros: useconds_t
-    ) -> PasteVerificationResult {
-        guard let snapshot else {
-            usleep(timeoutMicros)
-            return .unavailable
-        }
-
-        let pollMicros: useconds_t = 50_000
-        let expectedLength = max(1, (expectedText as NSString).length)
-        let tolerance = max(2, expectedLength / 5)
-        var waited: useconds_t = 0
-
-        while waited < timeoutMicros {
-            usleep(pollMicros)
-            waited += pollMicros
-
-            guard let current = self.captureFocusedTextSnapshot(),
-                  current.pid == snapshot.pid
-            else {
-                continue
-            }
-
-            if let currentValue = current.appScriptValue,
-               currentValue.contains(expectedText),
-               currentValue != snapshot.appScriptValue
-            {
-                return .appScriptContainsText
-            }
-
-            if let before = snapshot.appScriptSelectedRange,
-               let after = current.appScriptSelectedRange,
-               after.length == 0
-            {
-                let expectedCaretLocation = before.location + expectedLength
-                let caretDelta = abs(after.location - expectedCaretLocation)
-                if caretDelta <= tolerance {
-                    return .appScriptCaretMovedExpectedDistance
-                }
-            }
-
-            if let currentValue = current.value,
-               currentValue.contains(expectedText),
-               currentValue != snapshot.value
-            {
-                return .fieldContainsText
-            }
-
-            if let before = snapshot.selectedRange,
-               let after = current.selectedRange,
-               after.length == 0
-            {
-                let expectedCaretLocation = before.location + expectedLength
-                let caretDelta = abs(after.location - expectedCaretLocation)
-                if caretDelta <= tolerance {
-                    return .caretMovedExpectedDistance
-                }
-            }
-        }
-
-        return .timeout
     }
 
     private func captureAppScriptTextSnapshot(forBundleIdentifier bundleIdentifier: String?) -> AppScriptTextSnapshot? {

@@ -68,6 +68,7 @@ struct SettingsView: View {
     @State private var audioHistoryUsageBytes: Int64 = DictationAudioHistoryStore.shared.audioUsageBytes()
     @State private var draggedMicrophoneUID: String?
     @State private var hoveredMicrophoneUID: String?
+    @State private var showClearRememberedFieldsConfirmation = false
 
     let hotkeyManager: GlobalHotkeyManager?
     let menuBarManager: MenuBarManager
@@ -872,6 +873,31 @@ struct SettingsView: View {
                                     Divider().opacity(0.2)
 
                                     self.optionToggleRow(
+                                        title: "Remember Text Fields",
+                                        description: "When no text field is focused, return dictation to a recently used field in the same foreground app and window.",
+                                        isOn: Binding(
+                                            get: { SettingsStore.shared.rememberTextFieldsEnabled },
+                                            set: { SettingsStore.shared.rememberTextFieldsEnabled = $0 }
+                                        ),
+                                        allowsDescriptionWrapping: true
+                                    )
+
+                                    if SettingsStore.shared.rememberTextFieldsEnabled {
+                                        HStack {
+                                            Button(role: .destructive) {
+                                                self.showClearRememberedFieldsConfirmation = true
+                                            } label: {
+                                                Label("Clear Remembered Fields", systemImage: "trash")
+                                            }
+                                            .buttonStyle(.bordered)
+                                            .controlSize(.small)
+
+                                            Spacer()
+                                        }
+                                    }
+                                    Divider().opacity(0.2)
+
+                                    self.optionToggleRow(
                                         title: "Save Transcription History",
                                         description: "Save transcriptions for stats tracking. Disable for privacy.",
                                         isOn: Binding(
@@ -1468,6 +1494,14 @@ struct SettingsView: View {
                     self.showAreYouSureToStopAnalytics = false
                 }
             )
+        }
+        .alert("Clear Remembered Fields?", isPresented: self.$showClearRememberedFieldsConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Clear", role: .destructive) {
+                TypingService.clearRememberedTextFieldHistory()
+            }
+        } message: {
+            Text("FluidVoice will forget every saved text-field target. New fields will be learned after your next successful insertion.")
         }
         .onAppear {
             Task { @MainActor in

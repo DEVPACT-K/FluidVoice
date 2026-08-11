@@ -13,6 +13,7 @@ final class TextFieldTargetResolverTests: XCTestCase {
         var role: String?
         var subrole: String?
         var identifier: String?
+        var runtimeIdentifier: String?
         var title: String?
         var elementDescription: String?
         var position: CGPoint?
@@ -94,6 +95,10 @@ final class TextFieldTargetResolverTests: XCTestCase {
             element.identifier
         }
 
+        func runtimeIdentifier(of element: FakeAXNode) -> String? {
+            element.runtimeIdentifier
+        }
+
         func title(of element: FakeAXNode) -> String? {
             element.title
         }
@@ -149,6 +154,48 @@ final class TextFieldTargetResolverTests: XCTestCase {
         func setMessagingTimeout(forPID _: pid_t, timeout _: Float) {}
     }
 
+    private final class FakePersistence: TextFieldTargetHistoryPersistence {
+        var storedHistory: PersistedTextFieldTargetHistory?
+        var savedHistories: [PersistedTextFieldTargetHistory] = []
+        var clearCount = 0
+        var completesLoadImmediately = true
+        private var pendingLoad: ((PersistedTextFieldTargetHistory?) -> Void)?
+        private var pendingLoadedValue: PersistedTextFieldTargetHistory?
+
+        init(storedHistory: PersistedTextFieldTargetHistory? = nil) {
+            self.storedHistory = storedHistory
+        }
+
+        func load(completion: @escaping (PersistedTextFieldTargetHistory?) -> Void) {
+            if self.completesLoadImmediately {
+                completion(self.storedHistory)
+            } else {
+                self.pendingLoad = completion
+                self.pendingLoadedValue = self.storedHistory
+            }
+        }
+
+        func save(_ history: PersistedTextFieldTargetHistory) {
+            self.storedHistory = history
+            self.savedHistories.append(history)
+        }
+
+        func clear() {
+            self.storedHistory = nil
+            self.clearCount += 1
+        }
+
+        func flush() {}
+
+        func completeLoad() {
+            let completion = self.pendingLoad
+            let loadedValue = self.pendingLoadedValue
+            self.pendingLoad = nil
+            self.pendingLoadedValue = nil
+            completion?(loadedValue)
+        }
+    }
+
     // MARK: - Helpers
 
     private let appPID: pid_t = 4242
@@ -161,13 +208,25 @@ final class TextFieldTargetResolverTests: XCTestCase {
     override func setUp() {
         super.setUp()
         self.client = FakeAXClient()
-        self.resolver = TextFieldTargetResolver(client: self.client)
-        self.resolver.now = { [unowned self] in self.clock }
-        self.resolver.postWindowRaiseDelay = {}
-        self.resolver.interFocusAttemptDelay = {}
+        self.installResolver()
         self.client.livePIDs = [self.appPID, self.otherPID]
         self.client.frontmostPID = self.appPID
         self.client.appIdentifiers = [self.appPID: "app", self.otherPID: "other-app"]
+    }
+
+    private func installResolver(
+        persistence: TextFieldTargetHistoryPersistence? = nil,
+        isEnabled: @escaping () -> Bool = { true }
+    ) {
+        self.resolver = TextFieldTargetResolver(
+            client: self.client,
+            persistence: persistence,
+            isEnabled: isEnabled
+        )
+        self.resolver.now = { [unowned self] in self.clock }
+        self.resolver.wallClockNow = { [unowned self] in self.clock }
+        self.resolver.postWindowRaiseDelay = {}
+        self.resolver.interFocusAttemptDelay = {}
     }
 
     override func tearDown() {
@@ -228,6 +287,15 @@ final class TextFieldTargetResolverTests: XCTestCase {
         self.record(button, window: window)
         XCTAssertTrue(self.resolver.trackedFields(forPID: self.appPID).isEmpty)
 
+        for role in ["AXGroup", "AXWebArea"] {
+            let proxy = window.add(FakeAXNode(pid: self.appPID, role: role))
+            self.record(proxy, window: window)
+        }
+        XCTAssertTrue(
+            self.resolver.trackedFields(forPID: self.appPID).isEmpty,
+            "broad web focus proxies must never be remembered as text fields"
+        )
+
         let secure = self.makeField(in: window, identifier: "pwd", role: "AXSecureTextField")
         self.record(secure, window: window)
         XCTAssertTrue(self.resolver.trackedFields(forPID: self.appPID).isEmpty)
@@ -286,6 +354,56 @@ final class TextFieldTargetResolverTests: XCTestCase {
         self.clock += 5
         self.record(field, window: window)
         XCTAssertEqual(self.resolver.trackedFields(forPID: self.appPID)[0].useCount, 4)
+    }
+
+    func testRecord_sameUnidentifiedWebFieldWithPositionDriftDoesNotDuplicate() {
+        let window = self.makeWindow()
+        let first = self.makeField(in: window, x: 120, y: 140)
+        first.elementDescription = "Message composer"
+        self.record(first, window: window)
+
+        self.clock += 1
+        let rebuilt = self.makeField(in: window, x: 120, y: 163)
+        rebuilt.elementDescription = "Message composer"
+        self.record(rebuilt, window: window)
+
+        let tracked = self.resolver.trackedFields(forPID: self.appPID)
+        XCTAssertEqual(tracked.count, 1)
+        XCTAssertEqual(tracked[0].useCount, 2)
+        XCTAssertEqual(tracked[0].fingerprint.normalizedPosition?.y, 63)
+    }
+
+    func testRecord_distinctUnidentifiedWebFieldsRemainSeparate() {
+        let window = self.makeWindow()
+        let first = self.makeField(in: window, x: 120, y: 140)
+        first.elementDescription = "Message composer"
+        self.record(first, window: window)
+
+        self.clock += 1
+        let second = self.makeField(in: window, x: 120, y: 260)
+        second.elementDescription = "Message composer"
+        self.record(second, window: window)
+
+        XCTAssertEqual(self.resolver.trackedFields(forPID: self.appPID).count, 2)
+    }
+
+    func testRecord_runtimeNodeIdentifierDeduplicatesRewrappedField() {
+        let window = self.makeWindow()
+        let first = self.makeField(in: window, x: 120, y: 140)
+        first.runtimeIdentifier = "chrome:42"
+        first.elementDescription = "Message composer"
+        self.record(first, window: window)
+
+        self.clock += 1
+        let rewrapped = self.makeField(in: window, x: 500, y: 500)
+        rewrapped.runtimeIdentifier = "chrome:42"
+        rewrapped.elementDescription = "Rewrapped composer"
+        self.record(rewrapped, window: window)
+
+        let tracked = self.resolver.trackedFields(forPID: self.appPID)
+        XCTAssertEqual(tracked.count, 1)
+        XCTAssertEqual(tracked[0].useCount, 2)
+        XCTAssertEqual(tracked[0].runtimeIdentifier, "chrome:42")
     }
 
     // MARK: - Resolution: current focus always wins
@@ -512,16 +630,46 @@ final class TextFieldTargetResolverTests: XCTestCase {
 
     func testResolve_equivalentRoleFocusProxyIsAccepted() {
         let window = self.makeWindow()
-        let recorded = self.makeField(in: window, identifier: "chat", role: "AXWebArea")
+        let recorded = self.makeField(in: window, identifier: "chat")
         self.record(recorded, window: window)
 
         // Chrome/Electron hand back a *different* element for the same visual field after
-        // activation; same PID plus an equivalent editable role must verify.
+        // activation. The broad proxy may verify a successful focus operation, but it is never
+        // itself captured or persisted as the target.
         let proxy = FakeAXNode(pid: self.appPID, role: "AXWebArea")
+        proxy.valueSettable = false
         self.client.postFocusOverride = proxy
 
         XCTAssertTrue(self.resolvedElement() === recorded)
         XCTAssertTrue(self.client.focused === proxy)
+    }
+
+    func testResolve_webPageProxyDoesNotBypassRememberedFieldFocus() {
+        let window = self.makeWindow()
+        let recorded = self.makeField(in: window, identifier: "composer")
+        self.record(recorded, window: window)
+
+        let page = window.add(FakeAXNode(pid: self.appPID, role: "AXWebArea"))
+        page.valueSettable = false
+        self.client.focused = page
+
+        XCTAssertTrue(self.resolvedElement() === recorded)
+        XCTAssertTrue(self.client.focused === recorded)
+        XCTAssertEqual(self.client.setFocusCallCount, 1)
+    }
+
+    func testResolve_webProxyCannotVerifyWhenRememberedFieldRejectedFocus() {
+        let window = self.makeWindow()
+        let recorded = self.makeField(in: window, identifier: "composer")
+        recorded.setFocusSucceeds = false
+        self.record(recorded, window: window)
+
+        let page = window.add(FakeAXNode(pid: self.appPID, role: "AXWebArea"))
+        page.valueSettable = false
+        self.client.focused = page
+
+        XCTAssertNil(self.resolvedElement())
+        XCTAssertTrue(self.client.focused === page)
     }
 
     func testResolve_differentAppFocusAfterSetAborts() {
@@ -576,6 +724,68 @@ final class TextFieldTargetResolverTests: XCTestCase {
         self.client.focused = FakeAXNode(pid: self.otherPID, role: "AXButton")
         XCTAssertTrue(self.resolver.restoreCapturedFocus(forPID: self.appPID))
         XCTAssertTrue(self.client.focused === captured)
+    }
+
+    func testCapturedFocus_samePIDDifferentEditableFieldIsNotStillActive() {
+        let window = self.makeWindow()
+        let captured = self.makeField(in: window, identifier: "captured")
+        self.client.focused = captured
+        XCTAssertEqual(self.resolver.captureSystemFocus(), self.appPID)
+
+        self.client.focused = self.makeField(in: window, identifier: "different", x: 400)
+
+        XCTAssertFalse(self.resolver.isCapturedFocusStillActive(forPID: self.appPID))
+    }
+
+    func testCapturedFocus_samePIDWebProxyIsNotStillActive() {
+        let window = self.makeWindow()
+        let captured = self.makeField(in: window, identifier: "captured")
+        self.client.focused = captured
+        XCTAssertEqual(self.resolver.captureSystemFocus(), self.appPID)
+
+        self.client.focused = window.add(FakeAXNode(pid: self.appPID, role: "AXGroup"))
+
+        XCTAssertFalse(self.resolver.isCapturedFocusStillActive(forPID: self.appPID))
+    }
+
+    func testCapturedFocus_rebuiltEquivalentWebFieldIsStillActive() {
+        let window = self.makeWindow()
+        let captured = self.makeField(in: window, x: 120, y: 140)
+        captured.elementDescription = "Message composer"
+        self.client.focused = captured
+        XCTAssertEqual(self.resolver.captureSystemFocus(), self.appPID)
+
+        let rebuilt = self.makeField(in: window, x: 120, y: 163)
+        rebuilt.elementDescription = "Message composer"
+        self.client.focused = rebuilt
+
+        XCTAssertTrue(self.resolver.isCapturedFocusStillActive(forPID: self.appPID))
+    }
+
+    func testCapturedFocus_runtimeNodeIdentifierRecognizesExactRewrappedField() {
+        let window = self.makeWindow()
+        let captured = self.makeField(in: window, x: 120, y: 140)
+        captured.runtimeIdentifier = "chrome:42"
+        self.client.focused = captured
+        XCTAssertEqual(self.resolver.captureSystemFocus(), self.appPID)
+
+        let rewrapped = self.makeField(in: window, x: 500, y: 500)
+        rewrapped.runtimeIdentifier = "chrome:42"
+        self.client.focused = rewrapped
+
+        XCTAssertTrue(self.resolver.isCapturedFocusStillActive(forPID: self.appPID))
+    }
+
+    func testRestoreCapturedFocus_proxyCannotVerifyRejectedFocusRequest() {
+        let window = self.makeWindow()
+        let captured = self.makeField(in: window, identifier: "captured")
+        self.client.focused = captured
+        XCTAssertEqual(self.resolver.captureSystemFocus(), self.appPID)
+        captured.setFocusSucceeds = false
+
+        self.client.focused = window.add(FakeAXNode(pid: self.appPID, role: "AXGroup"))
+
+        XCTAssertFalse(self.resolver.restoreCapturedFocus(forPID: self.appPID))
     }
 
     // MARK: - Resolution: budgets
@@ -640,5 +850,261 @@ final class TextFieldTargetResolverTests: XCTestCase {
         let secure = self.makeField(in: window, identifier: nil, role: "AXSecureTextField", title: "Message")
         XCTAssertNil(self.resolvedElement())
         XCTAssertFalse(self.client.focused === secure)
+    }
+
+    // MARK: - Persistence
+
+    func testPersistence_restartRevalidatesMatchingFieldAndKeepsLifetimeCount() {
+        let persistence = FakePersistence()
+        self.installResolver(persistence: persistence)
+        let originalWindow = self.makeWindow(identifier: "document")
+        let originalField = self.makeField(in: originalWindow, identifier: "editor", title: "Message")
+        self.record(originalField, window: originalWindow)
+        XCTAssertEqual(persistence.storedHistory?.apps.first?.fields.first?.useCount, 1)
+
+        self.client = FakeAXClient()
+        self.client.livePIDs = [self.appPID]
+        self.client.frontmostPID = self.appPID
+        self.client.appIdentifiers = [self.appPID: "app"]
+        self.installResolver(persistence: persistence)
+        let relaunchedWindow = self.makeWindow(identifier: "document")
+        let relaunchedField = self.makeField(in: relaunchedWindow, identifier: "editor", title: "Message")
+        self.client.focused = relaunchedWindow.add(FakeAXNode(pid: self.appPID, role: "AXButton"))
+
+        XCTAssertTrue(self.resolvedElement() === relaunchedField)
+        XCTAssertEqual(self.resolver.trackedFields(forPID: self.appPID).count, 1)
+        self.record(relaunchedField, window: relaunchedWindow)
+        XCTAssertEqual(self.resolver.trackedFields(forPID: self.appPID)[0].useCount, 2)
+        XCTAssertEqual(persistence.storedHistory?.apps.first?.fields.first?.useCount, 2)
+    }
+
+    func testPersistence_completeNoMatchRemovesConfirmedStaleField() {
+        let persistence = FakePersistence()
+        self.installResolver(persistence: persistence)
+        let originalWindow = self.makeWindow(identifier: "document")
+        let originalField = self.makeField(in: originalWindow, identifier: "removed-editor")
+        self.record(originalField, window: originalWindow)
+
+        self.client = FakeAXClient()
+        self.client.livePIDs = [self.appPID]
+        self.client.frontmostPID = self.appPID
+        self.client.appIdentifiers = [self.appPID: "app"]
+        self.installResolver(persistence: persistence)
+        let relaunchedWindow = self.makeWindow(identifier: "document")
+        self.client.focused = relaunchedWindow.add(FakeAXNode(pid: self.appPID, role: "AXButton"))
+
+        guard case .refused = self.resolver.resolveTarget(forPID: self.appPID) else {
+            return XCTFail("a confirmed-stale persisted field must not resolve")
+        }
+        XCTAssertTrue(self.resolver.trackedFields(forPID: self.appPID).isEmpty)
+        XCTAssertTrue(persistence.storedHistory?.apps.isEmpty == true)
+    }
+
+    func testPersistence_incompleteValidationKeepsEntryForLaterRetry() {
+        let persistence = FakePersistence()
+        self.installResolver(persistence: persistence)
+        let window = self.makeWindow(identifier: "document")
+        let field = self.makeField(in: window, identifier: "editor")
+        self.record(field, window: window)
+        field.exists = false
+        for index in 0..<40 {
+            window.add(FakeAXNode(pid: self.appPID, role: "AXGroup")).identifier = "flood\(index)"
+        }
+        self.resolver.budget.maxVisitedNodes = 5
+
+        XCTAssertNil(self.resolvedElement())
+        XCTAssertEqual(self.resolver.trackedFields(forPID: self.appPID).count, 1)
+        XCTAssertEqual(persistence.storedHistory?.apps.first?.fields.count, 1)
+    }
+
+    func testPersistence_delayedLoadMergesEarlyCaptureWithoutDuplicates() {
+        let sourcePersistence = FakePersistence()
+        self.installResolver(persistence: sourcePersistence)
+        let sourceWindow = self.makeWindow(identifier: "document")
+        let sourceField = self.makeField(in: sourceWindow, identifier: "editor")
+        for _ in 0..<3 {
+            self.record(sourceField, window: sourceWindow)
+            self.clock += 1
+        }
+        let delayedPersistence = FakePersistence(storedHistory: sourcePersistence.storedHistory)
+        delayedPersistence.completesLoadImmediately = false
+
+        self.client = FakeAXClient()
+        self.client.livePIDs = [self.appPID]
+        self.client.frontmostPID = self.appPID
+        self.client.appIdentifiers = [self.appPID: "app"]
+        let currentWindow = self.makeWindow(identifier: "document")
+        let currentField = self.makeField(in: currentWindow, identifier: "editor")
+        self.installResolver(persistence: delayedPersistence)
+        self.record(currentField, window: currentWindow)
+        delayedPersistence.completeLoad()
+
+        let fields = self.resolver.trackedFields(forPID: self.appPID)
+        XCTAssertEqual(fields.count, 1)
+        XCTAssertEqual(fields[0].useCount, 4)
+        XCTAssertEqual(delayedPersistence.storedHistory?.apps.first?.fields.count, 1)
+        XCTAssertEqual(delayedPersistence.storedHistory?.apps.first?.fields.first?.useCount, 4)
+    }
+
+    func testPersistence_duplicateStoredKeysCollapseWithoutInflatingFrequency() {
+        let sourcePersistence = FakePersistence()
+        self.installResolver(persistence: sourcePersistence)
+        let window = self.makeWindow(identifier: "document")
+        let field = self.makeField(in: window, identifier: "editor")
+        self.record(field, window: window)
+        guard var stored = sourcePersistence.storedHistory,
+              var duplicate = stored.apps.first?.fields.first
+        else {
+            return XCTFail("expected persisted field")
+        }
+        duplicate.useCount = 9
+        duplicate.lastUsedAt += 20
+        if var position = duplicate.fingerprint.normalizedPosition {
+            position.y += 20
+            duplicate.fingerprint.normalizedPosition = position
+        }
+        stored.apps[0].fields.append(duplicate)
+        let persistence = FakePersistence(storedHistory: stored)
+
+        self.installResolver(persistence: persistence)
+
+        let fields = self.resolver.trackedFields(forPID: self.appPID)
+        XCTAssertEqual(fields.count, 1)
+        XCTAssertEqual(fields[0].useCount, 9)
+        XCTAssertEqual(persistence.storedHistory?.apps.first?.fields.count, 1)
+    }
+
+    func testPersistence_clearDuringLoadPreventsHistoryResurrection() {
+        let sourcePersistence = FakePersistence()
+        self.installResolver(persistence: sourcePersistence)
+        let window = self.makeWindow(identifier: "document")
+        self.record(self.makeField(in: window, identifier: "editor"), window: window)
+        let delayedPersistence = FakePersistence(storedHistory: sourcePersistence.storedHistory)
+        delayedPersistence.completesLoadImmediately = false
+
+        self.installResolver(persistence: delayedPersistence)
+        self.resolver.clearHistory()
+        delayedPersistence.completeLoad()
+
+        XCTAssertTrue(self.resolver.trackedFields(forPID: self.appPID).isEmpty)
+        XCTAssertNil(delayedPersistence.storedHistory)
+        XCTAssertGreaterThanOrEqual(delayedPersistence.clearCount, 1)
+    }
+
+    func testPersistence_recordAfterClearDuringLoadSurvivesStaleLoad() {
+        let sourcePersistence = FakePersistence()
+        self.installResolver(persistence: sourcePersistence)
+        let oldWindow = self.makeWindow(identifier: "old-document")
+        self.record(self.makeField(in: oldWindow, identifier: "old-editor"), window: oldWindow)
+        let delayedPersistence = FakePersistence(storedHistory: sourcePersistence.storedHistory)
+        delayedPersistence.completesLoadImmediately = false
+
+        self.installResolver(persistence: delayedPersistence)
+        self.resolver.clearHistory()
+        let newWindow = self.makeWindow(identifier: "new-document")
+        let newField = self.makeField(in: newWindow, identifier: "new-editor")
+        self.record(newField, window: newWindow)
+        delayedPersistence.completeLoad()
+
+        let fields = self.resolver.trackedFields(forPID: self.appPID)
+        XCTAssertEqual(fields.count, 1)
+        XCTAssertEqual(fields[0].fingerprint.identifier, "new-editor")
+        XCTAssertEqual(fields[0].useCount, 1)
+        XCTAssertEqual(delayedPersistence.storedHistory?.apps.first?.fields.count, 1)
+        XCTAssertEqual(delayedPersistence.storedHistory?.apps.first?.fields.first?.fingerprint.identifier, "new-editor")
+    }
+
+    func testPersistence_disabledFeatureClearsAndRefusesToCapture() {
+        let sourcePersistence = FakePersistence()
+        self.installResolver(persistence: sourcePersistence)
+        let window = self.makeWindow(identifier: "document")
+        let field = self.makeField(in: window, identifier: "editor")
+        self.record(field, window: window)
+        let persistence = FakePersistence(storedHistory: sourcePersistence.storedHistory)
+        var enabled = false
+
+        self.installResolver(persistence: persistence, isEnabled: { enabled })
+        self.record(field, window: window)
+        guard case .noHistory = self.resolver.resolveTarget(forPID: self.appPID) else {
+            return XCTFail("disabled history must preserve the legacy insertion path")
+        }
+        XCTAssertTrue(self.resolver.trackedFields(forPID: self.appPID).isEmpty)
+        XCTAssertNil(persistence.storedHistory)
+
+        enabled = true
+        self.record(field, window: window)
+        XCTAssertEqual(self.resolver.trackedFields(forPID: self.appPID).count, 1)
+    }
+
+    func testPersistence_replacesOldFieldsAndAppsAtConfiguredBounds() {
+        let persistence = FakePersistence()
+        self.installResolver(persistence: persistence)
+        let firstWindow = self.makeWindow(identifier: "first-window")
+        for index in 0..<7 {
+            self.clock += 1
+            self.record(self.makeField(in: firstWindow, identifier: "field-\(index)"), window: firstWindow)
+        }
+        XCTAssertEqual(persistence.storedHistory?.apps.first?.fields.count, 5)
+        XCTAssertEqual(
+            persistence.storedHistory?.apps.first?.fields.compactMap(\.fingerprint.identifier),
+            ["field-6", "field-5", "field-4", "field-3", "field-2"]
+        )
+
+        for index in 0..<21 {
+            let pid = pid_t(5000 + index)
+            self.client.livePIDs.insert(pid)
+            self.client.appIdentifiers[pid] = "bounded-app-\(index)"
+            let window = self.makeWindow(pid: pid, identifier: "window-\(index)")
+            self.clock += 1
+            self.record(self.makeField(in: window, identifier: "editor"), window: window)
+        }
+        let identifiers = persistence.storedHistory?.apps.map(\.applicationIdentifier) ?? []
+        XCTAssertEqual(identifiers.count, 20)
+        XCTAssertFalse(identifiers.contains("app"))
+        XCTAssertFalse(identifiers.contains("bounded-app-0"))
+        XCTAssertTrue(identifiers.contains("bounded-app-20"))
+    }
+
+    func testFilePersistence_corruptPayloadIsRemoved() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TextFieldTargetResolverTests.\(UUID().uuidString)", isDirectory: true)
+        let fileURL = directory.appendingPathComponent(FileTextFieldHistoryStore.fileName)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data("not-json".utf8).write(to: fileURL)
+        let persistence = FileTextFieldHistoryStore(fileURL: fileURL)
+        let loaded = expectation(description: "corrupt history load completes")
+
+        persistence.load { history in
+            XCTAssertNil(history)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: fileURL.path))
+            loaded.fulfill()
+        }
+
+        self.wait(for: [loaded], timeout: 2)
+    }
+
+    func testFilePersistence_roundTripsFingerprintHistory() {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TextFieldTargetResolverTests.\(UUID().uuidString)", isDirectory: true)
+        let fileURL = directory.appendingPathComponent(FileTextFieldHistoryStore.fileName)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sourcePersistence = FakePersistence()
+        self.installResolver(persistence: sourcePersistence)
+        let window = self.makeWindow(identifier: "document")
+        self.record(self.makeField(in: window, identifier: "editor", title: "Message"), window: window)
+        guard let expected = sourcePersistence.storedHistory else {
+            return XCTFail("expected persisted field")
+        }
+        let persistence = FileTextFieldHistoryStore(fileURL: fileURL)
+        let loaded = expectation(description: "history round trip completes")
+
+        persistence.save(expected)
+        persistence.load { history in
+            XCTAssertEqual(history, expected)
+            loaded.fulfill()
+        }
+
+        self.wait(for: [loaded], timeout: 2)
     }
 }

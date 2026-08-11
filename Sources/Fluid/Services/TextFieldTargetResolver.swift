@@ -3,14 +3,14 @@ import ApplicationServices
 import CoreGraphics
 import Foundation
 
-// Remembers a small, in-memory, per-app history of editable text fields the user dictated into.
+// Remembers a small, bounded, per-app history of editable text fields the user dictated into.
 // When insertion-time focus lands on a non-editable element (or focus capture failed entirely),
 // the resolver can re-focus a remembered field instead of guessing at the first text-looking
 // element in the AX tree. Safety rules:
 //   - A currently focused editable field always wins; the resolver never steals that focus.
 //   - Resolution is bounded (depth, visited nodes, wall time) and any failure, ambiguity,
 //     timeout, or secure field results in doing nothing.
-//   - Nothing is persisted; history dies with the FluidVoice process.
+//   - Only fingerprints and ranking persist; live AX references, PIDs, and text content never do.
 //
 // All AX access goes through `TextFieldAccessibilityClient` so the safety rules are unit-testable
 // with a fake tree.
@@ -30,6 +30,7 @@ protocol TextFieldAccessibilityClient {
     func role(of element: Element) -> String?
     func subrole(of element: Element) -> String?
     func identifier(of element: Element) -> String?
+    func runtimeIdentifier(of element: Element) -> String?
     func title(of element: Element) -> String?
     func elementDescription(of element: Element) -> String?
     func position(of element: Element) -> CGPoint?
@@ -55,7 +56,7 @@ protocol TextFieldAccessibilityClient {
 /// so re-resolution after the live reference dies uses this fingerprint in a targeted tree walk.
 /// Position is the weakest component (window moves/resizes/scrolls shift it) and is only ever a
 /// tiebreaker; identifier and parent path dominate.
-struct TextFieldFingerprint: Equatable {
+nonisolated struct TextFieldFingerprint: Codable, Equatable {
     var role: String
     var subrole: String?
     var identifier: String?
@@ -67,7 +68,7 @@ struct TextFieldFingerprint: Equatable {
     var normalizedPosition: CGPoint?
 }
 
-struct TextFieldWindowFingerprint: Equatable {
+nonisolated struct TextFieldWindowFingerprint: Codable, Equatable {
     var identifier: String?
     var title: String?
 }
@@ -75,8 +76,10 @@ struct TextFieldWindowFingerprint: Equatable {
 // MARK: - Tracked field
 
 struct TrackedTextField<Element: AnyObject> {
-    var element: Element
-    var pid: pid_t
+    var element: Element?
+    var pid: pid_t?
+    /// Exact per-process node identity (for example Chromium's accessibility node ID). Never persisted.
+    var runtimeIdentifier: String?
     var window: Element?
     var windowFingerprint: TextFieldWindowFingerprint?
     var fingerprint: TextFieldFingerprint
@@ -98,6 +101,8 @@ final class TextFieldTargetResolver<Client: TextFieldAccessibilityClient> {
         let pid: pid_t
         let window: Client.Element?
         let element: Client.Element
+        let fingerprint: TextFieldFingerprint?
+        let runtimeIdentifier: String?
     }
 
     struct ResolutionBudget {
@@ -116,28 +121,41 @@ final class TextFieldTargetResolver<Client: TextFieldAccessibilityClient> {
         let positionDistance: CGFloat
     }
 
+    private enum FingerprintLookup {
+        case match(Client.Element)
+        case notFound
+        case indeterminate
+    }
+
+    /// Roles that are safe to target and persist as actual text fields. Broad web containers are
+    /// deliberately excluded: Safari/Chrome may report them after focus changes, but they are not
+    /// themselves reliable insertion targets.
     static var editableRoles: Set<String> {
         [
             "AXTextField",
             "AXTextArea",
             "AXSearchField",
             "AXComboBox",
-            "AXWebArea",
-            "AXGroup",
         ]
     }
 
-    /// Chrome/Electron hand back AXWebArea or AXGroup for the same visual contenteditable field.
-    private static var webEditableRoles: Set<String> {
+    /// Chrome/Electron/Safari can hand back one of these after a real text field accepted focus.
+    /// They may verify that focus transition, but must never enter history as fields themselves.
+    private static var focusProxyRoles: Set<String> {
         ["AXWebArea", "AXGroup"]
     }
 
     private let client: Client
+    private let persistence: TextFieldTargetHistoryPersistence?
+    private let isEnabled: () -> Bool
     private let lock = NSLock()
     private var history: [String: [TrackedTextField<Client.Element>]] = [:]
     /// LRU order of tracked apps, most recently used first.
     private var appOrder: [String] = []
     private var focusSnapshot: FocusSnapshot?
+    private var persistenceLoaded = false
+    private var historyChangedBeforeLoad = false
+    private var clearedBeforeLoad = false
 
     var budget = ResolutionBudget()
     var maxFieldsPerApp = 5
@@ -146,26 +164,49 @@ final class TextFieldTargetResolver<Client: TextFieldAccessibilityClient> {
 
     /// Injected for tests.
     var now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+    var wallClockNow: () -> TimeInterval = { Date().timeIntervalSinceReferenceDate }
     var postWindowRaiseDelay: () -> Void = { usleep(40_000) }
     var interFocusAttemptDelay: () -> Void = { usleep(50_000) }
     var log: (String) -> Void = { _ in }
 
-    init(client: Client) {
+    init(
+        client: Client,
+        persistence: TextFieldTargetHistoryPersistence? = nil,
+        isEnabled: @escaping () -> Bool = { true }
+    ) {
         self.client = client
+        self.persistence = persistence
+        self.isEnabled = isEnabled
+        guard let persistence else {
+            self.persistenceLoaded = true
+            return
+        }
+        persistence.load { [weak self] persistedHistory in
+            self?.finishLoadingPersistence(persistedHistory)
+        }
     }
 
     // MARK: - Captured focus
 
-    /// Replaces TypingService's former parallel focus snapshot. This only captures the same live
-    /// references the existing path captured; it does not fingerprint or update field history.
+    /// Replaces TypingService's former parallel focus snapshot. The fingerprint is used only to
+    /// recognize the exact captured field when web apps recreate its AXUIElement wrapper.
     func captureSystemFocus() -> pid_t? {
         guard let focused = self.client.systemFocusedElement(), focused.pid > 0 else {
             self.withLock { self.focusSnapshot = nil }
             return nil
         }
         let window = self.client.focusedWindow(forPID: focused.pid)
+        let fingerprint = self.isEditableField(focused.element) && !self.isSecureField(focused.element)
+            ? self.fingerprint(of: focused.element, window: window)
+            : nil
         self.withLock {
-            self.focusSnapshot = FocusSnapshot(pid: focused.pid, window: window, element: focused.element)
+            self.focusSnapshot = FocusSnapshot(
+                pid: focused.pid,
+                window: window,
+                element: focused.element,
+                fingerprint: fingerprint,
+                runtimeIdentifier: self.client.runtimeIdentifier(of: focused.element)
+            )
         }
         return focused.pid
     }
@@ -176,7 +217,7 @@ final class TextFieldTargetResolver<Client: TextFieldAccessibilityClient> {
 
     func isCapturedFocusStillActive(forPID pid: pid_t) -> Bool {
         guard let snapshot = self.withLock({ self.focusSnapshot }), snapshot.pid == pid else { return false }
-        return self.isFocusedElement(snapshot.element, expectedPID: pid, allowLooseWebProxy: true)
+        return self.isCapturedFieldFocused(snapshot)
     }
 
     /// Restores the captured live reference first, then falls back to remembered history. A live
@@ -196,7 +237,12 @@ final class TextFieldTargetResolver<Client: TextFieldAccessibilityClient> {
                 self.postWindowRaiseDelay()
             }
             if self.isCapturedElementUsable(snapshot.element, expectedPID: pid),
-               self.focusCapturedElement(snapshot.element, expectedPID: pid)
+               self.focusCapturedElement(
+                   snapshot.element,
+                   expectedFingerprint: snapshot.fingerprint,
+                   expectedRuntimeIdentifier: snapshot.runtimeIdentifier,
+                   expectedPID: pid
+               )
             {
                 return true
             }
@@ -206,39 +252,67 @@ final class TextFieldTargetResolver<Client: TextFieldAccessibilityClient> {
         return false
     }
 
-    private func focusCapturedElement(_ element: Client.Element, expectedPID: pid_t) -> Bool {
+    private func focusCapturedElement(
+        _ element: Client.Element,
+        expectedFingerprint: TextFieldFingerprint?,
+        expectedRuntimeIdentifier: String?,
+        expectedPID: pid_t
+    ) -> Bool {
+        var didSetFocus = false
         for attempt in 0..<max(1, self.maxFocusAttempts) {
-            if self.client.setFocused(element),
-               self.isFocusedElement(element, expectedPID: expectedPID, allowLooseWebProxy: true)
+            if self.client.setFocused(element) {
+                didSetFocus = true
+            }
+            if didSetFocus,
+               self.isFocusedElementAfterSet(
+                   element,
+                   expectedFingerprint: expectedFingerprint,
+                   expectedRuntimeIdentifier: expectedRuntimeIdentifier,
+                   expectedPID: expectedPID
+               )
             {
                 return true
             }
             if attempt + 1 < self.maxFocusAttempts { self.interFocusAttemptDelay() }
         }
-        return self.isFocusedElement(element, expectedPID: expectedPID, allowLooseWebProxy: true)
+        return didSetFocus && self.isFocusedElementAfterSet(
+            element,
+            expectedFingerprint: expectedFingerprint,
+            expectedRuntimeIdentifier: expectedRuntimeIdentifier,
+            expectedPID: expectedPID
+        )
     }
 
     // MARK: - Recording
 
     /// Records only a field that a successful insertion was dispatched to. History is keyed by
-    /// app identity rather than PID, so it survives a target app relaunch during this Fluid run.
+    /// app identity rather than PID, so it survives target-app and FluidVoice relaunches.
     func recordSuccessfulInsertion(element: Client.Element, pid: pid_t, window: Client.Element?) {
+        guard self.isEnabled() else { return }
         guard pid > 0, pid != ProcessInfo.processInfo.processIdentifier else { return }
         guard self.client.applicationExists(pid) else { return }
         guard self.isEditableField(element), !self.isSecureField(element) else { return }
         guard let appIdentifier = self.client.applicationIdentifier(forPID: pid) else { return }
 
         let fingerprint = self.fingerprint(of: element, window: window)
+        let runtimeIdentifier = self.client.runtimeIdentifier(of: element)
         let windowFingerprint = window.map(self.windowFingerprint)
-        let timestamp = self.now()
+        let timestamp = self.wallClockNow()
 
         self.lock.lock()
-        defer { self.lock.unlock() }
         self.touchAppLocked(appIdentifier)
 
         var fields = self.history[appIdentifier] ?? []
         if let index = fields.firstIndex(where: {
-            self.client.isSameElement($0.element, element)
+            $0.element.map { self.client.isSameElement($0, element) } ?? false
+                || ($0.runtimeIdentifier != nil
+                    && $0.runtimeIdentifier == runtimeIdentifier
+                    && self.sameWindowIdentity(
+                        recordedWindow: $0.window,
+                        recordedFingerprint: $0.windowFingerprint,
+                        newWindow: window,
+                        newFingerprint: windowFingerprint
+                    ))
                 || (Self.sameFingerprintIdentity($0.fingerprint, fingerprint)
                     && self.sameWindowIdentity(
                         recordedWindow: $0.window,
@@ -252,6 +326,7 @@ final class TextFieldTargetResolver<Client: TextFieldAccessibilityClient> {
             existing.lastUsedAt = timestamp
             existing.element = element
             existing.pid = pid
+            existing.runtimeIdentifier = runtimeIdentifier
             existing.window = window
             existing.windowFingerprint = windowFingerprint
             existing.fingerprint = fingerprint
@@ -260,6 +335,7 @@ final class TextFieldTargetResolver<Client: TextFieldAccessibilityClient> {
             fields.append(TrackedTextField(
                 element: element,
                 pid: pid,
+                runtimeIdentifier: runtimeIdentifier,
                 window: window,
                 windowFingerprint: windowFingerprint,
                 fingerprint: fingerprint,
@@ -273,6 +349,11 @@ final class TextFieldTargetResolver<Client: TextFieldAccessibilityClient> {
             fields = Array(fields.prefix(self.maxFieldsPerApp))
         }
         self.history[appIdentifier] = fields
+        let persistedHistory = self.persistedHistoryAfterMutationLocked()
+        self.lock.unlock()
+        if let persistedHistory {
+            self.persistence?.save(persistedHistory)
+        }
     }
 
     // MARK: - Resolution
@@ -283,6 +364,7 @@ final class TextFieldTargetResolver<Client: TextFieldAccessibilityClient> {
     /// clipboard write. `.remembered` is only returned after the field
     /// is focused *and* semantically verified, so it is always safe to type into it.
     func resolveTarget(forPID pid: pid_t) -> Resolution {
+        guard self.isEnabled() else { return .noHistory }
         guard self.client.frontmostApplicationPID() == pid else { return .refused }
         guard self.client.applicationExists(pid) else { return .refused }
         guard let appIdentifier = self.client.applicationIdentifier(forPID: pid) else { return .noHistory }
@@ -311,20 +393,34 @@ final class TextFieldTargetResolver<Client: TextFieldAccessibilityClient> {
                 return .refused
             }
 
-            var element = candidate.element
-            if !self.isLiveUsable(element, expectedPID: pid) {
-                guard let matched = self.findByFingerprint(
+            let element: Client.Element
+            if let liveElement = candidate.element, self.isLiveUsable(liveElement, expectedPID: pid) {
+                element = liveElement
+            } else {
+                switch self.findByFingerprint(
                     candidate,
                     currentPID: pid,
                     currentWindow: currentWindow,
                     deadline: deadline
-                ) else {
+                ) {
+                case let .match(matched):
+                    element = matched
+                case .notFound:
+                    self.removeStaleCandidate(candidate, applicationIdentifier: appIdentifier)
                     continue
+                case .indeterminate:
+                    return .refused
                 }
-                element = matched
             }
 
             if self.focusAndVerify(element, expectedPID: pid, candidate: candidate, deadline: deadline) {
+                self.refreshLiveReferences(
+                    for: candidate,
+                    applicationIdentifier: appIdentifier,
+                    element: element,
+                    pid: pid,
+                    window: currentWindow
+                )
                 return .remembered(element, window: currentWindow)
             }
         }
@@ -377,8 +473,14 @@ final class TextFieldTargetResolver<Client: TextFieldAccessibilityClient> {
         else {
             return false
         }
-        guard let lhsPosition = lhs.normalizedPosition, let rhsPosition = rhs.normalizedPosition else { return true }
-        return self.positionDistance(lhsPosition, rhsPosition) <= 8
+        guard let lhsPosition = lhs.normalizedPosition, let rhsPosition = rhs.normalizedPosition else {
+            // Without an OS identifier or a position, two visually identical fields cannot be
+            // distinguished safely. Keep them separate instead of inventing an identity.
+            return false
+        }
+        // Web/Electron fields move slightly as toolbars and composer chrome resize. Treat modest
+        // drift as the same semantic field, while keeping nearby distinct fields separate.
+        return self.positionDistance(lhsPosition, rhsPosition) <= 48
     }
 
     // MARK: - Live-reference validation
@@ -399,15 +501,15 @@ final class TextFieldTargetResolver<Client: TextFieldAccessibilityClient> {
     // MARK: - Targeted tree walk
 
     /// Re-resolves a dead live reference by walking the app's AX tree looking for a fingerprint
-    /// match. Strictly bounded by depth, visited nodes, and wall time. Returns nil on no match,
-    /// and also nil when the best match is ambiguous (two distinct elements tie) — typing into a
-    /// near-miss field is worse than doing nothing.
+    /// match. Strictly bounded by depth, visited nodes, and wall time. A complete scan with no
+    /// match confirms a persisted entry is stale; ambiguous or incomplete scans stay
+    /// indeterminate so transient AX failures never delete useful history.
     private func findByFingerprint(
         _ candidate: TrackedTextField<Client.Element>,
         currentPID: pid_t,
         currentWindow: Client.Element?,
         deadline: TimeInterval
-    ) -> Client.Element? {
+    ) -> FingerprintLookup {
         let traversalDeadline = min(deadline, self.now() + self.budget.traversalTimeLimit)
         let root: Client.Element
         if let currentWindow {
@@ -468,7 +570,15 @@ final class TextFieldTargetResolver<Client: TextFieldAccessibilityClient> {
                 }
             }
 
-            guard depth < self.budget.maxDepth else { continue }
+            guard depth < self.budget.maxDepth else {
+                let childProbe = self.client.children(of: node, maxCount: 1)
+                if childProbe.wasTruncated || !childProbe.elements.isEmpty {
+                    self.log("[TextFieldTargetResolver] depth budget exhausted")
+                    exhaustedBudget = true
+                    break
+                }
+                continue
+            }
             let remainingNodeBudget = max(0, self.budget.maxVisitedNodes - visited - stack.count)
             let childBatch = self.client.children(of: node, maxCount: remainingNodeBudget)
             if childBatch.wasTruncated {
@@ -481,12 +591,13 @@ final class TextFieldTargetResolver<Client: TextFieldAccessibilityClient> {
             }
         }
 
-        guard !exhaustedBudget else { return nil }
+        guard !exhaustedBudget else { return .indeterminate }
         guard ambiguous == false else {
             self.log("[TextFieldTargetResolver] ambiguous fingerprint match; refusing to choose")
-            return nil
+            return .indeterminate
         }
-        return best?.element
+        guard let best else { return .notFound }
+        return .match(best.element)
     }
 
     // MARK: - Focus + verification
@@ -497,23 +608,26 @@ final class TextFieldTargetResolver<Client: TextFieldAccessibilityClient> {
         candidate: TrackedTextField<Client.Element>,
         deadline: TimeInterval
     ) -> Bool {
+        var didSetFocus = false
         for attempt in 0..<max(1, self.maxFocusAttempts) {
             guard self.now() < deadline else { return false }
-            if self.client.setFocused(element),
-               self.verifyFocus(element, expectedPID: expectedPID, candidate: candidate)
-            {
+            if self.client.setFocused(element) {
+                didSetFocus = true
+            }
+            if didSetFocus, self.verifyFocus(element, expectedPID: expectedPID, candidate: candidate) {
                 return true
             }
             if attempt + 1 < self.maxFocusAttempts {
                 self.interFocusAttemptDelay()
             }
         }
-        return self.verifyFocus(element, expectedPID: expectedPID, candidate: candidate)
+        return didSetFocus && self.verifyFocus(element, expectedPID: expectedPID, candidate: candidate)
     }
 
     /// Deliberately not strict identity: Chrome/Electron/Safari return a *different* AXUIElement
     /// for the same visual field after activation, so CFEqual fails there. We accept same-PID plus
-    /// either identity, a fingerprint match, or a web-editable proxy role.
+    /// either identity, a fingerprint match, or a web focus-proxy role reached only after the
+    /// actual remembered text field accepted `setFocused`.
     private func verifyFocus(
         _ element: Client.Element,
         expectedPID: pid_t,
@@ -523,20 +637,24 @@ final class TextFieldTargetResolver<Client: TextFieldAccessibilityClient> {
             return false
         }
         let focusedElement = focused.element
-        guard self.isEditableField(focusedElement), !self.isSecureField(focusedElement) else {
-            return false
+        guard !self.isSecureField(focusedElement) else { return false }
+        if self.isEditableField(focusedElement) {
+            if self.client.isSameElement(focusedElement, element) { return true }
+            if let candidateRuntimeIdentifier = candidate.runtimeIdentifier,
+               candidateRuntimeIdentifier == self.client.runtimeIdentifier(of: focusedElement)
+            {
+                return true
+            }
+            let focusedWindow = self.client.focusedWindow(forPID: expectedPID)
+            return Self.sameFingerprintIdentity(
+                self.fingerprint(of: focusedElement, window: focusedWindow),
+                candidate.fingerprint
+            )
         }
-        if self.client.isSameElement(focusedElement, element) { return true }
-        if let role = self.client.role(of: focusedElement),
-           Self.webEditableRoles.contains(role),
-           Self.webEditableRoles.contains(candidate.fingerprint.role)
-        {
+        if let role = self.client.role(of: focusedElement), Self.focusProxyRoles.contains(role) {
             return true
         }
-        return self.matchScore(
-            self.fingerprint(of: focusedElement, window: nil),
-            against: candidate.fingerprint
-        ) != nil
+        return false
     }
 
     // MARK: - Fingerprinting + matching
@@ -607,8 +725,7 @@ final class TextFieldTargetResolver<Client: TextFieldAccessibilityClient> {
     }
 
     static func rolesEquivalent(_ lhs: String, _ rhs: String) -> Bool {
-        if lhs == rhs { return true }
-        return self.webEditableRoles.contains(lhs) && self.webEditableRoles.contains(rhs)
+        lhs == rhs
     }
 
     private static func parentPathOverlap(_ lhs: TextFieldFingerprint, _ rhs: TextFieldFingerprint) -> Int {
@@ -631,7 +748,6 @@ final class TextFieldTargetResolver<Client: TextFieldAccessibilityClient> {
         guard let role = self.client.role(of: element), Self.editableRoles.contains(role) else {
             return false
         }
-        if Self.webEditableRoles.contains(role) { return true }
         return self.client.isValueSettable(element)
     }
 
@@ -647,6 +763,211 @@ final class TextFieldTargetResolver<Client: TextFieldAccessibilityClient> {
     }
 
     // MARK: - Store maintenance
+
+    func clearHistory() {
+        self.lock.lock()
+        self.history.removeAll()
+        self.appOrder.removeAll()
+        self.historyChangedBeforeLoad = false
+        if !self.persistenceLoaded {
+            self.clearedBeforeLoad = true
+        }
+        self.lock.unlock()
+        self.persistence?.clear()
+    }
+
+    func flushPersistence() {
+        self.persistence?.flush()
+    }
+
+    private func finishLoadingPersistence(_ persistedHistory: PersistedTextFieldTargetHistory?) {
+        self.lock.lock()
+        let suppressPersistedMerge = self.clearedBeforeLoad
+        let shouldDiscard = !self.isEnabled()
+        if shouldDiscard {
+            self.history.removeAll()
+            self.appOrder.removeAll()
+        } else if !suppressPersistedMerge, let persistedHistory {
+            self.mergePersistedHistoryLocked(persistedHistory)
+        }
+        self.persistenceLoaded = true
+        self.normalizeHistoryBoundsLocked()
+        let shouldSave = !shouldDiscard && (
+            (!suppressPersistedMerge && persistedHistory != nil) || self.historyChangedBeforeLoad
+        )
+        let normalizedHistory = shouldSave ? self.makePersistedHistoryLocked() : nil
+        self.historyChangedBeforeLoad = false
+        self.clearedBeforeLoad = false
+        self.lock.unlock()
+
+        if shouldDiscard {
+            self.persistence?.clear()
+        } else if suppressPersistedMerge, normalizedHistory == nil {
+            self.persistence?.clear()
+        } else if let normalizedHistory {
+            self.persistence?.save(normalizedHistory)
+        }
+    }
+
+    private func mergePersistedHistoryLocked(_ persistedHistory: PersistedTextFieldTargetHistory) {
+        guard persistedHistory.schemaVersion == PersistedTextFieldTargetHistory.currentSchemaVersion else { return }
+
+        for app in persistedHistory.apps where !app.applicationIdentifier.isEmpty {
+            var normalizedPersisted: [TrackedTextField<Client.Element>] = []
+            for persisted in app.fields where self.isValidPersistedField(persisted) {
+                let loaded = TrackedTextField<Client.Element>(
+                    element: nil,
+                    pid: nil,
+                    runtimeIdentifier: nil,
+                    window: nil,
+                    windowFingerprint: persisted.windowFingerprint,
+                    fingerprint: persisted.fingerprint,
+                    lastUsedAt: persisted.lastUsedAt,
+                    useCount: persisted.useCount
+                )
+                if let duplicateIndex = normalizedPersisted.firstIndex(where: {
+                    self.sameTrackedIdentity($0, loaded)
+                }) {
+                    normalizedPersisted[duplicateIndex].lastUsedAt = max(
+                        normalizedPersisted[duplicateIndex].lastUsedAt,
+                        loaded.lastUsedAt
+                    )
+                    normalizedPersisted[duplicateIndex].useCount = max(
+                        normalizedPersisted[duplicateIndex].useCount,
+                        loaded.useCount
+                    )
+                } else {
+                    normalizedPersisted.append(loaded)
+                }
+            }
+
+            var fields = self.history[app.applicationIdentifier] ?? []
+            for loaded in normalizedPersisted {
+                if let existingIndex = fields.firstIndex(where: { self.sameTrackedIdentity($0, loaded) }) {
+                    // Any entries captured before the asynchronous load are from this new session,
+                    // so their counts are additional to the persisted lifetime count.
+                    fields[existingIndex].useCount += loaded.useCount
+                    fields[existingIndex].lastUsedAt = max(fields[existingIndex].lastUsedAt, loaded.lastUsedAt)
+                } else {
+                    fields.append(loaded)
+                }
+            }
+            self.history[app.applicationIdentifier] = fields
+        }
+    }
+
+    private func isValidPersistedField(_ field: PersistedTextFieldTarget) -> Bool {
+        guard field.useCount > 0, field.lastUsedAt.isFinite else { return false }
+        guard Self.editableRoles.contains(field.fingerprint.role) else { return false }
+        let role = field.fingerprint.role.lowercased()
+        let subrole = field.fingerprint.subrole?.lowercased() ?? ""
+        return !role.contains("secure") && !subrole.contains("secure")
+    }
+
+    private func normalizeHistoryBoundsLocked() {
+        for appIdentifier in self.history.keys {
+            var fields = self.history[appIdentifier] ?? []
+            fields.sort { self.sortPredicate($0, $1) }
+            self.history[appIdentifier] = Array(fields.prefix(self.maxFieldsPerApp))
+        }
+
+        self.appOrder = self.history.keys.sorted {
+            let lhs = self.history[$0]?.first?.lastUsedAt ?? -.greatestFiniteMagnitude
+            let rhs = self.history[$1]?.first?.lastUsedAt ?? -.greatestFiniteMagnitude
+            if lhs != rhs { return lhs > rhs }
+            return $0 < $1
+        }
+        while self.appOrder.count > self.maxTrackedApps, let evicted = self.appOrder.last {
+            self.appOrder.removeLast()
+            self.history.removeValue(forKey: evicted)
+        }
+    }
+
+    private func persistedHistoryAfterMutationLocked() -> PersistedTextFieldTargetHistory? {
+        guard self.persistenceLoaded else {
+            self.historyChangedBeforeLoad = true
+            return nil
+        }
+        return self.makePersistedHistoryLocked()
+    }
+
+    private func makePersistedHistoryLocked() -> PersistedTextFieldTargetHistory {
+        let apps = self.appOrder.compactMap { appIdentifier -> PersistedTextFieldTargetApp? in
+            guard let fields = self.history[appIdentifier], !fields.isEmpty else { return nil }
+            return PersistedTextFieldTargetApp(
+                applicationIdentifier: appIdentifier,
+                fields: fields.map {
+                    PersistedTextFieldTarget(
+                        windowFingerprint: $0.windowFingerprint,
+                        fingerprint: $0.fingerprint,
+                        lastUsedAt: $0.lastUsedAt,
+                        useCount: $0.useCount
+                    )
+                }
+            )
+        }
+        return PersistedTextFieldTargetHistory(apps: apps)
+    }
+
+    private func removeStaleCandidate(
+        _ candidate: TrackedTextField<Client.Element>,
+        applicationIdentifier: String
+    ) {
+        self.lock.lock()
+        guard var fields = self.history[applicationIdentifier],
+              let index = fields.firstIndex(where: { self.sameTrackedIdentity($0, candidate) })
+        else {
+            self.lock.unlock()
+            return
+        }
+        fields.remove(at: index)
+        if fields.isEmpty {
+            self.history.removeValue(forKey: applicationIdentifier)
+            self.appOrder.removeAll { $0 == applicationIdentifier }
+        } else {
+            self.history[applicationIdentifier] = fields
+        }
+        let persistedHistory = self.persistedHistoryAfterMutationLocked()
+        self.lock.unlock()
+        if let persistedHistory {
+            self.persistence?.save(persistedHistory)
+        }
+    }
+
+    private func refreshLiveReferences(
+        for candidate: TrackedTextField<Client.Element>,
+        applicationIdentifier: String,
+        element: Client.Element,
+        pid: pid_t,
+        window: Client.Element?
+    ) {
+        self.lock.lock()
+        if var fields = self.history[applicationIdentifier],
+           let index = fields.firstIndex(where: { self.sameTrackedIdentity($0, candidate) })
+        {
+            fields[index].element = element
+            fields[index].pid = pid
+            fields[index].runtimeIdentifier = self.client.runtimeIdentifier(of: element)
+            fields[index].window = window
+            self.history[applicationIdentifier] = fields
+        }
+        self.lock.unlock()
+    }
+
+    private func sameTrackedIdentity(
+        _ lhs: TrackedTextField<Client.Element>,
+        _ rhs: TrackedTextField<Client.Element>
+    ) -> Bool {
+        guard Self.sameFingerprintIdentity(lhs.fingerprint, rhs.fingerprint) else { return false }
+        switch (lhs.windowFingerprint, rhs.windowFingerprint) {
+        case (nil, nil):
+            return true
+        case let (lhsWindow?, rhsWindow?):
+            return self.windowFingerprintsMatch(lhsWindow, rhsWindow)
+        default:
+            return false
+        }
+    }
 
     private func touchAppLocked(_ appIdentifier: String) {
         self.appOrder.removeAll { $0 == appIdentifier }
@@ -696,15 +1017,51 @@ final class TextFieldTargetResolver<Client: TextFieldAccessibilityClient> {
         return lhsTitle == rhsTitle
     }
 
-    private func isFocusedElement(
+    private func isCapturedFieldFocused(_ snapshot: FocusSnapshot) -> Bool {
+        guard let expectedFingerprint = snapshot.fingerprint,
+              let focused = self.client.systemFocusedElement(),
+              focused.pid == snapshot.pid,
+              self.isEditableField(focused.element),
+              !self.isSecureField(focused.element)
+        else {
+            return false
+        }
+        if self.client.isSameElement(focused.element, snapshot.element) { return true }
+        if let runtimeIdentifier = snapshot.runtimeIdentifier,
+           runtimeIdentifier == self.client.runtimeIdentifier(of: focused.element)
+        {
+            return true
+        }
+        let currentWindow = self.client.focusedWindow(forPID: snapshot.pid)
+        let focusedFingerprint = self.fingerprint(of: focused.element, window: currentWindow)
+        return Self.sameFingerprintIdentity(focusedFingerprint, expectedFingerprint)
+    }
+
+    /// A broad web proxy is acceptable only after the exact captured element accepted a focus
+    /// request. It is never evidence that the field was already focused before that request.
+    private func isFocusedElementAfterSet(
         _ expectedElement: Client.Element,
-        expectedPID: pid_t,
-        allowLooseWebProxy: Bool
+        expectedFingerprint: TextFieldFingerprint?,
+        expectedRuntimeIdentifier: String?,
+        expectedPID: pid_t
     ) -> Bool {
         guard let focused = self.client.systemFocusedElement(), focused.pid == expectedPID else { return false }
         if self.client.isSameElement(focused.element, expectedElement) { return true }
-        guard allowLooseWebProxy, let role = self.client.role(of: focused.element) else { return false }
-        return Self.editableRoles.contains(role)
+        if let expectedRuntimeIdentifier,
+           expectedRuntimeIdentifier == self.client.runtimeIdentifier(of: focused.element)
+        {
+            return true
+        }
+        if let expectedFingerprint,
+           self.isEditableField(focused.element),
+           !self.isSecureField(focused.element)
+        {
+            let currentWindow = self.client.focusedWindow(forPID: expectedPID)
+            let focusedFingerprint = self.fingerprint(of: focused.element, window: currentWindow)
+            return Self.sameFingerprintIdentity(focusedFingerprint, expectedFingerprint)
+        }
+        guard let role = self.client.role(of: focused.element) else { return false }
+        return Self.focusProxyRoles.contains(role)
     }
 
     private func withLock<T>(_ body: () -> T) -> T {
@@ -784,7 +1141,33 @@ struct SystemTextFieldAccessibilityClient: TextFieldAccessibilityClient {
     }
 
     func identifier(of element: AXUIElement) -> String? {
-        Self.copyString(from: element, attribute: "AXIdentifier" as CFString)
+        if let identifier = Self.copyString(from: element, attribute: "AXIdentifier" as CFString),
+           !identifier.isEmpty
+        {
+            return identifier
+        }
+        guard let domIdentifier = Self.copyString(from: element, attribute: "AXDOMIdentifier" as CFString),
+              !domIdentifier.isEmpty
+        else {
+            return nil
+        }
+        return "dom:\(domIdentifier)"
+    }
+
+    func runtimeIdentifier(of element: AXUIElement) -> String? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, "ChromeAXNodeId" as CFString, &value) == .success,
+              let value
+        else {
+            return nil
+        }
+        if let number = value as? NSNumber {
+            return "chrome:\(number.stringValue)"
+        }
+        if let string = value as? String, !string.isEmpty {
+            return "chrome:\(string)"
+        }
+        return nil
     }
 
     func title(of element: AXUIElement) -> String? {
@@ -913,5 +1296,9 @@ struct SystemTextFieldAccessibilityClient: TextFieldAccessibilityClient {
 typealias SystemTextFieldTargetResolver = TextFieldTargetResolver<SystemTextFieldAccessibilityClient>
 
 extension TextFieldTargetResolver where Client == SystemTextFieldAccessibilityClient {
-    static let shared = SystemTextFieldTargetResolver(client: SystemTextFieldAccessibilityClient())
+    static let shared = SystemTextFieldTargetResolver(
+        client: SystemTextFieldAccessibilityClient(),
+        persistence: FileTextFieldHistoryStore(),
+        isEnabled: { SettingsStore.shared.rememberTextFieldsEnabled }
+    )
 }

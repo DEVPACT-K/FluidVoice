@@ -140,6 +140,27 @@ final class HotkeyShortcutTests: XCTestCase {
     }
 
     @MainActor
+    func testRememberTextFieldsSettingRoundTripsAndOlderBackupsStillDecode() async throws {
+        let settingsStore = SettingsStore.shared
+        let originalValue = settingsStore.rememberTextFieldsEnabled
+        defer { settingsStore.rememberTextFieldsEnabled = originalValue }
+
+        settingsStore.rememberTextFieldsEnabled = true
+        let document = await BackupService.shared.makeBackupDocument()
+        XCTAssertEqual(document.settings.rememberTextFieldsEnabled, true)
+
+        let encoded = try BackupService.shared.encode(document)
+        var root = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        var settings = try XCTUnwrap(root["settings"] as? [String: Any])
+        settings.removeValue(forKey: "rememberTextFieldsEnabled")
+        root["settings"] = settings
+
+        let legacyData = try JSONSerialization.data(withJSONObject: root)
+        let decoded = try BackupService.shared.decode(legacyData)
+        XCTAssertNil(decoded.settings.rememberTextFieldsEnabled)
+    }
+
+    @MainActor
     func testLegacySystemModeBackupQueuesMicrophonePriorityMigration() async throws {
         let document = await BackupService.shared.makeBackupDocument()
 
