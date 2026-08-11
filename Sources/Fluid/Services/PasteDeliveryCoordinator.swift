@@ -235,8 +235,7 @@ final class SystemPasteboardManager: PasteboardManaging {
             return false
         }
 
-        let fileURLFallbacks = zip(self.pasteboard.pasteboardItems ?? [], snapshot.items).reduce(into: 0) {
-            count, pair in
+        let fileURLFallbacks = zip(self.pasteboard.pasteboardItems ?? [], snapshot.items).reduce(into: 0) { count, pair in
             let (restoredItem, snapshotItem) = pair
             if snapshotItem.representations.contains(where: { $0.type == .fileURL }),
                restoredItem.data(forType: .fileURL) == nil,
