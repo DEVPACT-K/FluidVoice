@@ -434,19 +434,14 @@ final class SystemPasteboardManager: PasteboardManaging {
 
 @MainActor
 final class SystemPasteCommandPoster: PasteCommandPosting {
-    private static let commandKeyCode: CGKeyCode = 0x37
     private static let vKeyCode: CGKeyCode = 0x09
-    private nonisolated static let eventDelayNanoseconds: UInt64 = 10_000_000
+    nonisolated static let clipboardSettleDelayNanoseconds: UInt64 = 50_000_000
 
     func postGlobalPasteCommand() async -> Bool {
         guard AXIsProcessTrusted() else { return false }
 
-        let source = CGEventSource(stateID: .privateState)
-        guard let commandDown = CGEvent(
-            keyboardEventSource: source,
-            virtualKey: Self.commandKeyCode,
-            keyDown: true
-        ), let vDown = CGEvent(
+        let source = CGEventSource(stateID: .combinedSessionState)
+        guard let vDown = CGEvent(
             keyboardEventSource: source,
             virtualKey: Self.vKeyCode,
             keyDown: true
@@ -454,38 +449,25 @@ final class SystemPasteCommandPoster: PasteCommandPosting {
             keyboardEventSource: source,
             virtualKey: Self.vKeyCode,
             keyDown: false
-        ), let commandUp = CGEvent(
-            keyboardEventSource: source,
-            virtualKey: Self.commandKeyCode,
-            keyDown: false
         ) else {
             return false
         }
 
-        commandDown.flags = .maskCommand
         vDown.flags = .maskCommand
         vUp.flags = .maskCommand
 
-        commandDown.post(tap: .cghidEventTap)
-        await self.pauseBetweenEvents()
+        // Match Muesli's publication delay and two-event Command+V sequence.
+        try? await Task.sleep(nanoseconds: Self.clipboardSettleDelayNanoseconds)
         vDown.post(tap: .cghidEventTap)
-        await self.pauseBetweenEvents()
         vUp.post(tap: .cghidEventTap)
-        await self.pauseBetweenEvents()
-        commandUp.post(tap: .cghidEventTap)
         return true
-    }
-
-    private func pauseBetweenEvents() async {
-        // Always finish posting the key-up events, even if the calling task was cancelled.
-        try? await Task.sleep(nanoseconds: Self.eventDelayNanoseconds)
     }
 }
 
 @MainActor
 final class PasteDeliveryCoordinator {
     static let shared = PasteDeliveryCoordinator()
-    nonisolated static let defaultSettlementDelayNanoseconds: UInt64 = 1_500_000_000
+    nonisolated static let defaultSettlementDelayNanoseconds: UInt64 = 500_000_000
 
     private struct ClipboardLease {
         let originalSnapshot: PasteboardSnapshot
