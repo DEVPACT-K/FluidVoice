@@ -258,6 +258,31 @@ final class SpokenSendTests: XCTestCase {
         )
     }
 
+    func testLiteralEscapeIsStrippedWhenPhraseIsNotTerminal() {
+        XCTAssertEqual(
+            SpokenSendParser.parse("I said literal send it to him", phrase: "send it", enabled: true),
+            SpokenSendParseResult(text: "I said send it to him", shouldSend: false)
+        )
+    }
+
+    func testEarlierLiteralEscapeIsStrippedWhenFinalCommandSends() {
+        XCTAssertEqual(
+            SpokenSendParser.parse(
+                "I said literal send it to him and then send it",
+                phrase: "send it",
+                enabled: true
+            ),
+            SpokenSendParseResult(text: "I said send it to him and then.", shouldSend: true)
+        )
+    }
+
+    func testMidSentencePhraseWithoutLiteralMarkerIsUnchanged() {
+        XCTAssertEqual(
+            SpokenSendParser.parse("Please send it to Dana", phrase: "send it", enabled: true),
+            SpokenSendParseResult(text: "Please send it to Dana", shouldSend: false)
+        )
+    }
+
     func testPhraseOnlySubmitsExistingDraftWithoutInsertingCommand() {
         XCTAssertEqual(
             SpokenSendParser.parse("Send it", phrase: "send it", enabled: true),
@@ -287,6 +312,8 @@ final class SpokenSendTests: XCTestCase {
             ("kitty", "net.kovidgoyal.kitty"),
             ("Alacritty", "org.alacritty"),
             ("WezTerm", "com.github.wez.wezterm"),
+            ("Hyper", "co.zeit.hyper"),
+            ("Termius", "com.termius-dmg.mac"),
         ]
 
         for (name, bundleID) in terminals {

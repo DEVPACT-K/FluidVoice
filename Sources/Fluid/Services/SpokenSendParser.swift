@@ -11,6 +11,11 @@ enum SpokenSendParser {
     static let immediateStopRequiredSilenceDuration: TimeInterval = 0.35
     static let immediateStopVoiceActivityGraceDuration: TimeInterval = 0.35
     static let immediateStopVoiceActivityLevelThreshold: CGFloat = 0.12
+    private static let regexCache: NSCache<NSString, NSRegularExpression> = {
+        let cache = NSCache<NSString, NSRegularExpression>()
+        cache.countLimit = 12
+        return cache
+    }()
 
     static func shouldStopImmediately(
         _ text: String,
@@ -69,8 +74,8 @@ enum SpokenSendParser {
             .joined(separator: #"\s+"#)
         let trailingPunctuation = #"[\s\p{P}]*$"#
 
-        if let literalRegex = try? NSRegularExpression(
-            pattern: #"(?i)(?<![\p{L}\p{N}_])literal\s+("# + phrasePattern + #")"# + trailingPunctuation
+        if let literalRegex = Self.regex(
+            #"(?i)(?<![\p{L}\p{N}_])literal\s+("# + phrasePattern + #")"# + trailingPunctuation
         ), let match = literalRegex.firstMatch(
             in: text,
             range: NSRange(text.startIndex..., in: text)
@@ -82,8 +87,8 @@ enum SpokenSendParser {
             return SpokenSendParseResult(text: output, shouldSend: false)
         }
 
-        guard let commandRegex = try? NSRegularExpression(
-            pattern: #"(?i)(?<![\p{L}\p{N}_])("# +
+        guard let commandRegex = Self.regex(
+            #"(?i)(?<![\p{L}\p{N}_])("# +
                 phrasePattern +
                 #")(?:[\s\p{P}]+"# +
                 phrasePattern +
@@ -96,7 +101,10 @@ enum SpokenSendParser {
         let commandRange = Range(match.range, in: text),
         let firstPhraseRange = Range(match.range(at: 1), in: text)
         else {
-            return SpokenSendParseResult(text: text, shouldSend: false)
+            return SpokenSendParseResult(
+                text: Self.strippingLiteralMarkers(in: text, phrasePattern: phrasePattern),
+                shouldSend: false
+            )
         }
 
         var commandPrefix = String(text[..<commandRange.lowerBound])
@@ -105,17 +113,46 @@ enum SpokenSendParser {
             from: &commandPrefix,
             closedBy: commandSuffix
         )
-        if let literalPrefixRegex = try? NSRegularExpression(
-            pattern: #"(?i)(?<![\p{L}\p{N}_])literal\s*$"#
+        if let literalPrefixRegex = Self.regex(
+            #"(?i)(?<![\p{L}\p{N}_])literal\s*$"#
         ), let literalMatch = literalPrefixRegex.firstMatch(
             in: commandPrefix,
             range: NSRange(commandPrefix.startIndex..., in: commandPrefix)
         ), let literalRange = Range(literalMatch.range, in: commandPrefix) {
             commandPrefix.replaceSubrange(literalRange, with: text[firstPhraseRange])
         }
+        commandPrefix = Self.strippingLiteralMarkers(
+            in: commandPrefix,
+            phrasePattern: phrasePattern
+        )
 
         let cleaned = Self.polishCommandPrefix(commandPrefix)
         return SpokenSendParseResult(text: cleaned, shouldSend: true)
+    }
+
+    private static func strippingLiteralMarkers(in text: String, phrasePattern: String) -> String {
+        guard let regex = Self.regex(
+            #"(?i)(?<![\p{L}\p{N}_])literal\s+("# + phrasePattern + #")"#
+        ) else {
+            return text
+        }
+        return regex.stringByReplacingMatches(
+            in: text,
+            range: NSRange(text.startIndex..., in: text),
+            withTemplate: "$1"
+        )
+    }
+
+    private static func regex(_ pattern: String) -> NSRegularExpression? {
+        let key = pattern as NSString
+        if let cached = self.regexCache.object(forKey: key) {
+            return cached
+        }
+        guard let compiled = try? NSRegularExpression(pattern: pattern) else {
+            return nil
+        }
+        self.regexCache.setObject(compiled, forKey: key)
+        return compiled
     }
 
     private static func removePairedOpeningDelimiters(

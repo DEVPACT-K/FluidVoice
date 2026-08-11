@@ -287,6 +287,9 @@ struct ContentView: View {
     @State private var spokenSendCountdownStartedAt: TimeInterval?
     @State private var spokenSendLastVoiceActivityAt: TimeInterval = 0
     @State private var spokenSendVoiceActivityCancellable: AnyCancellable?
+    @State private var spokenSendVoiceActivityGeneration: UInt64 = 0
+    @State private var activeSpokenSendVoiceActivityID: UInt64?
+    @State private var isStoppingAndProcessingTranscription = false
 
     private var isRecordingAnyShortcutCapture: Bool {
         self.activeShortcutRecordingTarget != nil
@@ -2088,6 +2091,16 @@ struct ContentView: View {
     // MARK: - Stop and Process Transcription
 
     private func stopAndProcessTranscription(route: DictationOutputRoute = .normal) async {
+        guard !self.isStoppingAndProcessingTranscription else {
+            DebugLogger.shared.debug("Ignoring duplicate stop-and-process request", source: "ContentView")
+            return
+        }
+        self.isStoppingAndProcessingTranscription = true
+        defer { self.isStoppingAndProcessingTranscription = false }
+        await self.performStopAndProcessTranscription(route: route)
+    }
+
+    private func performStopAndProcessTranscription(route: DictationOutputRoute) async {
         DebugLogger.shared.debug("stopAndProcessTranscription called", source: "ContentView")
         DebugLogger.shared.info("Output route selected: \(route.rawValue)", source: "ContentView")
         self.appBench("stop_path_enter route=\(route.rawValue)")
@@ -2107,7 +2120,7 @@ struct ContentView: View {
             !wasCommandMode &&
             !promptTest.isActive &&
             !shouldUseAIOnStop &&
-            !self.settings.spokenSendEnabled
+            !self.spokenSendIsPendingForCurrentUtterance
         var didRequestOverlayHideOnStop = false
         DebugLogger.shared.info(
             "Routing decision snapshot | activeMode=\(modeAtStop.rawValue) | rewrite=\(wasRewriteMode) | command=\(wasCommandMode) | overlay=\(NotchContentState.shared.mode.rawValue)",
@@ -2491,7 +2504,7 @@ struct ContentView: View {
                     targetPID: typingTarget.pid,
                     textReadyAt: finalTextReadyAt
                 )
-                didTypeExternally = deliveryOutcome.didInsert
+                didTypeExternally = deliveryOutcome.didInsert || deliveryOutcome.didDispatchAction
             } else {
                 self.asr.typeOutputPlanToActiveField(
                     finalOutputPlan,
@@ -2512,8 +2525,7 @@ struct ContentView: View {
                     try? await Task.sleep(nanoseconds: 650_000_000)
                 }
             }
-            NotchOverlayManager.shared.updateTranscriptionText("")
-            NotchContentState.shared.setSpokenSendIndicatorState(.hidden)
+            self.clearSpokenSendStatusIfNeeded(requested: spokenSendRequested)
             if !shouldShowAIProcessingFailure, !didRequestOverlayHideOnStop {
                 self.hideOverlayAfterOutput()
             }
@@ -2608,6 +2620,22 @@ struct ContentView: View {
         NotchContentState.shared.setSpokenSendIndicatorState(shouldSend ? .detected : .hidden)
     }
 
+    private var spokenSendIsPendingForCurrentUtterance: Bool {
+        guard self.settings.spokenSendEnabled else { return false }
+        if self.spokenSendAutoStopTriggered { return true }
+        return SpokenSendParser.parse(
+            self.asr.partialTranscription,
+            phrase: self.settings.spokenSendPhrase,
+            enabled: true
+        ).shouldSend
+    }
+
+    private func clearSpokenSendStatusIfNeeded(requested: Bool) {
+        guard requested else { return }
+        NotchOverlayManager.shared.updateTranscriptionText("")
+        NotchContentState.shared.setSpokenSendIndicatorState(.hidden)
+    }
+
     private func advanceOverlayLifecycle() {
         self.spokenSendAutoStopTask?.cancel()
         self.spokenSendAutoStopTask = nil
@@ -2656,7 +2684,7 @@ struct ContentView: View {
         let countdownStartedAt = ProcessInfo.processInfo.systemUptime
         self.spokenSendCountdownStartedAt = countdownStartedAt
         self.spokenSendLastVoiceActivityAt = countdownStartedAt
-        self.startSpokenSendVoiceActivityMonitoring()
+        let expectedVoiceActivityMonitoringID = self.startSpokenSendVoiceActivityMonitoring()
         let expectedCountdownID = NotchContentState.shared.beginSpokenSendCountdown()
         self.spokenSendAutoStopTask = Task { @MainActor in
             // Keep one countdown across harmless streaming refinements such as punctuation or casing.
@@ -2678,11 +2706,11 @@ struct ContentView: View {
                       quietDuration: quietDuration
                   )
             else {
+                self.stopSpokenSendVoiceActivityMonitoring(matching: expectedVoiceActivityMonitoringID)
                 if self.overlayLifecycleID == expectedOverlayLifecycleID,
                    NotchContentState.shared.spokenSendCountdownID == expectedCountdownID
                 {
                     self.spokenSendAutoStopTask = nil
-                    self.stopSpokenSendVoiceActivityMonitoring()
                     self.spokenSendCountdownStartedAt = nil
                     if NotchContentState.shared.spokenSendIndicatorState == .countingDown {
                         NotchContentState.shared.setSpokenSendIndicatorState(.hidden)
@@ -2692,7 +2720,7 @@ struct ContentView: View {
             }
 
             self.spokenSendAutoStopTask = nil
-            self.stopSpokenSendVoiceActivityMonitoring()
+            self.stopSpokenSendVoiceActivityMonitoring(matching: expectedVoiceActivityMonitoringID)
             self.spokenSendCountdownStartedAt = nil
             self.spokenSendAutoStopTriggered = true
             NotchContentState.shared.setSpokenSendIndicatorState(.sending)
@@ -2725,19 +2753,30 @@ struct ContentView: View {
         }
     }
 
-    private func startSpokenSendVoiceActivityMonitoring() {
-        guard self.spokenSendVoiceActivityCancellable == nil else { return }
+    private func startSpokenSendVoiceActivityMonitoring() -> UInt64 {
+        if let activeSpokenSendVoiceActivityID {
+            return activeSpokenSendVoiceActivityID
+        }
+        self.spokenSendVoiceActivityGeneration &+= 1
+        let monitoringID = self.spokenSendVoiceActivityGeneration
+        self.activeSpokenSendVoiceActivityID = monitoringID
         self.spokenSendVoiceActivityCancellable = self.asr.audioLevelPublisher
             .filter(SpokenSendParser.isMeaningfulVoiceActivity)
-            .receive(on: RunLoop.main)
-            .sink { level in
+            .receive(on: DispatchQueue.main)
+            .sink { [monitoringID] level in
+                guard self.activeSpokenSendVoiceActivityID == monitoringID else { return }
                 self.handleSpokenSendAudioLevel(level)
             }
+        return monitoringID
     }
 
-    private func stopSpokenSendVoiceActivityMonitoring() {
+    private func stopSpokenSendVoiceActivityMonitoring(matching monitoringID: UInt64? = nil) {
+        if let monitoringID, self.activeSpokenSendVoiceActivityID != monitoringID {
+            return
+        }
         self.spokenSendVoiceActivityCancellable?.cancel()
         self.spokenSendVoiceActivityCancellable = nil
+        self.activeSpokenSendVoiceActivityID = nil
     }
 
     private func hideOverlayAsync(reason: String) {

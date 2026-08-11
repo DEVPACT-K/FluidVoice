@@ -9,6 +9,8 @@ enum TerminalAppClassifier {
         "kitty",
         "alacritty",
         "wezterm",
+        "hyper",
+        "termius",
     ]
 
     static func isTerminal(appName: String?, bundleID: String?) -> Bool {

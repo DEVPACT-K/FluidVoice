@@ -5,6 +5,7 @@ import Foundation
 
 final class TypingService {
     nonisolated static let synthesizedEventUserData: Int64 = 0x46565353
+    nonisolated static let postInsertionModifierReleaseTimeout: TimeInterval = 2
 
     struct CapturedFocusTarget {
         let pid: pid_t
@@ -489,24 +490,6 @@ final class TypingService {
             }
             self.bench("settle_delay_done delayMs=\(settleDelayMs) elapsedMs=\(Self.elapsedMs(since: requestedAt))")
             let hasTextToInsert = !text.isEmpty
-            if postInsertionKey != nil {
-                guard let preferredTargetPID, let requiredFocusTarget else {
-                    outcome = .actionSuppressed
-                    return
-                }
-                let modifiersReleased = self.waitForPhysicalModifiersToRelease(timeout: 2)
-                let exactFocusIsActive = Self.isExactFocusTargetActive(requiredFocusTarget)
-                guard Self.canDispatchPostInsertionAction(
-                    preferredTargetPID: preferredTargetPID,
-                    requiredTargetPID: requiredFocusTarget.pid,
-                    isSecureTextField: requiredFocusTarget.isSecureTextField,
-                    modifiersReleased: modifiersReleased,
-                    exactFocusIsActive: exactFocusIsActive
-                ) else {
-                    outcome = .actionSuppressed
-                    return
-                }
-            }
 
             if hasTextToInsert {
                 self.log("[TypingService] Delay completed, calling insertTextInstantly")
@@ -537,14 +520,19 @@ final class TypingService {
             }
 
             guard let postInsertionKey else { return }
-            guard let preferredTargetPID, let requiredFocusTarget else { return }
+            guard let preferredTargetPID, let requiredFocusTarget else {
+                outcome = hasTextToInsert ? .insertedActionSuppressed : .actionSuppressed
+                return
+            }
 
             usleep(50_000)
             guard Self.canDispatchPostInsertionAction(
                 preferredTargetPID: preferredTargetPID,
                 requiredTargetPID: requiredFocusTarget.pid,
                 isSecureTextField: requiredFocusTarget.isSecureTextField,
-                modifiersReleased: self.waitForPhysicalModifiersToRelease(timeout: 0.2),
+                modifiersReleased: self.waitForPhysicalModifiersToRelease(
+                    timeout: Self.postInsertionModifierReleaseTimeout
+                ),
                 exactFocusIsActive: Self.isExactFocusTargetActive(requiredFocusTarget),
                 insertionConfirmed: !hasTextToInsert || outcome.didInsert
             ),
