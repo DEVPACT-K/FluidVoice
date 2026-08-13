@@ -652,10 +652,20 @@ final class HotkeyShortcutTests: XCTestCase {
         )
 
         XCTAssertTrue(builtInDevice.isBuiltIn)
+        XCTAssertTrue(builtInDevice.isUnavailableWhenClamshellClosed)
         XCTAssertFalse(builtInDevice.isBluetooth)
+
+        let analogHeadset = Self.device(
+            uid: "analog-headset",
+            name: "External Microphone",
+            transportType: kAudioDeviceTransportTypeBuiltIn,
+            inputDataSourceID: AudioDevice.Device.externalMicrophoneDataSourceID
+        )
+        XCTAssertTrue(analogHeadset.isBuiltIn)
+        XCTAssertFalse(analogHeadset.isUnavailableWhenClamshellClosed)
     }
 
-    func testBluetoothStartupRetriesSameInputWithinBoundedWindow() {
+    func testBluetoothStartupAdmitsSameInputRetriesWithinFiveSecondWindow() {
         var stabilization = AudioCaptureIdlePolicy.BluetoothInputStabilization()
 
         XCTAssertTrue(stabilization.shouldRetry(
@@ -701,6 +711,31 @@ final class HotkeyShortcutTests: XCTestCase {
             isRunning: false,
             attemptedInputIsBluetooth: false
         ))
+
+        XCTAssertEqual(
+            AudioCaptureIdlePolicy.bluetoothStartupRouteChangeDisposition(
+                invalidatesCurrentStart: true,
+                requiresIdlePrewarm: true,
+                reconcilesInputSelection: false
+            ),
+            .retryCurrentStart
+        )
+        XCTAssertEqual(
+            AudioCaptureIdlePolicy.bluetoothStartupRouteChangeDisposition(
+                invalidatesCurrentStart: false,
+                requiresIdlePrewarm: true,
+                reconcilesInputSelection: true
+            ),
+            .preserveDeferredWork
+        )
+        XCTAssertEqual(
+            AudioCaptureIdlePolicy.bluetoothStartupRouteChangeDisposition(
+                invalidatesCurrentStart: false,
+                requiresIdlePrewarm: false,
+                reconcilesInputSelection: false
+            ),
+            .ignore
+        )
     }
 
     func testBluetoothStartupPreservesOnlyExplicitReconciliationWork() {
@@ -784,56 +819,56 @@ final class HotkeyShortcutTests: XCTestCase {
         ))
     }
 
-    func testSilentPCMWatchdogRecoversBuiltInDirectCaptureOnceAfterRealSignal() {
+    func testSilentPCMWatchdogRecoversInternalDirectCaptureOnceAfterRealSignal() {
         var watchdog = AudioCaptureIdlePolicy.SilentPCMRecoveryWatchdog()
 
         XCTAssertFalse(watchdog.shouldRecover(
-            isBuiltInInput: true, isDirectCapture: true, rms: 0, peak: 0
+            isInternalMicrophone: true, isDirectCapture: true, rms: 0, peak: 0
         ))
         XCTAssertFalse(watchdog.shouldRecover(
-            isBuiltInInput: true, isDirectCapture: true, rms: 0.02, peak: 0.08
+            isInternalMicrophone: true, isDirectCapture: true, rms: 0.02, peak: 0.08
         ))
         for _ in 0..<(AudioCaptureIdlePolicy.SilentPCMRecoveryWatchdog.requiredSilentWindows - 1) {
             XCTAssertFalse(watchdog.shouldRecover(
-                isBuiltInInput: true, isDirectCapture: true, rms: 0, peak: 0
+                isInternalMicrophone: true, isDirectCapture: true, rms: 0, peak: 0
             ))
         }
         XCTAssertTrue(watchdog.shouldRecover(
-            isBuiltInInput: true, isDirectCapture: true, rms: 0, peak: 0
+            isInternalMicrophone: true, isDirectCapture: true, rms: 0, peak: 0
         ))
         XCTAssertFalse(watchdog.shouldRecover(
-            isBuiltInInput: true, isDirectCapture: true, rms: 0, peak: 0
+            isInternalMicrophone: true, isDirectCapture: true, rms: 0, peak: 0
         ))
     }
 
     func testSilentPCMWatchdogIgnoresExternalAndLowAmbientInputs() {
         var externalWatchdog = AudioCaptureIdlePolicy.SilentPCMRecoveryWatchdog()
         XCTAssertFalse(externalWatchdog.shouldRecover(
-            isBuiltInInput: false, isDirectCapture: true, rms: 0.02, peak: 0.08
+            isInternalMicrophone: false, isDirectCapture: true, rms: 0.02, peak: 0.08
         ))
         for _ in 0...AudioCaptureIdlePolicy.SilentPCMRecoveryWatchdog.requiredSilentWindows {
             XCTAssertFalse(externalWatchdog.shouldRecover(
-                isBuiltInInput: false, isDirectCapture: true, rms: 0, peak: 0
+                isInternalMicrophone: false, isDirectCapture: true, rms: 0, peak: 0
             ))
         }
 
         var legacyCaptureWatchdog = AudioCaptureIdlePolicy.SilentPCMRecoveryWatchdog()
         XCTAssertFalse(legacyCaptureWatchdog.shouldRecover(
-            isBuiltInInput: true, isDirectCapture: false, rms: 0.02, peak: 0.08
+            isInternalMicrophone: true, isDirectCapture: false, rms: 0.02, peak: 0.08
         ))
         for _ in 0...AudioCaptureIdlePolicy.SilentPCMRecoveryWatchdog.requiredSilentWindows {
             XCTAssertFalse(legacyCaptureWatchdog.shouldRecover(
-                isBuiltInInput: true, isDirectCapture: false, rms: 0, peak: 0
+                isInternalMicrophone: true, isDirectCapture: false, rms: 0, peak: 0
             ))
         }
 
         var ambientWatchdog = AudioCaptureIdlePolicy.SilentPCMRecoveryWatchdog()
         XCTAssertFalse(ambientWatchdog.shouldRecover(
-            isBuiltInInput: true, isDirectCapture: true, rms: 0.02, peak: 0.08
+            isInternalMicrophone: true, isDirectCapture: true, rms: 0.02, peak: 0.08
         ))
         for _ in 0...AudioCaptureIdlePolicy.SilentPCMRecoveryWatchdog.requiredSilentWindows {
             XCTAssertFalse(ambientWatchdog.shouldRecover(
-                isBuiltInInput: true, isDirectCapture: true, rms: 0.000_1, peak: 0.001
+                isInternalMicrophone: true, isDirectCapture: true, rms: 0.000_1, peak: 0.001
             ))
         }
     }

@@ -1,6 +1,12 @@
 import CoreAudio
 
 enum AudioCaptureIdlePolicy {
+    enum BluetoothStartupRouteChangeDisposition: Equatable {
+        case retryCurrentStart
+        case preserveDeferredWork
+        case ignore
+    }
+
     struct DeferredBluetoothRouteRecovery {
         struct Request {
             let reason: String
@@ -39,12 +45,12 @@ enum AudioCaptureIdlePolicy {
         private var hasRequestedRecovery = false
 
         mutating func shouldRecover(
-            isBuiltInInput: Bool,
+            isInternalMicrophone: Bool,
             isDirectCapture: Bool,
             rms: Float,
             peak: Float
         ) -> Bool {
-            guard isBuiltInInput, isDirectCapture, self.hasRequestedRecovery == false else { return false }
+            guard isInternalMicrophone, isDirectCapture, self.hasRequestedRecovery == false else { return false }
             let isEffectivelySilent = rms <= Self.maximumSilentRMS && peak <= Self.maximumSilentPeak
             if isEffectivelySilent == false {
                 self.hasSeenSignal = true
@@ -60,7 +66,10 @@ enum AudioCaptureIdlePolicy {
     }
 
     struct BluetoothInputStabilization {
-        static let maximumDuration: TimeInterval = 5
+        /// New same-device retries may begin within this window. An admitted
+        /// attempt still gets its normal readiness timeout so a nearly settled
+        /// Bluetooth route is not cancelled at the deadline.
+        static let retryAdmissionWindow: TimeInterval = 5
 
         private(set) var inputUID: String?
         private(set) var startedAt: TimeInterval?
@@ -75,7 +84,7 @@ enum AudioCaptureIdlePolicy {
                 self.inputUID = inputUID
                 self.startedAt = now
             }
-            return self.elapsed(at: now) < Self.maximumDuration
+            return self.elapsed(at: now) < Self.retryAdmissionWindow
         }
 
         func elapsed(at now: TimeInterval) -> TimeInterval {
@@ -144,6 +153,20 @@ enum AudioCaptureIdlePolicy {
         attemptedInputIsBluetooth: Bool
     ) -> Bool {
         directCaptureEnabled && isStarting && isRunning == false && attemptedInputIsBluetooth
+    }
+
+    static func bluetoothStartupRouteChangeDisposition(
+        invalidatesCurrentStart: Bool,
+        requiresIdlePrewarm: Bool,
+        reconcilesInputSelection: Bool
+    ) -> BluetoothStartupRouteChangeDisposition {
+        if invalidatesCurrentStart {
+            return .retryCurrentStart
+        }
+        if requiresIdlePrewarm || reconcilesInputSelection {
+            return .preserveDeferredWork
+        }
+        return .ignore
     }
 
     static func shouldRecoverAfterDeferredBluetoothReconciliation(

@@ -711,7 +711,7 @@ final class ASRService: ObservableObject {
     private var audioStartAttemptInputUID: String?
     private var audioStartAttemptInputName: String?
     private var audioStartAttemptIsBluetooth = false
-    private var audioStartAttemptIsBuiltIn = false
+    private var audioStartAttemptIsInternalMicrophone = false
     private var deferredBluetoothStartupRouteRecovery =
         AudioCaptureIdlePolicy.DeferredBluetoothRouteRecovery()
     private var silentPCMRecoveryWatchdog = AudioCaptureIdlePolicy.SilentPCMRecoveryWatchdog()
@@ -930,7 +930,7 @@ final class ASRService: ObservableObject {
         self.audioStartAttemptInputUID = nil
         self.audioStartAttemptInputName = nil
         self.audioStartAttemptIsBluetooth = false
-        self.audioStartAttemptIsBuiltIn = false
+        self.audioStartAttemptIsInternalMicrophone = false
         if SettingsStore.shared.experimentalDirectAudioCaptureEnabled {
             // A non-route path may have scheduled a fire-and-forget retirement.
             // Do not let direct capture startup overlap a queued AVAudioEngine
@@ -956,7 +956,7 @@ final class ASRService: ObservableObject {
                 self.audioStartAttemptInputUID = device.uid
                 self.audioStartAttemptInputName = device.name
                 self.audioStartAttemptIsBluetooth = device.isBluetooth
-                self.audioStartAttemptIsBuiltIn = device.isBuiltIn
+                self.audioStartAttemptIsInternalMicrophone = device.isUnavailableWhenClamshellClosed
                 AppServices.shared.microphonePreferenceCoordinator.reportResolvedSelection(
                     uid: device.uid,
                     name: device.name
@@ -1153,7 +1153,7 @@ final class ASRService: ObservableObject {
                             "inputUID=\(self.audioStartAttemptInputUID ?? "unknown")"
                     )
                     if self.silentPCMRecoveryWatchdog.shouldRecover(
-                        isBuiltInInput: self.audioStartAttemptIsBuiltIn,
+                        isInternalMicrophone: self.audioStartAttemptIsInternalMicrophone,
                         isDirectCapture: self.activeAudioCaptureBackend == .directCoreAudio,
                         rms: rms,
                         peak: peak
@@ -2123,12 +2123,13 @@ final class ASRService: ObservableObject {
         reason: String
     ) {
         let elapsedMilliseconds = Int((elapsed * 1000).rounded())
-        let maximumMilliseconds = Int(
-            (AudioCaptureIdlePolicy.BluetoothInputStabilization.maximumDuration * 1000).rounded()
+        let admissionWindowMilliseconds = Int(
+            (AudioCaptureIdlePolicy.BluetoothInputStabilization.retryAdmissionWindow * 1000).rounded()
         )
         self.benchmarkLog(
             "bluetooth_start_retry uid=\(uid) attempt=\(attempt) " +
-                "elapsedMs=\(elapsedMilliseconds) budgetMs=\(maximumMilliseconds) reason=\(reason)"
+                "elapsedMs=\(elapsedMilliseconds) " +
+                "admissionWindowMs=\(admissionWindowMilliseconds) reason=\(reason)"
         )
     }
 
@@ -3177,7 +3178,8 @@ final class ASRService: ObservableObject {
     private func scheduleAudioRouteRecovery(
         reason: String,
         requiresIdlePrewarm: Bool = false,
-        reconcilesInputSelection: Bool = false
+        reconcilesInputSelection: Bool = false,
+        invalidatesCurrentStart: Bool = false
     ) {
         guard self.isTerminating == false else {
             self.benchmarkLog("route_recovery_ignored reason=app_terminating event=\(reason)")
@@ -3193,15 +3195,32 @@ final class ASRService: ObservableObject {
             // than once while entering microphone mode. The active start owns
             // its bounded retry loop; a second recovery owner would exclude the
             // same healthy device before the Bluetooth route settles.
-            self.deferredBluetoothStartupRouteRecovery.preserve(
-                reason: reason,
+            let disposition = AudioCaptureIdlePolicy.bluetoothStartupRouteChangeDisposition(
+                invalidatesCurrentStart: invalidatesCurrentStart,
                 requiresIdlePrewarm: requiresIdlePrewarm,
                 reconcilesInputSelection: reconcilesInputSelection
             )
-            let preserved = requiresIdlePrewarm || reconcilesInputSelection
+            if disposition == .retryCurrentStart {
+                // Make routeStayedStable false even if first PCM won the
+                // readiness-gate race. The startup loop then retries the same
+                // Bluetooth input without handing it to active-route recovery.
+                self.audioRouteRecoveryGeneration &+= 1
+                self.benchmarkLog(
+                    "bluetooth_start_route_invalidation_retry event=\(reason) " +
+                        "routeGeneration=\(self.audioRouteRecoveryGeneration)"
+                )
+                return
+            }
+            if disposition == .preserveDeferredWork {
+                self.deferredBluetoothStartupRouteRecovery.preserve(
+                    reason: reason,
+                    requiresIdlePrewarm: requiresIdlePrewarm,
+                    reconcilesInputSelection: reconcilesInputSelection
+                )
+            }
             self.benchmarkLog(
                 "bluetooth_start_route_change_deferred event=\(reason) " +
-                    "reconciliationPreserved=\(preserved)"
+                    "disposition=\(disposition)"
             )
             return
         }
@@ -3604,7 +3623,8 @@ final class ASRService: ObservableObject {
         )
         self.scheduleAudioRouteRecovery(
             reason: "direct format changed: \(invalidation.reason)",
-            requiresIdlePrewarm: true
+            requiresIdlePrewarm: true,
+            invalidatesCurrentStart: true
         )
     }
 
