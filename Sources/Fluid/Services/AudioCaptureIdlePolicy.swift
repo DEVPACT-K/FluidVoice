@@ -145,4 +145,22 @@ enum AudioCaptureIdlePolicy {
     ) -> Bool {
         directCaptureEnabled && isStarting && isRunning == false && attemptedInputIsBluetooth
     }
+
+    static func shouldRecoverAfterDeferredBluetoothReconciliation(
+        isRunning: Bool,
+        confirmedInputUID: String?,
+        activeDeviceID: AudioObjectID?,
+        resolvedInputUID: String?,
+        resolvedDeviceID: AudioObjectID?,
+        hasPreparedCapture: Bool,
+        requiresIdlePrewarm: Bool
+    ) -> Bool {
+        if isRunning {
+            return resolvedInputUID != confirmedInputUID || resolvedDeviceID != activeDeviceID
+        }
+        if hasPreparedCapture {
+            return resolvedDeviceID != activeDeviceID
+        }
+        return requiresIdlePrewarm
+    }
 }

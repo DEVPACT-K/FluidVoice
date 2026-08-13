@@ -2160,17 +2160,84 @@ final class ASRService: ObservableObject {
 
     private func finishAudioCaptureStart() {
         self.isStarting = false
-        if let deferredRecovery = self.deferredBluetoothStartupRouteRecovery.take() {
-            self.scheduleAudioRouteRecovery(
-                reason: "deferred after Bluetooth startup: \(deferredRecovery.reason)",
-                requiresIdlePrewarm: deferredRecovery.requiresIdlePrewarm,
-                reconcilesInputSelection: deferredRecovery.reconcilesInputSelection
-            )
-        }
+        let deferredRecovery = self.deferredBluetoothStartupRouteRecovery.take()
         self.audioCaptureStateSettledTick &+= 1
         let waiters = self.audioCaptureStartWaiters
         self.audioCaptureStartWaiters.removeAll(keepingCapacity: false)
         waiters.forEach { $0.resume() }
+
+        if let deferredRecovery {
+            Task { @MainActor [weak self] in
+                await self?.processDeferredBluetoothStartupRouteRecovery(deferredRecovery)
+            }
+        }
+    }
+
+    private func processDeferredBluetoothStartupRouteRecovery(
+        _ request: AudioCaptureIdlePolicy.DeferredBluetoothRouteRecovery.Request
+    ) async {
+        do {
+            try await Task.sleep(nanoseconds: self.audioRouteRecoveryDelayNanoseconds)
+        } catch {
+            return
+        }
+        guard self.isTerminating == false else { return }
+
+        let snapshot = await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let devices = AudioDevice.listInputDevicesRefreshingLiveness()
+                let defaultInputUID = AudioDevice.getDefaultInputDevice()?.uid
+                continuation.resume(returning: (devices, defaultInputUID))
+            }
+        }
+        guard self.isTerminating == false else { return }
+        if self.isStarting {
+            self.deferredBluetoothStartupRouteRecovery.preserve(
+                reason: request.reason,
+                requiresIdlePrewarm: request.requiresIdlePrewarm,
+                reconcilesInputSelection: request.reconcilesInputSelection
+            )
+            return
+        }
+
+        let microphonePreferenceCoordinator = AppServices.shared.microphonePreferenceCoordinator
+        let resolvedInput: AudioDevice.Device?
+        if request.reconcilesInputSelection {
+            resolvedInput = microphonePreferenceCoordinator.reconcileMicrophoneSelection(
+                availableInputs: snapshot.0,
+                defaultInputUID: snapshot.1
+            )
+        } else {
+            resolvedInput = microphonePreferenceCoordinator.inputDeviceForCapture(
+                availableInputs: snapshot.0,
+                defaultInputUID: snapshot.1
+            )
+        }
+        self.cacheCurrentDeviceList(snapshot.0)
+
+        let activeSnapshot = self.directAudioLifecycleController.snapshot
+        let shouldRecover = AudioCaptureIdlePolicy.shouldRecoverAfterDeferredBluetoothReconciliation(
+            isRunning: self.isRunning,
+            confirmedInputUID: microphonePreferenceCoordinator.confirmedActiveInputUID,
+            activeDeviceID: activeSnapshot.deviceID,
+            resolvedInputUID: resolvedInput?.uid,
+            resolvedDeviceID: resolvedInput?.id,
+            hasPreparedCapture: self.hasPreparedAudioCapture,
+            requiresIdlePrewarm: request.requiresIdlePrewarm
+        )
+        guard shouldRecover else {
+            self.benchmarkLog(
+                "bluetooth_deferred_reconciliation_noop event=\(request.reason) " +
+                    "resolvedUID=\(resolvedInput?.uid ?? "none")"
+            )
+            return
+        }
+
+        self.scheduleAudioRouteRecovery(
+            reason: "deferred after Bluetooth startup: \(request.reason)",
+            requiresIdlePrewarm: request.requiresIdlePrewarm,
+            reconcilesInputSelection: false
+        )
     }
 
     /// Stops the recording session and returns the transcribed text.

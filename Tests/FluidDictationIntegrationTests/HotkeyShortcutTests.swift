@@ -730,6 +730,60 @@ final class HotkeyShortcutTests: XCTestCase {
         XCTAssertNil(deferredRecovery.take())
     }
 
+    func testDeferredBluetoothReconciliationLeavesMatchingActiveInputUntouched() {
+        XCTAssertFalse(AudioCaptureIdlePolicy.shouldRecoverAfterDeferredBluetoothReconciliation(
+            isRunning: true,
+            confirmedInputUID: "airpods",
+            activeDeviceID: 42,
+            resolvedInputUID: "airpods",
+            resolvedDeviceID: 42,
+            hasPreparedCapture: true,
+            requiresIdlePrewarm: true
+        ))
+    }
+
+    func testDeferredBluetoothReconciliationRecoversChangedSelectionOrIdentity() {
+        XCTAssertTrue(AudioCaptureIdlePolicy.shouldRecoverAfterDeferredBluetoothReconciliation(
+            isRunning: true,
+            confirmedInputUID: "airpods",
+            activeDeviceID: 42,
+            resolvedInputUID: "usb",
+            resolvedDeviceID: 88,
+            hasPreparedCapture: true,
+            requiresIdlePrewarm: true
+        ))
+        XCTAssertTrue(AudioCaptureIdlePolicy.shouldRecoverAfterDeferredBluetoothReconciliation(
+            isRunning: true,
+            confirmedInputUID: "airpods",
+            activeDeviceID: 42,
+            resolvedInputUID: "airpods",
+            resolvedDeviceID: 43,
+            hasPreparedCapture: true,
+            requiresIdlePrewarm: true
+        ))
+    }
+
+    func testDeferredBluetoothReconciliationPreservesIdlePrewarmIntent() {
+        XCTAssertFalse(AudioCaptureIdlePolicy.shouldRecoverAfterDeferredBluetoothReconciliation(
+            isRunning: false,
+            confirmedInputUID: nil,
+            activeDeviceID: 42,
+            resolvedInputUID: "airpods",
+            resolvedDeviceID: 42,
+            hasPreparedCapture: true,
+            requiresIdlePrewarm: true
+        ))
+        XCTAssertTrue(AudioCaptureIdlePolicy.shouldRecoverAfterDeferredBluetoothReconciliation(
+            isRunning: false,
+            confirmedInputUID: nil,
+            activeDeviceID: nil,
+            resolvedInputUID: "airpods",
+            resolvedDeviceID: 42,
+            hasPreparedCapture: false,
+            requiresIdlePrewarm: true
+        ))
+    }
+
     func testSilentPCMWatchdogRecoversBuiltInDirectCaptureOnceAfterRealSignal() {
         var watchdog = AudioCaptureIdlePolicy.SilentPCMRecoveryWatchdog()
 
