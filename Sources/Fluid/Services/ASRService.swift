@@ -711,6 +711,8 @@ final class ASRService: ObservableObject {
     private var audioStartAttemptInputUID: String?
     private var audioStartAttemptInputName: String?
     private var audioStartAttemptIsBluetooth = false
+    private var audioStartAttemptIsBuiltIn = false
+    private var silentPCMRecoveryWatchdog = AudioCaptureIdlePolicy.SilentPCMRecoveryWatchdog()
 
     private var hasPreparedAudioCapture: Bool {
         self.directAudioLifecycleController.snapshot.isPrepared || self.hasWarmAudioEngine
@@ -926,6 +928,7 @@ final class ASRService: ObservableObject {
         self.audioStartAttemptInputUID = nil
         self.audioStartAttemptInputName = nil
         self.audioStartAttemptIsBluetooth = false
+        self.audioStartAttemptIsBuiltIn = false
         if SettingsStore.shared.experimentalDirectAudioCaptureEnabled {
             // A non-route path may have scheduled a fire-and-forget retirement.
             // Do not let direct capture startup overlap a queued AVAudioEngine
@@ -951,6 +954,7 @@ final class ASRService: ObservableObject {
                 self.audioStartAttemptInputUID = device.uid
                 self.audioStartAttemptInputName = device.name
                 self.audioStartAttemptIsBluetooth = device.isBluetooth
+                self.audioStartAttemptIsBuiltIn = device.isBuiltIn
                 AppServices.shared.microphonePreferenceCoordinator.reportResolvedSelection(
                     uid: device.uid,
                     name: device.name
@@ -1138,14 +1142,27 @@ final class ASRService: ObservableObject {
             onCaptureHealth: { [weak self] sessionID, attemptID, audioMs, sampleCount, rms, peak in
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
+                    guard sessionID == self.benchmarkSessionID, self.isRunning else { return }
                     let silent = rms < 0.002 && peak < 0.01
                     self.benchmarkLog(
                         "capture_health attempt=\(attemptID) audioMs=\(audioMs) " +
                             "samples=\(sampleCount) rms=\(String(format: "%.6f", rms)) " +
                             "peak=\(String(format: "%.6f", peak)) silent=\(silent) " +
-                            "inputUID=\(self.audioStartAttemptInputUID ?? "unknown")",
-                        sessionID: sessionID
+                            "inputUID=\(self.audioStartAttemptInputUID ?? "unknown")"
                     )
+                    if self.silentPCMRecoveryWatchdog.shouldRecover(
+                        isBuiltInInput: self.audioStartAttemptIsBuiltIn,
+                        isDirectCapture: self.activeAudioCaptureBackend == .directCoreAudio,
+                        rms: rms,
+                        peak: peak
+                    ) {
+                        self.benchmarkLog(
+                            "capture_health_recovery_triggered attempt=\(attemptID) " +
+                                "audioMs=\(audioMs) rms=\(String(format: "%.6f", rms)) " +
+                                "peak=\(String(format: "%.6f", peak))"
+                        )
+                        self.scheduleAudioRouteRecovery(reason: "sustained silent PCM")
+                    }
                 }
             }
         )
@@ -1702,6 +1719,7 @@ final class ASRService: ObservableObject {
         self.isProcessingChunk = false
         self.skipNextChunk = false
         self.benchmarkSessionID += 1
+        self.silentPCMRecoveryWatchdog = AudioCaptureIdlePolicy.SilentPCMRecoveryWatchdog()
         let captureSessionID = self.benchmarkSessionID
         self.audioCaptureAttemptID &+= 1
         var readinessAttemptID = self.audioCaptureAttemptID

@@ -703,6 +703,60 @@ final class HotkeyShortcutTests: XCTestCase {
         ))
     }
 
+    func testSilentPCMWatchdogRecoversBuiltInDirectCaptureOnceAfterRealSignal() {
+        var watchdog = AudioCaptureIdlePolicy.SilentPCMRecoveryWatchdog()
+
+        XCTAssertFalse(watchdog.shouldRecover(
+            isBuiltInInput: true, isDirectCapture: true, rms: 0, peak: 0
+        ))
+        XCTAssertFalse(watchdog.shouldRecover(
+            isBuiltInInput: true, isDirectCapture: true, rms: 0.02, peak: 0.08
+        ))
+        for _ in 0..<(AudioCaptureIdlePolicy.SilentPCMRecoveryWatchdog.requiredSilentWindows - 1) {
+            XCTAssertFalse(watchdog.shouldRecover(
+                isBuiltInInput: true, isDirectCapture: true, rms: 0, peak: 0
+            ))
+        }
+        XCTAssertTrue(watchdog.shouldRecover(
+            isBuiltInInput: true, isDirectCapture: true, rms: 0, peak: 0
+        ))
+        XCTAssertFalse(watchdog.shouldRecover(
+            isBuiltInInput: true, isDirectCapture: true, rms: 0, peak: 0
+        ))
+    }
+
+    func testSilentPCMWatchdogIgnoresExternalAndLowAmbientInputs() {
+        var externalWatchdog = AudioCaptureIdlePolicy.SilentPCMRecoveryWatchdog()
+        XCTAssertFalse(externalWatchdog.shouldRecover(
+            isBuiltInInput: false, isDirectCapture: true, rms: 0.02, peak: 0.08
+        ))
+        for _ in 0...AudioCaptureIdlePolicy.SilentPCMRecoveryWatchdog.requiredSilentWindows {
+            XCTAssertFalse(externalWatchdog.shouldRecover(
+                isBuiltInInput: false, isDirectCapture: true, rms: 0, peak: 0
+            ))
+        }
+
+        var legacyCaptureWatchdog = AudioCaptureIdlePolicy.SilentPCMRecoveryWatchdog()
+        XCTAssertFalse(legacyCaptureWatchdog.shouldRecover(
+            isBuiltInInput: true, isDirectCapture: false, rms: 0.02, peak: 0.08
+        ))
+        for _ in 0...AudioCaptureIdlePolicy.SilentPCMRecoveryWatchdog.requiredSilentWindows {
+            XCTAssertFalse(legacyCaptureWatchdog.shouldRecover(
+                isBuiltInInput: true, isDirectCapture: false, rms: 0, peak: 0
+            ))
+        }
+
+        var ambientWatchdog = AudioCaptureIdlePolicy.SilentPCMRecoveryWatchdog()
+        XCTAssertFalse(ambientWatchdog.shouldRecover(
+            isBuiltInInput: true, isDirectCapture: true, rms: 0.02, peak: 0.08
+        ))
+        for _ in 0...AudioCaptureIdlePolicy.SilentPCMRecoveryWatchdog.requiredSilentWindows {
+            XCTAssertFalse(ambientWatchdog.shouldRecover(
+                isBuiltInInput: true, isDirectCapture: true, rms: 0.000_1, peak: 0.001
+            ))
+        }
+    }
+
     @MainActor
     func testLegacySystemModeSeedsPriorityFromCurrentDefault() throws {
         try self.withRestoredDefaults(keys: [

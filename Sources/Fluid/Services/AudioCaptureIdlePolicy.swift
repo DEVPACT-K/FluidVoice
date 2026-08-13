@@ -1,6 +1,36 @@
 import CoreAudio
 
 enum AudioCaptureIdlePolicy {
+    struct SilentPCMRecoveryWatchdog {
+        static let requiredSilentWindows = 3
+        static let maximumSilentRMS: Float = 0.00_001
+        static let maximumSilentPeak: Float = 0.00_005
+
+        private var hasSeenSignal = false
+        private var consecutiveSilentWindows = 0
+        private var hasRequestedRecovery = false
+
+        mutating func shouldRecover(
+            isBuiltInInput: Bool,
+            isDirectCapture: Bool,
+            rms: Float,
+            peak: Float
+        ) -> Bool {
+            guard isBuiltInInput, isDirectCapture, self.hasRequestedRecovery == false else { return false }
+            let isEffectivelySilent = rms <= Self.maximumSilentRMS && peak <= Self.maximumSilentPeak
+            if isEffectivelySilent == false {
+                self.hasSeenSignal = true
+                self.consecutiveSilentWindows = 0
+                return false
+            }
+            guard self.hasSeenSignal else { return false }
+            self.consecutiveSilentWindows += 1
+            guard self.consecutiveSilentWindows >= Self.requiredSilentWindows else { return false }
+            self.hasRequestedRecovery = true
+            return true
+        }
+    }
+
     struct BluetoothInputStabilization {
         static let maximumDuration: TimeInterval = 5
 
