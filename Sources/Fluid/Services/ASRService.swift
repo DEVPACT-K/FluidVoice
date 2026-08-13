@@ -712,6 +712,8 @@ final class ASRService: ObservableObject {
     private var audioStartAttemptInputName: String?
     private var audioStartAttemptIsBluetooth = false
     private var audioStartAttemptIsBuiltIn = false
+    private var deferredBluetoothStartupRouteRecovery =
+        AudioCaptureIdlePolicy.DeferredBluetoothRouteRecovery()
     private var silentPCMRecoveryWatchdog = AudioCaptureIdlePolicy.SilentPCMRecoveryWatchdog()
 
     private var hasPreparedAudioCapture: Bool {
@@ -2158,6 +2160,13 @@ final class ASRService: ObservableObject {
 
     private func finishAudioCaptureStart() {
         self.isStarting = false
+        if let deferredRecovery = self.deferredBluetoothStartupRouteRecovery.take() {
+            self.scheduleAudioRouteRecovery(
+                reason: "deferred after Bluetooth startup: \(deferredRecovery.reason)",
+                requiresIdlePrewarm: deferredRecovery.requiresIdlePrewarm,
+                reconcilesInputSelection: deferredRecovery.reconcilesInputSelection
+            )
+        }
         self.audioCaptureStateSettledTick &+= 1
         let waiters = self.audioCaptureStartWaiters
         self.audioCaptureStartWaiters.removeAll(keepingCapacity: false)
@@ -3117,7 +3126,16 @@ final class ASRService: ObservableObject {
             // than once while entering microphone mode. The active start owns
             // its bounded retry loop; a second recovery owner would exclude the
             // same healthy device before the Bluetooth route settles.
-            self.benchmarkLog("bluetooth_start_route_change_deferred event=\(reason)")
+            self.deferredBluetoothStartupRouteRecovery.preserve(
+                reason: reason,
+                requiresIdlePrewarm: requiresIdlePrewarm,
+                reconcilesInputSelection: reconcilesInputSelection
+            )
+            let preserved = requiresIdlePrewarm || reconcilesInputSelection
+            self.benchmarkLog(
+                "bluetooth_start_route_change_deferred event=\(reason) " +
+                    "reconciliationPreserved=\(preserved)"
+            )
             return
         }
         self.audioRouteRecoveryGeneration &+= 1

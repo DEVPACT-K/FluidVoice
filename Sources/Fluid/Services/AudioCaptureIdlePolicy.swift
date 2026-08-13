@@ -1,6 +1,34 @@
 import CoreAudio
 
 enum AudioCaptureIdlePolicy {
+    struct DeferredBluetoothRouteRecovery {
+        struct Request {
+            let reason: String
+            let requiresIdlePrewarm: Bool
+            let reconcilesInputSelection: Bool
+        }
+
+        private var request: Request?
+
+        mutating func preserve(
+            reason: String,
+            requiresIdlePrewarm: Bool,
+            reconcilesInputSelection: Bool
+        ) {
+            guard requiresIdlePrewarm || reconcilesInputSelection else { return }
+            self.request = Request(
+                reason: self.request?.reason ?? reason,
+                requiresIdlePrewarm: requiresIdlePrewarm || self.request?.requiresIdlePrewarm == true,
+                reconcilesInputSelection: reconcilesInputSelection || self.request?.reconcilesInputSelection == true
+            )
+        }
+
+        mutating func take() -> Request? {
+            defer { self.request = nil }
+            return self.request
+        }
+    }
+
     struct SilentPCMRecoveryWatchdog {
         static let requiredSilentWindows = 3
         static let maximumSilentRMS: Float = 0.00_001

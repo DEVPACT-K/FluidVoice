@@ -703,6 +703,33 @@ final class HotkeyShortcutTests: XCTestCase {
         ))
     }
 
+    func testBluetoothStartupPreservesOnlyExplicitReconciliationWork() {
+        var deferredRecovery = AudioCaptureIdlePolicy.DeferredBluetoothRouteRecovery()
+
+        deferredRecovery.preserve(
+            reason: "ordinary route churn",
+            requiresIdlePrewarm: false,
+            reconcilesInputSelection: false
+        )
+        XCTAssertNil(deferredRecovery.take())
+
+        deferredRecovery.preserve(
+            reason: "settings backup restored",
+            requiresIdlePrewarm: true,
+            reconcilesInputSelection: false
+        )
+        deferredRecovery.preserve(
+            reason: "input topology changed",
+            requiresIdlePrewarm: false,
+            reconcilesInputSelection: true
+        )
+        let request = deferredRecovery.take()
+        XCTAssertEqual(request?.reason, "settings backup restored")
+        XCTAssertEqual(request?.requiresIdlePrewarm, true)
+        XCTAssertEqual(request?.reconcilesInputSelection, true)
+        XCTAssertNil(deferredRecovery.take())
+    }
+
     func testSilentPCMWatchdogRecoversBuiltInDirectCaptureOnceAfterRealSignal() {
         var watchdog = AudioCaptureIdlePolicy.SilentPCMRecoveryWatchdog()
 
