@@ -1,6 +1,31 @@
 import CoreAudio
 
 enum AudioCaptureIdlePolicy {
+    struct BluetoothInputStabilization {
+        static let maximumDuration: TimeInterval = 5
+
+        private(set) var inputUID: String?
+        private(set) var startedAt: TimeInterval?
+
+        mutating func shouldRetry(
+            inputUID: String,
+            isBluetoothInput: Bool,
+            now: TimeInterval
+        ) -> Bool {
+            guard isBluetoothInput || self.inputUID == inputUID else { return false }
+            if self.inputUID != inputUID || self.startedAt == nil {
+                self.inputUID = inputUID
+                self.startedAt = now
+            }
+            return self.elapsed(at: now) < Self.maximumDuration
+        }
+
+        func elapsed(at now: TimeInterval) -> TimeInterval {
+            guard let startedAt else { return 0 }
+            return max(now - startedAt, 0)
+        }
+    }
+
     static func shouldPrewarmCapture(experimentalDirectAudioCaptureEnabled: Bool) -> Bool {
         experimentalDirectAudioCaptureEnabled
     }
@@ -52,5 +77,14 @@ enum AudioCaptureIdlePolicy {
         isStarting: Bool
     ) -> Bool {
         isRunning || isStarting
+    }
+
+    static func shouldDeferRouteRecoveryToBluetoothStart(
+        directCaptureEnabled: Bool,
+        isStarting: Bool,
+        isRunning: Bool,
+        attemptedInputIsBluetooth: Bool
+    ) -> Bool {
+        directCaptureEnabled && isStarting && isRunning == false && attemptedInputIsBluetooth
     }
 }

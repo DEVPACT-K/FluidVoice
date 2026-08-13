@@ -655,6 +655,54 @@ final class HotkeyShortcutTests: XCTestCase {
         XCTAssertFalse(builtInDevice.isBluetooth)
     }
 
+    func testBluetoothStartupRetriesSameInputWithinBoundedWindow() {
+        var stabilization = AudioCaptureIdlePolicy.BluetoothInputStabilization()
+
+        XCTAssertTrue(stabilization.shouldRetry(
+            inputUID: "airpods",
+            isBluetoothInput: true,
+            now: 10
+        ))
+        XCTAssertTrue(stabilization.shouldRetry(
+            inputUID: "airpods",
+            isBluetoothInput: false,
+            now: 14.999
+        ))
+        XCTAssertFalse(stabilization.shouldRetry(
+            inputUID: "airpods",
+            isBluetoothInput: false,
+            now: 15
+        ))
+    }
+
+    func testBluetoothStartupPolicyDoesNotAffectOtherInputsOrActiveRecovery() {
+        var stabilization = AudioCaptureIdlePolicy.BluetoothInputStabilization()
+
+        XCTAssertFalse(stabilization.shouldRetry(
+            inputUID: "usb",
+            isBluetoothInput: false,
+            now: 10
+        ))
+        XCTAssertTrue(AudioCaptureIdlePolicy.shouldDeferRouteRecoveryToBluetoothStart(
+            directCaptureEnabled: true,
+            isStarting: true,
+            isRunning: false,
+            attemptedInputIsBluetooth: true
+        ))
+        XCTAssertFalse(AudioCaptureIdlePolicy.shouldDeferRouteRecoveryToBluetoothStart(
+            directCaptureEnabled: true,
+            isStarting: true,
+            isRunning: true,
+            attemptedInputIsBluetooth: true
+        ))
+        XCTAssertFalse(AudioCaptureIdlePolicy.shouldDeferRouteRecoveryToBluetoothStart(
+            directCaptureEnabled: true,
+            isStarting: true,
+            isRunning: false,
+            attemptedInputIsBluetooth: false
+        ))
+    }
+
     @MainActor
     func testLegacySystemModeSeedsPriorityFromCurrentDefault() throws {
         try self.withRestoredDefaults(keys: [

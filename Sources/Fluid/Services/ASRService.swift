@@ -710,6 +710,7 @@ final class ASRService: ObservableObject {
     private var activeAudioCaptureBackend: AudioCaptureBackend = .none
     private var audioStartAttemptInputUID: String?
     private var audioStartAttemptInputName: String?
+    private var audioStartAttemptIsBluetooth = false
 
     private var hasPreparedAudioCapture: Bool {
         self.directAudioLifecycleController.snapshot.isPrepared || self.hasWarmAudioEngine
@@ -919,19 +920,21 @@ final class ASRService: ObservableObject {
     }
 
     private func startConfiguredAudioCapture(
-        excluding excludedInputUIDs: Set<String> = []
+        excluding excludedInputUIDs: Set<String> = [],
+        forcingInputUID: String? = nil
     ) async throws {
         self.audioStartAttemptInputUID = nil
         self.audioStartAttemptInputName = nil
+        self.audioStartAttemptIsBluetooth = false
         if SettingsStore.shared.experimentalDirectAudioCaptureEnabled {
             // A non-route path may have scheduled a fire-and-forget retirement.
             // Do not let direct capture startup overlap a queued AVAudioEngine
             // release.
             await self.audioEngineRetirementDrain.waitForScheduledReleases()
             do {
-                guard let selection = self.directCoreAudioDeviceSelection(
-                    excluding: excludedInputUIDs
-                ) else {
+                let selection = forcingInputUID.map(DirectCoreAudioDeviceSelection.preferredUID) ??
+                    self.directCoreAudioDeviceSelection(excluding: excludedInputUIDs)
+                guard let selection else {
                     throw NSError(
                         domain: "ASRService",
                         code: -4,
@@ -947,6 +950,7 @@ final class ASRService: ObservableObject {
                 )
                 self.audioStartAttemptInputUID = device.uid
                 self.audioStartAttemptInputName = device.name
+                self.audioStartAttemptIsBluetooth = device.isBluetooth
                 AppServices.shared.microphonePreferenceCoordinator.reportResolvedSelection(
                     uid: device.uid,
                     name: device.name
@@ -1716,23 +1720,54 @@ final class ASRService: ObservableObject {
                     ? max(AudioDevice.listInputDevices().count, 1) + 1
                     : 1
             var startAttempt = 1
+            var fallbackAttempt = 1
             var failedInputUIDs = Set<String>()
             var immediatelyRetriedInputUID: String?
+            var bluetoothStabilization = AudioCaptureIdlePolicy.BluetoothInputStabilization()
+            var forcedInputUID: String?
             self.audioStartAttemptInputUID = nil
             while true {
                 let routeGenerationAtStart = self.audioRouteRecoveryGeneration
                 do {
-                    try await self.startConfiguredAudioCapture(excluding: failedInputUIDs)
+                    try await self.startConfiguredAudioCapture(
+                        excluding: failedInputUIDs,
+                        forcingInputUID: forcedInputUID
+                    )
                 } catch {
                     guard let failedUID = self.audioStartAttemptInputUID else { throw error }
-                    let retrySameInput = immediatelyRetriedInputUID == nil
-                    if retrySameInput {
+                    let now = ProcessInfo.processInfo.systemUptime
+                    let retryBluetoothInput = bluetoothStabilization.shouldRetry(
+                        inputUID: failedUID,
+                        isBluetoothInput: self.audioStartAttemptIsBluetooth,
+                        now: now
+                    )
+                    let retrySameInput = retryBluetoothInput || immediatelyRetriedInputUID == nil
+                    if retryBluetoothInput {
+                        forcedInputUID = failedUID
                         immediatelyRetriedInputUID = failedUID
+                        self.logBluetoothStartupRetry(
+                            uid: failedUID,
+                            attempt: startAttempt + 1,
+                            elapsed: bluetoothStabilization.elapsed(at: now),
+                            reason: error.localizedDescription
+                        )
+                    } else {
+                        forcedInputUID = nil
+                        if bluetoothStabilization.inputUID == failedUID {
+                            self.logBluetoothStartupStabilizationEnded(
+                                uid: failedUID,
+                                elapsed: bluetoothStabilization.elapsed(at: now),
+                                outcome: "budget_exhausted"
+                            )
+                        }
+                        if immediatelyRetriedInputUID == nil {
+                            immediatelyRetriedInputUID = failedUID
+                        } else {
+                            failedInputUIDs.insert(failedUID)
+                        }
+                        fallbackAttempt += 1
                     }
-                    if retrySameInput == false {
-                        failedInputUIDs.insert(failedUID)
-                    }
-                    guard startAttempt < maximumStartAttempts,
+                    guard retryBluetoothInput || fallbackAttempt <= maximumStartAttempts,
                           startGeneration == self.audioCaptureStartGeneration,
                           self.isTerminating == false
                     else {
@@ -1743,7 +1778,7 @@ final class ASRService: ObservableObject {
                         startGeneration: startGeneration,
                         completedAttempt: startAttempt,
                         reason: "backend_start_error:\(error.localizedDescription)",
-                        waitForTopologyQuiet: retrySameInput == false
+                        waitForTopologyQuiet: retryBluetoothInput || retrySameInput == false
                     )
                     startAttempt += 1
                     continue
@@ -1770,6 +1805,15 @@ final class ASRService: ObservableObject {
                     self.pendingAudioRouteRecovery == nil &&
                     self.isRecoveringAudioRoute == false
                 if readiness == .ready, routeStayedStable {
+                    if let stabilizedUID = bluetoothStabilization.inputUID {
+                        self.logBluetoothStartupStabilizationEnded(
+                            uid: stabilizedUID,
+                            elapsed: bluetoothStabilization.elapsed(
+                                at: ProcessInfo.processInfo.systemUptime
+                            ),
+                            outcome: "first_pcm"
+                        )
+                    }
                     AppServices.shared.microphonePreferenceCoordinator.confirmActiveSelection(
                         uid: self.audioStartAttemptInputUID,
                         name: self.audioStartAttemptInputName
@@ -1791,17 +1835,44 @@ final class ASRService: ObservableObject {
                     throw CancellationError()
                 }
                 var retrySameInput = false
+                var retryBluetoothInput = false
                 if let failedUID = self.audioStartAttemptInputUID {
-                    retrySameInput = readiness == .formatInvalidated &&
-                        immediatelyRetriedInputUID == nil
-                    if retrySameInput {
+                    let now = ProcessInfo.processInfo.systemUptime
+                    retryBluetoothInput = bluetoothStabilization.shouldRetry(
+                        inputUID: failedUID,
+                        isBluetoothInput: self.audioStartAttemptIsBluetooth,
+                        now: now
+                    )
+                    retrySameInput = retryBluetoothInput || (
+                        readiness == .formatInvalidated && immediatelyRetriedInputUID == nil
+                    )
+                    if retryBluetoothInput {
+                        forcedInputUID = failedUID
                         immediatelyRetriedInputUID = failedUID
-                    }
-                    if retrySameInput == false {
-                        failedInputUIDs.insert(failedUID)
+                        self.logBluetoothStartupRetry(
+                            uid: failedUID,
+                            attempt: startAttempt + 1,
+                            elapsed: bluetoothStabilization.elapsed(at: now),
+                            reason: "readiness_\(readiness)"
+                        )
+                    } else {
+                        forcedInputUID = nil
+                        if bluetoothStabilization.inputUID == failedUID {
+                            self.logBluetoothStartupStabilizationEnded(
+                                uid: failedUID,
+                                elapsed: bluetoothStabilization.elapsed(at: now),
+                                outcome: "budget_exhausted"
+                            )
+                        }
+                        if retrySameInput {
+                            immediatelyRetriedInputUID = failedUID
+                        } else {
+                            failedInputUIDs.insert(failedUID)
+                            fallbackAttempt += 1
+                        }
                     }
                 }
-                guard startAttempt < maximumStartAttempts else {
+                guard retryBluetoothInput || fallbackAttempt <= maximumStartAttempts else {
                     let message: String
                     switch readiness {
                     case .timedOut:
@@ -1827,7 +1898,7 @@ final class ASRService: ObservableObject {
                     startGeneration: startGeneration,
                     completedAttempt: startAttempt,
                     reason: "readiness_\(readiness)_routeStable_\(routeStayedStable)",
-                    waitForTopologyQuiet: retrySameInput == false
+                    waitForTopologyQuiet: retryBluetoothInput || retrySameInput == false
                 )
                 startAttempt += 1
             }
@@ -2010,6 +2081,33 @@ final class ASRService: ObservableObject {
             source: "ASRService"
         )
         return attemptID
+    }
+
+    private func logBluetoothStartupRetry(
+        uid: String,
+        attempt: Int,
+        elapsed: TimeInterval,
+        reason: String
+    ) {
+        let elapsedMilliseconds = Int((elapsed * 1000).rounded())
+        let maximumMilliseconds = Int(
+            (AudioCaptureIdlePolicy.BluetoothInputStabilization.maximumDuration * 1000).rounded()
+        )
+        self.benchmarkLog(
+            "bluetooth_start_retry uid=\(uid) attempt=\(attempt) " +
+                "elapsedMs=\(elapsedMilliseconds) budgetMs=\(maximumMilliseconds) reason=\(reason)"
+        )
+    }
+
+    private func logBluetoothStartupStabilizationEnded(
+        uid: String,
+        elapsed: TimeInterval,
+        outcome: String
+    ) {
+        self.benchmarkLog(
+            "bluetooth_start_stabilization_end uid=\(uid) outcome=\(outcome) " +
+                "elapsedMs=\(Int((elapsed * 1000).rounded()))"
+        )
     }
 
     func cancelPendingAudioCaptureStart(reason: String) async {
@@ -2976,6 +3074,19 @@ final class ASRService: ObservableObject {
     ) {
         guard self.isTerminating == false else {
             self.benchmarkLog("route_recovery_ignored reason=app_terminating event=\(reason)")
+            return
+        }
+        if AudioCaptureIdlePolicy.shouldDeferRouteRecoveryToBluetoothStart(
+            directCaptureEnabled: SettingsStore.shared.experimentalDirectAudioCaptureEnabled,
+            isStarting: self.isStarting,
+            isRunning: self.isRunning,
+            attemptedInputIsBluetooth: self.audioStartAttemptIsBluetooth
+        ) {
+            // AirPods and other Bluetooth inputs can replace their streams more
+            // than once while entering microphone mode. The active start owns
+            // its bounded retry loop; a second recovery owner would exclude the
+            // same healthy device before the Bluetooth route settles.
+            self.benchmarkLog("bluetooth_start_route_change_deferred event=\(reason)")
             return
         }
         self.audioRouteRecoveryGeneration &+= 1
