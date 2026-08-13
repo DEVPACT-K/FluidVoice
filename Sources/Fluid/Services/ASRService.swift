@@ -1134,6 +1134,19 @@ final class ASRService: ObservableObject {
                 DispatchQueue.main.async { [weak self] in
                     self?.audioLevelSubject.send(level)
                 }
+            },
+            onCaptureHealth: { [weak self] sessionID, attemptID, audioMs, sampleCount, rms, peak in
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    let silent = rms < 0.002 && peak < 0.01
+                    self.benchmarkLog(
+                        "capture_health attempt=\(attemptID) audioMs=\(audioMs) " +
+                            "samples=\(sampleCount) rms=\(String(format: "%.6f", rms)) " +
+                            "peak=\(String(format: "%.6f", peak)) silent=\(silent) " +
+                            "inputUID=\(self.audioStartAttemptInputUID ?? "unknown")",
+                        sessionID: sessionID
+                    )
+                }
             }
         )
     }()
@@ -4915,6 +4928,7 @@ private final nonisolated class AudioCapturePipeline: @unchecked Sendable {
     private let audioBuffer: ThreadSafeAudioBuffer
     private let onFirstAudio: (Int, UInt64, Int, Int, Double, Int, Int) -> Void
     private let onLevel: (CGFloat) -> Void
+    private let onCaptureHealth: (Int, UInt64, Int, Int, Float, Float) -> Void
 
     private let lock = NSLock()
     private var recordingEnabled: Bool = false
@@ -4929,6 +4943,10 @@ private final nonisolated class AudioCapturePipeline: @unchecked Sendable {
     private var resampleNextSourcePosition: Double = 0
     private var resamplePreviousSample: Float?
     private var lastInputSampleEnd: Int64?
+    private var captureHealthSampleCount: Int = 0
+    private var captureHealthTotalSampleCount: Int = 0
+    private var captureHealthSquareSum: Double = 0
+    private var captureHealthPeak: Float = 0
 
     // Smoothing state (kept off ASRService/@MainActor)
     private var levelHistory: [CGFloat] = []
@@ -4946,11 +4964,13 @@ private final nonisolated class AudioCapturePipeline: @unchecked Sendable {
     init(
         audioBuffer: ThreadSafeAudioBuffer,
         onFirstAudio: @escaping (Int, UInt64, Int, Int, Double, Int, Int) -> Void,
-        onLevel: @escaping (CGFloat) -> Void
+        onLevel: @escaping (CGFloat) -> Void,
+        onCaptureHealth: @escaping (Int, UInt64, Int, Int, Float, Float) -> Void
     ) {
         self.audioBuffer = audioBuffer
         self.onFirstAudio = onFirstAudio
         self.onLevel = onLevel
+        self.onCaptureHealth = onCaptureHealth
     }
 
     func setRecordingEnabled(
@@ -4968,6 +4988,7 @@ private final nonisolated class AudioCapturePipeline: @unchecked Sendable {
             self.recordingStopHostTime = nil
             self.resetResamplerLocked()
             self.lastInputSampleEnd = nil
+            self.resetCaptureHealthLocked()
             self.recordingEnabled = true
         }
         if enabled == false {
@@ -4978,6 +4999,7 @@ private final nonisolated class AudioCapturePipeline: @unchecked Sendable {
             self.recordingStopHostTime = nil
             self.resetResamplerLocked()
             self.lastInputSampleEnd = nil
+            self.resetCaptureHealthLocked()
             self.levelHistory.removeAll(keepingCapacity: true)
             self.smoothedLevel = 0.0
         }
@@ -5077,7 +5099,7 @@ private final nonisolated class AudioCapturePipeline: @unchecked Sendable {
         }
         if recordingEnabled == false {
             self.lock.unlock()
-            self.onLevel(self.calculateAudioLevel(samples))
+            self.onLevel(self.measureAudioLevel(samples).level)
             return
         }
         let startHostTime = self.recordingStartHostTime
@@ -5163,8 +5185,24 @@ private final nonisolated class AudioCapturePipeline: @unchecked Sendable {
             )
         }
         self.lock.unlock()
-        let level = self.calculateAudioLevel(mono16k)
-        self.onLevel(level)
+        let measurement = self.measureAudioLevel(mono16k)
+        self.onLevel(measurement.level)
+        if let health = self.captureHealthDiagnostic(
+            sampleCount: mono16k.count,
+            rms: measurement.rms,
+            peak: measurement.peak,
+            sessionID: recordingSessionID,
+            attemptID: recordingAttemptID
+        ) {
+            self.onCaptureHealth(
+                recordingSessionID,
+                recordingAttemptID,
+                health.audioMs,
+                health.sampleCount,
+                health.rms,
+                health.peak
+            )
+        }
     }
 
     private static func acceptedFrameRange(
@@ -5226,6 +5264,13 @@ private final nonisolated class AudioCapturePipeline: @unchecked Sendable {
         self.resamplePreviousSample = nil
     }
 
+    private func resetCaptureHealthLocked() {
+        self.captureHealthSampleCount = 0
+        self.captureHealthTotalSampleCount = 0
+        self.captureHealthSquareSum = 0
+        self.captureHealthPeak = 0
+    }
+
     /// Stateful linear resampling keeps fractional phase across small hardware
     /// callbacks. Stateless per-packet conversion silently shortens 44.1 kHz
     /// recordings and introduces a discontinuity at every device cycle.
@@ -5282,23 +5327,58 @@ private final nonisolated class AudioCapturePipeline: @unchecked Sendable {
         return output
     }
 
-    private func calculateAudioLevel(_ samples: [Float]) -> CGFloat {
-        guard samples.isEmpty == false else { return 0.0 }
+    private func measureAudioLevel(_ samples: [Float]) -> (level: CGFloat, rms: Float, peak: Float) {
+        guard samples.isEmpty == false else { return (0, 0, 0) }
 
-        // RMS
         var sum: Float = 0.0
         vDSP_svesq(samples, 1, &sum, vDSP_Length(samples.count))
         let rms = sqrt(sum / Float(samples.count))
+        var peak: Float = 0
+        vDSP_maxmgv(samples, 1, &peak, vDSP_Length(samples.count))
 
         // Noise gate
         if rms < 0.002 {
-            return self.applySmoothingAndThreshold(0.0)
+            return (self.applySmoothingAndThreshold(0), rms, peak)
         }
 
         // dB -> normalized [0, 1]
         let dbLevel = 20 * log10(max(rms, 1e-10))
         let normalizedLevel = max(0, min(1, (dbLevel + 55) / 55))
-        return self.applySmoothingAndThreshold(CGFloat(normalizedLevel))
+        return (self.applySmoothingAndThreshold(CGFloat(normalizedLevel)), rms, peak)
+    }
+
+    private func captureHealthDiagnostic(
+        sampleCount: Int,
+        rms: Float,
+        peak: Float,
+        sessionID: Int,
+        attemptID: UInt64
+    ) -> (audioMs: Int, sampleCount: Int, rms: Float, peak: Float)? {
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        guard self.recordingEnabled,
+              self.recordingSessionID == sessionID,
+              self.recordingAttemptID == attemptID
+        else { return nil }
+
+        self.captureHealthSampleCount += sampleCount
+        self.captureHealthTotalSampleCount += sampleCount
+        self.captureHealthSquareSum += Double(rms * rms) * Double(sampleCount)
+        self.captureHealthPeak = max(self.captureHealthPeak, peak)
+        guard self.captureHealthSampleCount >= 16_000 else { return nil }
+
+        let windowSampleCount = self.captureHealthSampleCount
+        let windowRMS = Float(sqrt(self.captureHealthSquareSum / Double(windowSampleCount)))
+        let result = (
+            audioMs: Int((Double(self.captureHealthTotalSampleCount) / 16_000 * 1000).rounded()),
+            sampleCount: windowSampleCount,
+            rms: windowRMS,
+            peak: self.captureHealthPeak
+        )
+        self.captureHealthSampleCount = 0
+        self.captureHealthSquareSum = 0
+        self.captureHealthPeak = 0
+        return result
     }
 
     private func applySmoothingAndThreshold(_ newLevel: CGFloat) -> CGFloat {
