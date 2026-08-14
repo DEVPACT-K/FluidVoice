@@ -126,6 +126,25 @@ enum AudioCaptureIdlePolicy {
         }
     }
 
+    static func bluetoothInputAwaitingAvailability(
+        priorityInputUIDs: [String],
+        preferredInputUID: String?,
+        allDevices: [AudioDevice.Device],
+        excluding excludedUIDs: Set<String>
+    ) -> AudioDevice.Device? {
+        let priorityUID = priorityInputUIDs.first { excludedUIDs.contains($0) == false }
+        let candidateUID = priorityUID ?? preferredInputUID.flatMap { uid in
+            excludedUIDs.contains(uid) ? nil : uid
+        }
+        guard let candidateUID,
+              let candidate = allDevices.first(where: { $0.uid == candidateUID }),
+              candidate.isBluetooth,
+              candidate.hasInput == false,
+              candidate.isAlive
+        else { return nil }
+        return candidate
+    }
+
     static func shouldPrewarmCapture(experimentalDirectAudioCaptureEnabled: Bool) -> Bool {
         experimentalDirectAudioCaptureEnabled
     }

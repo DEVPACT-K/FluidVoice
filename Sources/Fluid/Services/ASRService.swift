@@ -865,12 +865,13 @@ final class ASRService: ObservableObject {
     }
 
     private func resolvedInputDeviceForCapture(
+        availableInputs: [AudioDevice.Device] = AudioDevice.listInputDevices(),
+        defaultInputUID: String? = AudioDevice.getDefaultInputDevice()?.uid,
         excluding excludedUIDs: Set<String> = []
     ) -> AudioDevice.Device? {
-        let inputs = AudioDevice.listInputDevices()
         return AppServices.shared.microphonePreferenceCoordinator.inputDeviceForCapture(
-            availableInputs: inputs,
-            defaultInputUID: AudioDevice.getDefaultInputDevice()?.uid,
+            availableInputs: availableInputs,
+            defaultInputUID: defaultInputUID,
             excluding: excludedUIDs
         )
     }
@@ -945,11 +946,29 @@ final class ASRService: ObservableObject {
             // release.
             await self.audioEngineRetirementDrain.waitForScheduledReleases()
             do {
+                let deviceSnapshot = await Task.detached(priority: .userInitiated) {
+                    let allDevices = AudioDevice.listAllDevices()
+                    return (
+                        allDevices: allDevices,
+                        defaultInputUID: AudioDevice.getDefaultInputDevice(from: allDevices)?.uid
+                    )
+                }.value
+                let allDevices = deviceSnapshot.allDevices
+                let availableInputs = allDevices.filter(\.hasInput)
                 let selectedInput: AudioDevice.Device?
                 if let forcingInputUID {
-                    selectedInput = AudioDevice.listInputDevices().first { $0.uid == forcingInputUID }
+                    selectedInput = availableInputs.first { $0.uid == forcingInputUID }
                 } else {
-                    selectedInput = self.resolvedInputDeviceForCapture(excluding: excludedInputUIDs)
+                    selectedInput = AudioCaptureIdlePolicy.bluetoothInputAwaitingAvailability(
+                        priorityInputUIDs: SettingsStore.shared.microphonePriority.map(\.uid),
+                        preferredInputUID: SettingsStore.shared.preferredInputDeviceUID,
+                        allDevices: allDevices,
+                        excluding: excludedInputUIDs
+                    ) ?? self.resolvedInputDeviceForCapture(
+                        availableInputs: availableInputs,
+                        defaultInputUID: deviceSnapshot.defaultInputUID,
+                        excluding: excludedInputUIDs
+                    )
                 }
                 guard let attemptIdentity = AudioCaptureIdlePolicy.CaptureAttemptIdentity.resolve(
                     selectedInput: selectedInput,

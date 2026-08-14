@@ -724,6 +724,52 @@ final class HotkeyShortcutTests: XCTestCase {
         XCTAssertFalse(replacement?.isBluetooth == true)
     }
 
+    func testCaptureAttemptSeedsPreferredBluetoothIdentityBeforeInputAppears() {
+        let airPodsOutputProfile = AudioDevice.Device(
+            id: 42,
+            uid: "airpods",
+            name: "AirPods",
+            hasInput: false,
+            hasOutput: true,
+            transportType: kAudioDeviceTransportTypeBluetooth
+        )
+
+        let candidate = AudioCaptureIdlePolicy.bluetoothInputAwaitingAvailability(
+            priorityInputUIDs: ["airpods", "built-in"],
+            preferredInputUID: "airpods",
+            allDevices: [airPodsOutputProfile],
+            excluding: []
+        )
+
+        XCTAssertEqual(candidate?.uid, "airpods")
+        XCTAssertTrue(candidate?.isBluetooth == true)
+    }
+
+    func testCaptureAttemptDoesNotWaitForLowerPriorityBluetoothInput() {
+        let builtIn = Self.device(
+            uid: "built-in",
+            name: "MacBook Pro Microphone",
+            transportType: kAudioDeviceTransportTypeBuiltIn
+        )
+        let airPodsOutputProfile = AudioDevice.Device(
+            id: 42,
+            uid: "airpods",
+            name: "AirPods",
+            hasInput: false,
+            hasOutput: true,
+            transportType: kAudioDeviceTransportTypeBluetooth
+        )
+
+        let candidate = AudioCaptureIdlePolicy.bluetoothInputAwaitingAvailability(
+            priorityInputUIDs: ["built-in", "airpods"],
+            preferredInputUID: "built-in",
+            allDevices: [builtIn, airPodsOutputProfile],
+            excluding: []
+        )
+
+        XCTAssertNil(candidate)
+    }
+
     func testBluetoothStartupPolicyDoesNotAffectOtherInputsOrActiveRecovery() {
         var stabilization = AudioCaptureIdlePolicy.BluetoothInputStabilization()
 
