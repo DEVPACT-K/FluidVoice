@@ -927,6 +927,14 @@ final class ASRService: ObservableObject {
         excluding excludedInputUIDs: Set<String> = [],
         forcingInputUID: String? = nil
     ) async throws {
+        let previousAttemptIdentity = self.audioStartAttemptInputUID.map {
+            AudioCaptureIdlePolicy.CaptureAttemptIdentity(
+                uid: $0,
+                name: self.audioStartAttemptInputName,
+                isBluetooth: self.audioStartAttemptIsBluetooth,
+                isInternalMicrophone: self.audioStartAttemptIsInternalMicrophone
+            )
+        }
         self.audioStartAttemptInputUID = nil
         self.audioStartAttemptInputName = nil
         self.audioStartAttemptIsBluetooth = false
@@ -937,18 +945,30 @@ final class ASRService: ObservableObject {
             // release.
             await self.audioEngineRetirementDrain.waitForScheduledReleases()
             do {
-                let selection = forcingInputUID.map(DirectCoreAudioDeviceSelection.preferredUID) ??
-                    self.directCoreAudioDeviceSelection(excluding: excludedInputUIDs)
-                guard let selection else {
+                let selectedInput: AudioDevice.Device?
+                if let forcingInputUID {
+                    selectedInput = AudioDevice.listInputDevices().first { $0.uid == forcingInputUID }
+                } else {
+                    selectedInput = self.resolvedInputDeviceForCapture(excluding: excludedInputUIDs)
+                }
+                guard let attemptIdentity = AudioCaptureIdlePolicy.CaptureAttemptIdentity.resolve(
+                    selectedInput: selectedInput,
+                    forcingInputUID: forcingInputUID,
+                    previous: previousAttemptIdentity
+                ) else {
                     throw NSError(
                         domain: "ASRService",
                         code: -4,
                         userInfo: [NSLocalizedDescriptionKey: "No remaining microphone is available."]
                     )
                 }
-                if case let .preferredUID(uid) = selection {
-                    self.audioStartAttemptInputUID = uid
-                }
+                let selection = DirectCoreAudioDeviceSelection.preferredUID(attemptIdentity.uid)
+                // Preserve the selected endpoint's identity before the async UID
+                // resolution, where Bluetooth topology churn can make it vanish.
+                self.audioStartAttemptInputUID = attemptIdentity.uid
+                self.audioStartAttemptInputName = attemptIdentity.name
+                self.audioStartAttemptIsBluetooth = attemptIdentity.isBluetooth
+                self.audioStartAttemptIsInternalMicrophone = attemptIdentity.isInternalMicrophone
                 let device = try await self.directAudioLifecycleController.resolveDevice(
                     selection: selection,
                     reason: "recording_start"

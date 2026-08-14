@@ -685,6 +685,45 @@ final class HotkeyShortcutTests: XCTestCase {
         ))
     }
 
+    func testCaptureAttemptRetainsBluetoothIdentityWhenForcedDeviceDisappears() {
+        let airPods = Self.device(
+            uid: "airpods",
+            name: "AirPods Microphone",
+            transportType: kAudioDeviceTransportTypeBluetooth
+        )
+        let selectedIdentity = AudioCaptureIdlePolicy.CaptureAttemptIdentity.resolve(
+            selectedInput: airPods,
+            forcingInputUID: nil,
+            previous: nil
+        )
+        let retryIdentity = AudioCaptureIdlePolicy.CaptureAttemptIdentity.resolve(
+            selectedInput: nil,
+            forcingInputUID: "airpods",
+            previous: selectedIdentity
+        )
+
+        XCTAssertEqual(retryIdentity, selectedIdentity)
+        XCTAssertTrue(retryIdentity?.isBluetooth == true)
+    }
+
+    func testCaptureAttemptDoesNotTransferBluetoothIdentityToDifferentDevice() {
+        let previous = AudioCaptureIdlePolicy.CaptureAttemptIdentity(
+            uid: "airpods",
+            name: "AirPods Microphone",
+            isBluetooth: true,
+            isInternalMicrophone: false
+        )
+
+        let replacement = AudioCaptureIdlePolicy.CaptureAttemptIdentity.resolve(
+            selectedInput: nil,
+            forcingInputUID: "usb-mic",
+            previous: previous
+        )
+
+        XCTAssertEqual(replacement?.uid, "usb-mic")
+        XCTAssertFalse(replacement?.isBluetooth == true)
+    }
+
     func testBluetoothStartupPolicyDoesNotAffectOtherInputsOrActiveRecovery() {
         var stabilization = AudioCaptureIdlePolicy.BluetoothInputStabilization()
 

@@ -1,6 +1,39 @@
 import CoreAudio
 
 enum AudioCaptureIdlePolicy {
+    struct CaptureAttemptIdentity: Equatable {
+        let uid: String
+        let name: String?
+        let isBluetooth: Bool
+        let isInternalMicrophone: Bool
+
+        static func resolve(
+            selectedInput: AudioDevice.Device?,
+            forcingInputUID: String?,
+            previous: Self?
+        ) -> Self? {
+            let uid = forcingInputUID ?? selectedInput?.uid
+            guard let uid else { return nil }
+            if let selectedInput, selectedInput.uid == uid {
+                return Self(
+                    uid: uid,
+                    name: selectedInput.name,
+                    isBluetooth: selectedInput.isBluetooth,
+                    isInternalMicrophone: selectedInput.isUnavailableWhenClamshellClosed
+                )
+            }
+            if previous?.uid == uid {
+                return previous
+            }
+            return Self(
+                uid: uid,
+                name: nil,
+                isBluetooth: false,
+                isInternalMicrophone: false
+            )
+        }
+    }
+
     enum BluetoothStartupRouteChangeDisposition: Equatable {
         case retryCurrentStart
         case preserveDeferredWork
