@@ -737,6 +737,7 @@ final class HotkeyShortcutTests: XCTestCase {
         let candidate = AudioCaptureIdlePolicy.bluetoothInputAwaitingAvailability(
             priorityInputUIDs: ["airpods", "built-in"],
             preferredInputUID: "airpods",
+            resolvedInputUID: "built-in",
             allDevices: [airPodsOutputProfile],
             excluding: []
         )
@@ -763,11 +764,33 @@ final class HotkeyShortcutTests: XCTestCase {
         let candidate = AudioCaptureIdlePolicy.bluetoothInputAwaitingAvailability(
             priorityInputUIDs: ["built-in", "airpods"],
             preferredInputUID: "built-in",
+            resolvedInputUID: "built-in",
             allDevices: [builtIn, airPodsOutputProfile],
             excluding: []
         )
 
         XCTAssertNil(candidate)
+    }
+
+    func testCaptureAttemptSkipsDisconnectedPriorityBeforeSettlingBluetoothInput() {
+        let airPodsOutputProfile = AudioDevice.Device(
+            id: 42,
+            uid: "airpods",
+            name: "AirPods",
+            hasInput: false,
+            hasOutput: true,
+            transportType: kAudioDeviceTransportTypeBluetooth
+        )
+
+        let candidate = AudioCaptureIdlePolicy.bluetoothInputAwaitingAvailability(
+            priorityInputUIDs: ["disconnected-usb", "airpods", "built-in"],
+            preferredInputUID: "disconnected-usb",
+            resolvedInputUID: "built-in",
+            allDevices: [airPodsOutputProfile],
+            excluding: []
+        )
+
+        XCTAssertEqual(candidate?.uid, "airpods")
     }
 
     func testBluetoothStartupPolicyDoesNotAffectOtherInputsOrActiveRecovery() {

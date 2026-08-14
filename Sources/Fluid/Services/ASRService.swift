@@ -959,16 +959,18 @@ final class ASRService: ObservableObject {
                 if let forcingInputUID {
                     selectedInput = availableInputs.first { $0.uid == forcingInputUID }
                 } else {
-                    selectedInput = AudioCaptureIdlePolicy.bluetoothInputAwaitingAvailability(
-                        priorityInputUIDs: SettingsStore.shared.microphonePriority.map(\.uid),
-                        preferredInputUID: SettingsStore.shared.preferredInputDeviceUID,
-                        allDevices: allDevices,
-                        excluding: excludedInputUIDs
-                    ) ?? self.resolvedInputDeviceForCapture(
+                    let resolvedInput = self.resolvedInputDeviceForCapture(
                         availableInputs: availableInputs,
                         defaultInputUID: deviceSnapshot.defaultInputUID,
                         excluding: excludedInputUIDs
                     )
+                    selectedInput = AudioCaptureIdlePolicy.bluetoothInputAwaitingAvailability(
+                        priorityInputUIDs: SettingsStore.shared.microphonePriority.map(\.uid),
+                        preferredInputUID: SettingsStore.shared.preferredInputDeviceUID,
+                        resolvedInputUID: resolvedInput?.uid,
+                        allDevices: allDevices,
+                        excluding: excludedInputUIDs
+                    ) ?? resolvedInput
                 }
                 guard let attemptIdentity = AudioCaptureIdlePolicy.CaptureAttemptIdentity.resolve(
                     selectedInput: selectedInput,

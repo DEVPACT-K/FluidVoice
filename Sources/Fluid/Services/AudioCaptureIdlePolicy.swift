@@ -129,20 +129,28 @@ enum AudioCaptureIdlePolicy {
     static func bluetoothInputAwaitingAvailability(
         priorityInputUIDs: [String],
         preferredInputUID: String?,
+        resolvedInputUID: String?,
         allDevices: [AudioDevice.Device],
         excluding excludedUIDs: Set<String>
     ) -> AudioDevice.Device? {
-        let priorityUID = priorityInputUIDs.first { excludedUIDs.contains($0) == false }
-        let candidateUID = priorityUID ?? preferredInputUID.flatMap { uid in
-            excludedUIDs.contains(uid) ? nil : uid
+        func settlingBluetoothDevice(uid: String) -> AudioDevice.Device? {
+            guard let candidate = allDevices.first(where: { $0.uid == uid }),
+                  candidate.isBluetooth,
+                  candidate.hasInput == false,
+                  candidate.isAlive
+            else { return nil }
+            return candidate
         }
-        guard let candidateUID,
-              let candidate = allDevices.first(where: { $0.uid == candidateUID }),
-              candidate.isBluetooth,
-              candidate.hasInput == false,
-              candidate.isAlive
+
+        for uid in priorityInputUIDs where excludedUIDs.contains(uid) == false {
+            if uid == resolvedInputUID { return nil }
+            if let candidate = settlingBluetoothDevice(uid: uid) { return candidate }
+        }
+        guard let preferredInputUID,
+              excludedUIDs.contains(preferredInputUID) == false,
+              preferredInputUID != resolvedInputUID
         else { return nil }
-        return candidate
+        return settlingBluetoothDevice(uid: preferredInputUID)
     }
 
     static func shouldPrewarmCapture(experimentalDirectAudioCaptureEnabled: Bool) -> Bool {
