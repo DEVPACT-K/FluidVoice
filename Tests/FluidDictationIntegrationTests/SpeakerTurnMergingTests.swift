@@ -260,10 +260,26 @@ final class SpeakerLabeledTranscriptionPolicyTests: XCTestCase {
         ))
     }
 
-    func testMaterialityRejectsOneGapLongerThanThreeSeconds() {
+    func testMaterialityAcceptsSmallGapAboveThreeSecondsWhenTotalIsNegligible() {
+        XCTAssertTrue(SpeakerLabeledTranscriptionPolicy.shouldKeepSpeakerLabels(
+            hasRecognizedText: true,
+            gaps: [SpeakerTranscriptGap(startSeconds: 10, endSeconds: 13.311)],
+            diarizedDurationSeconds: 10_000
+        ))
+    }
+
+    func testMaterialityRejectsOneGapLongerThanFiveSeconds() {
         XCTAssertFalse(SpeakerLabeledTranscriptionPolicy.shouldKeepSpeakerLabels(
             hasRecognizedText: true,
-            gaps: [SpeakerTranscriptGap(startSeconds: 10, endSeconds: 13.001)],
+            gaps: [SpeakerTranscriptGap(startSeconds: 10, endSeconds: 15.001)],
+            diarizedDurationSeconds: 10_000
+        ))
+    }
+
+    func testMaterialityAcceptsOneGapAtFiveSecondLimit() {
+        XCTAssertTrue(SpeakerLabeledTranscriptionPolicy.shouldKeepSpeakerLabels(
+            hasRecognizedText: true,
+            gaps: [SpeakerTranscriptGap(startSeconds: 10, endSeconds: 15)],
             diarizedDurationSeconds: 10_000
         ))
     }
@@ -301,6 +317,34 @@ final class SpeakerLabeledTranscriptionPolicyTests: XCTestCase {
             gaps: [],
             diarizedDurationSeconds: 60
         ))
+    }
+
+    func testCoverageReportsTheEvidenceUsedByTheFallbackDecision() {
+        let gaps = [
+            SpeakerTranscriptGap(startSeconds: 10, endSeconds: 11.5),
+            SpeakerTranscriptGap(startSeconds: 20, endSeconds: 24.25),
+        ]
+
+        let coverage = SpeakerLabeledTranscriptionPolicy.coverage(
+            gaps: gaps,
+            diarizedDurationSeconds: 200
+        )
+
+        XCTAssertEqual(coverage.gapCount, 2)
+        XCTAssertEqual(coverage.skippedDurationSeconds, 5.75, accuracy: 0.0001)
+        XCTAssertEqual(coverage.maxGapDurationSeconds, 4.25, accuracy: 0.0001)
+        XCTAssertEqual(coverage.diarizedDurationSeconds, 200, accuracy: 0.0001)
+        XCTAssertEqual(coverage.skippedRatio, 0.02875, accuracy: 0.000001)
+    }
+
+    func testFallbackDiagnosticNamesMissingRecognizedTextInsteadOfOmittedAudio() {
+        let description = SpeakerLabeledTranscriptionPolicy.fallbackDiagnostic(
+            hasRecognizedText: false,
+            gaps: [],
+            diarizedDurationSeconds: 100
+        )
+
+        XCTAssertEqual(description, "Speaker labeling produced no recognized text")
     }
 
     func testSpeakerLabelingNoticeNamesSkippedCountAndDuration() {
@@ -436,7 +480,7 @@ final class SpeakerLabeledTranscriptionPolicyTests: XCTestCase {
     }
 
     func testMaterialEmptyTurnRejectsLabeledTranscript() {
-        let materialGap = SpeakerTranscriptGap(startSeconds: 500, endSeconds: 504)
+        let materialGap = SpeakerTranscriptGap(startSeconds: 500, endSeconds: 506)
         let turns = [
             SpeakerRecognizedTurn(
                 speaker: "Speaker 1",
@@ -447,13 +491,13 @@ final class SpeakerLabeledTranscriptionPolicyTests: XCTestCase {
             SpeakerRecognizedTurn(
                 speaker: "Speaker 2",
                 startSeconds: 500,
-                endSeconds: 504,
+                endSeconds: 506,
                 transcription: SpeakerTurnTranscription(text: "", confidence: 0, gaps: [materialGap])
             ),
             SpeakerRecognizedTurn(
                 speaker: "Speaker 3",
-                startSeconds: 504,
-                endSeconds: 1_004,
+                startSeconds: 506,
+                endSeconds: 1_006,
                 transcription: SpeakerTurnTranscription(text: "Last", confidence: 1, gaps: [])
             ),
         ]

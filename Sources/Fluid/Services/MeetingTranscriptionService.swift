@@ -81,6 +81,20 @@ nonisolated struct SpeakerLabeledTranscript: Sendable, Equatable {
     let notice: String?
 }
 
+nonisolated struct SpeakerLabelingCoverage: Sendable, Equatable {
+    let gapCount: Int
+    let skippedDurationSeconds: Double
+    let maxGapDurationSeconds: Double
+    let diarizedDurationSeconds: Double
+
+    var skippedRatio: Double {
+        guard self.diarizedDurationSeconds.isFinite, self.diarizedDurationSeconds > 0 else {
+            return self.skippedDurationSeconds > 0 ? .infinity : 0
+        }
+        return self.skippedDurationSeconds / self.diarizedDurationSeconds
+    }
+}
+
 nonisolated enum SpeakerLabeledTranscriptionPolicy {
     static func transcribeChunks(
         _ ranges: [SpeakerTranscriptGap],
@@ -119,12 +133,46 @@ nonisolated enum SpeakerLabeledTranscriptionPolicy {
         guard !gaps.isEmpty else { return true }
         guard diarizedDurationSeconds.isFinite, diarizedDurationSeconds > 0 else { return false }
 
-        let durations = gaps.map(\.durationSeconds)
-        guard durations.allSatisfy({ $0 <= 3 }) else { return false }
+        let coverage = self.coverage(
+            gaps: gaps,
+            diarizedDurationSeconds: diarizedDurationSeconds
+        )
+        guard coverage.maxGapDurationSeconds <= 5 else { return false }
 
-        let skippedDuration = durations.reduce(0, +)
         let allowedSkippedDuration = min(30, diarizedDurationSeconds * 0.01)
-        return skippedDuration <= allowedSkippedDuration
+        return coverage.skippedDurationSeconds <= allowedSkippedDuration
+    }
+
+    static func coverage(
+        gaps: [SpeakerTranscriptGap],
+        diarizedDurationSeconds: Double
+    ) -> SpeakerLabelingCoverage {
+        let durations = gaps.map(\.durationSeconds)
+        return SpeakerLabelingCoverage(
+            gapCount: gaps.count,
+            skippedDurationSeconds: durations.reduce(0, +),
+            maxGapDurationSeconds: durations.max() ?? 0,
+            diarizedDurationSeconds: diarizedDurationSeconds
+        )
+    }
+
+    static func fallbackDiagnostic(
+        hasRecognizedText: Bool,
+        gaps: [SpeakerTranscriptGap],
+        diarizedDurationSeconds: Double
+    ) -> String {
+        guard hasRecognizedText else {
+            return "Speaker labeling produced no recognized text"
+        }
+        guard diarizedDurationSeconds.isFinite, diarizedDurationSeconds > 0 else {
+            return "Speaker labeling produced an invalid diarized duration"
+        }
+
+        let coverage = self.coverage(
+            gaps: gaps,
+            diarizedDurationSeconds: diarizedDurationSeconds
+        )
+        return "Speaker labeling omitted too much audio (gaps=\(coverage.gapCount), skipped=\(String(format: "%.3f", coverage.skippedDurationSeconds))s, maxGap=\(String(format: "%.3f", coverage.maxGapDurationSeconds))s, diarized=\(String(format: "%.3f", coverage.diarizedDurationSeconds))s, ratio=\(String(format: "%.4f", coverage.skippedRatio)))"
     }
 
     static func limitationNotice(for gaps: [SpeakerTranscriptGap]) -> String? {
@@ -687,8 +735,20 @@ final class MeetingTranscriptionService: ObservableObject {
         }
 
         guard let labeledTranscript = SpeakerLabeledTranscriptionPolicy.assembleTurns(recognizedTurns) else {
+            let gaps = recognizedTurns.flatMap(\.transcription.gaps)
+            let diarizedDuration = recognizedTurns.reduce(0) {
+                $0 + max(0, $1.endSeconds - $1.startSeconds)
+            }
+            let hasRecognizedText = recognizedTurns.contains {
+                !$0.transcription.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+            let diagnostic = SpeakerLabeledTranscriptionPolicy.fallbackDiagnostic(
+                hasRecognizedText: hasRecognizedText,
+                gaps: gaps,
+                diarizedDurationSeconds: diarizedDuration
+            )
             DebugLogger.shared.warning(
-                "Speaker labeling omitted too much audio; falling back to standard transcription",
+                "\(diagnostic); falling back to standard transcription",
                 source: "MeetingTranscriptionService"
             )
             return nil
