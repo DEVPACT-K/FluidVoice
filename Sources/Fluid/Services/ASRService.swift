@@ -710,6 +710,11 @@ final class ASRService: ObservableObject {
     private var activeAudioCaptureBackend: AudioCaptureBackend = .none
     private var audioStartAttemptInputUID: String?
     private var audioStartAttemptInputName: String?
+    private var audioStartAttemptIsBluetooth = false
+    private var audioStartAttemptIsInternalMicrophone = false
+    private var deferredBluetoothStartupRouteRecovery =
+        AudioCaptureIdlePolicy.DeferredBluetoothRouteRecovery()
+    private var silentPCMRecoveryWatchdog = AudioCaptureIdlePolicy.SilentPCMRecoveryWatchdog()
 
     private var hasPreparedAudioCapture: Bool {
         self.directAudioLifecycleController.snapshot.isPrepared || self.hasWarmAudioEngine
@@ -860,12 +865,13 @@ final class ASRService: ObservableObject {
     }
 
     private func resolvedInputDeviceForCapture(
+        availableInputs: [AudioDevice.Device] = AudioDevice.listInputDevices(),
+        defaultInputUID: String? = AudioDevice.getDefaultInputDevice()?.uid,
         excluding excludedUIDs: Set<String> = []
     ) -> AudioDevice.Device? {
-        let inputs = AudioDevice.listInputDevices()
         return AppServices.shared.microphonePreferenceCoordinator.inputDeviceForCapture(
-            availableInputs: inputs,
-            defaultInputUID: AudioDevice.getDefaultInputDevice()?.uid,
+            availableInputs: availableInputs,
+            defaultInputUID: defaultInputUID,
             excluding: excludedUIDs
         )
     }
@@ -919,18 +925,57 @@ final class ASRService: ObservableObject {
     }
 
     private func startConfiguredAudioCapture(
-        excluding excludedInputUIDs: Set<String> = []
+        excluding excludedInputUIDs: Set<String> = [],
+        forcingInputUID: String? = nil
     ) async throws {
+        let previousAttemptIdentity = self.audioStartAttemptInputUID.map {
+            AudioCaptureIdlePolicy.CaptureAttemptIdentity(
+                uid: $0,
+                name: self.audioStartAttemptInputName,
+                isBluetooth: self.audioStartAttemptIsBluetooth,
+                isInternalMicrophone: self.audioStartAttemptIsInternalMicrophone
+            )
+        }
         self.audioStartAttemptInputUID = nil
         self.audioStartAttemptInputName = nil
+        self.audioStartAttemptIsBluetooth = false
+        self.audioStartAttemptIsInternalMicrophone = false
         if SettingsStore.shared.experimentalDirectAudioCaptureEnabled {
             // A non-route path may have scheduled a fire-and-forget retirement.
             // Do not let direct capture startup overlap a queued AVAudioEngine
             // release.
             await self.audioEngineRetirementDrain.waitForScheduledReleases()
             do {
-                guard let selection = self.directCoreAudioDeviceSelection(
-                    excluding: excludedInputUIDs
+                let deviceSnapshot = await Task.detached(priority: .userInitiated) {
+                    let allDevices = AudioDevice.listAllDevices()
+                    return (
+                        allDevices: allDevices,
+                        defaultInputUID: AudioDevice.getDefaultInputDevice(from: allDevices)?.uid
+                    )
+                }.value
+                let allDevices = deviceSnapshot.allDevices
+                let availableInputs = allDevices.filter(\.hasInput)
+                let selectedInput: AudioDevice.Device?
+                if let forcingInputUID {
+                    selectedInput = availableInputs.first { $0.uid == forcingInputUID }
+                } else {
+                    let resolvedInput = self.resolvedInputDeviceForCapture(
+                        availableInputs: availableInputs,
+                        defaultInputUID: deviceSnapshot.defaultInputUID,
+                        excluding: excludedInputUIDs
+                    )
+                    selectedInput = AudioCaptureIdlePolicy.bluetoothInputAwaitingAvailability(
+                        priorityInputUIDs: SettingsStore.shared.microphonePriority.map(\.uid),
+                        preferredInputUID: SettingsStore.shared.preferredInputDeviceUID,
+                        resolvedInputUID: resolvedInput?.uid,
+                        allDevices: allDevices,
+                        excluding: excludedInputUIDs
+                    ) ?? resolvedInput
+                }
+                guard let attemptIdentity = AudioCaptureIdlePolicy.CaptureAttemptIdentity.resolve(
+                    selectedInput: selectedInput,
+                    forcingInputUID: forcingInputUID,
+                    previous: previousAttemptIdentity
                 ) else {
                     throw NSError(
                         domain: "ASRService",
@@ -938,15 +983,21 @@ final class ASRService: ObservableObject {
                         userInfo: [NSLocalizedDescriptionKey: "No remaining microphone is available."]
                     )
                 }
-                if case let .preferredUID(uid) = selection {
-                    self.audioStartAttemptInputUID = uid
-                }
+                let selection = DirectCoreAudioDeviceSelection.preferredUID(attemptIdentity.uid)
+                // Preserve the selected endpoint's identity before the async UID
+                // resolution, where Bluetooth topology churn can make it vanish.
+                self.audioStartAttemptInputUID = attemptIdentity.uid
+                self.audioStartAttemptInputName = attemptIdentity.name
+                self.audioStartAttemptIsBluetooth = attemptIdentity.isBluetooth
+                self.audioStartAttemptIsInternalMicrophone = attemptIdentity.isInternalMicrophone
                 let device = try await self.directAudioLifecycleController.resolveDevice(
                     selection: selection,
                     reason: "recording_start"
                 )
                 self.audioStartAttemptInputUID = device.uid
                 self.audioStartAttemptInputName = device.name
+                self.audioStartAttemptIsBluetooth = device.isBluetooth
+                self.audioStartAttemptIsInternalMicrophone = device.isUnavailableWhenClamshellClosed
                 AppServices.shared.microphonePreferenceCoordinator.reportResolvedSelection(
                     uid: device.uid,
                     name: device.name
@@ -1129,6 +1180,32 @@ final class ASRService: ObservableObject {
                 // Keep Combine sends on the main queue.
                 DispatchQueue.main.async { [weak self] in
                     self?.audioLevelSubject.send(level)
+                }
+            },
+            onCaptureHealth: { [weak self] sessionID, attemptID, audioMs, sampleCount, rms, peak in
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    guard sessionID == self.benchmarkSessionID, self.isRunning else { return }
+                    let silent = rms < 0.002 && peak < 0.01
+                    self.benchmarkLog(
+                        "capture_health attempt=\(attemptID) audioMs=\(audioMs) " +
+                            "samples=\(sampleCount) rms=\(String(format: "%.6f", rms)) " +
+                            "peak=\(String(format: "%.6f", peak)) silent=\(silent) " +
+                            "inputUID=\(self.audioStartAttemptInputUID ?? "unknown")"
+                    )
+                    if self.silentPCMRecoveryWatchdog.shouldRecover(
+                        isInternalMicrophone: self.audioStartAttemptIsInternalMicrophone,
+                        isDirectCapture: self.activeAudioCaptureBackend == .directCoreAudio,
+                        rms: rms,
+                        peak: peak
+                    ) {
+                        self.benchmarkLog(
+                            "capture_health_recovery_triggered attempt=\(attemptID) " +
+                                "audioMs=\(audioMs) rms=\(String(format: "%.6f", rms)) " +
+                                "peak=\(String(format: "%.6f", peak))"
+                        )
+                        self.scheduleAudioRouteRecovery(reason: "sustained silent PCM")
+                    }
                 }
             }
         )
@@ -1685,6 +1762,7 @@ final class ASRService: ObservableObject {
         self.isProcessingChunk = false
         self.skipNextChunk = false
         self.benchmarkSessionID += 1
+        self.silentPCMRecoveryWatchdog = AudioCaptureIdlePolicy.SilentPCMRecoveryWatchdog()
         let captureSessionID = self.benchmarkSessionID
         self.audioCaptureAttemptID &+= 1
         var readinessAttemptID = self.audioCaptureAttemptID
@@ -1716,23 +1794,54 @@ final class ASRService: ObservableObject {
                     ? max(AudioDevice.listInputDevices().count, 1) + 1
                     : 1
             var startAttempt = 1
+            var fallbackAttempt = 1
             var failedInputUIDs = Set<String>()
             var immediatelyRetriedInputUID: String?
+            var bluetoothStabilization = AudioCaptureIdlePolicy.BluetoothInputStabilization()
+            var forcedInputUID: String?
             self.audioStartAttemptInputUID = nil
             while true {
                 let routeGenerationAtStart = self.audioRouteRecoveryGeneration
                 do {
-                    try await self.startConfiguredAudioCapture(excluding: failedInputUIDs)
+                    try await self.startConfiguredAudioCapture(
+                        excluding: failedInputUIDs,
+                        forcingInputUID: forcedInputUID
+                    )
                 } catch {
                     guard let failedUID = self.audioStartAttemptInputUID else { throw error }
-                    let retrySameInput = immediatelyRetriedInputUID == nil
-                    if retrySameInput {
+                    let now = ProcessInfo.processInfo.systemUptime
+                    let retryBluetoothInput = bluetoothStabilization.shouldRetry(
+                        inputUID: failedUID,
+                        isBluetoothInput: self.audioStartAttemptIsBluetooth,
+                        now: now
+                    )
+                    let retrySameInput = retryBluetoothInput || immediatelyRetriedInputUID == nil
+                    if retryBluetoothInput {
+                        forcedInputUID = failedUID
                         immediatelyRetriedInputUID = failedUID
+                        self.logBluetoothStartupRetry(
+                            uid: failedUID,
+                            attempt: startAttempt + 1,
+                            elapsed: bluetoothStabilization.elapsed(at: now),
+                            reason: error.localizedDescription
+                        )
+                    } else {
+                        forcedInputUID = nil
+                        if bluetoothStabilization.inputUID == failedUID {
+                            self.logBluetoothStartupStabilizationEnded(
+                                uid: failedUID,
+                                elapsed: bluetoothStabilization.elapsed(at: now),
+                                outcome: "budget_exhausted"
+                            )
+                        }
+                        if immediatelyRetriedInputUID == nil {
+                            immediatelyRetriedInputUID = failedUID
+                        } else {
+                            failedInputUIDs.insert(failedUID)
+                        }
+                        fallbackAttempt += 1
                     }
-                    if retrySameInput == false {
-                        failedInputUIDs.insert(failedUID)
-                    }
-                    guard startAttempt < maximumStartAttempts,
+                    guard retryBluetoothInput || fallbackAttempt <= maximumStartAttempts,
                           startGeneration == self.audioCaptureStartGeneration,
                           self.isTerminating == false
                     else {
@@ -1743,7 +1852,7 @@ final class ASRService: ObservableObject {
                         startGeneration: startGeneration,
                         completedAttempt: startAttempt,
                         reason: "backend_start_error:\(error.localizedDescription)",
-                        waitForTopologyQuiet: retrySameInput == false
+                        waitForTopologyQuiet: retryBluetoothInput || retrySameInput == false
                     )
                     startAttempt += 1
                     continue
@@ -1770,6 +1879,15 @@ final class ASRService: ObservableObject {
                     self.pendingAudioRouteRecovery == nil &&
                     self.isRecoveringAudioRoute == false
                 if readiness == .ready, routeStayedStable {
+                    if let stabilizedUID = bluetoothStabilization.inputUID {
+                        self.logBluetoothStartupStabilizationEnded(
+                            uid: stabilizedUID,
+                            elapsed: bluetoothStabilization.elapsed(
+                                at: ProcessInfo.processInfo.systemUptime
+                            ),
+                            outcome: "first_pcm"
+                        )
+                    }
                     AppServices.shared.microphonePreferenceCoordinator.confirmActiveSelection(
                         uid: self.audioStartAttemptInputUID,
                         name: self.audioStartAttemptInputName
@@ -1791,17 +1909,44 @@ final class ASRService: ObservableObject {
                     throw CancellationError()
                 }
                 var retrySameInput = false
+                var retryBluetoothInput = false
                 if let failedUID = self.audioStartAttemptInputUID {
-                    retrySameInput = readiness == .formatInvalidated &&
-                        immediatelyRetriedInputUID == nil
-                    if retrySameInput {
+                    let now = ProcessInfo.processInfo.systemUptime
+                    retryBluetoothInput = bluetoothStabilization.shouldRetry(
+                        inputUID: failedUID,
+                        isBluetoothInput: self.audioStartAttemptIsBluetooth,
+                        now: now
+                    )
+                    retrySameInput = retryBluetoothInput || (
+                        readiness == .formatInvalidated && immediatelyRetriedInputUID == nil
+                    )
+                    if retryBluetoothInput {
+                        forcedInputUID = failedUID
                         immediatelyRetriedInputUID = failedUID
-                    }
-                    if retrySameInput == false {
-                        failedInputUIDs.insert(failedUID)
+                        self.logBluetoothStartupRetry(
+                            uid: failedUID,
+                            attempt: startAttempt + 1,
+                            elapsed: bluetoothStabilization.elapsed(at: now),
+                            reason: "readiness_\(readiness)"
+                        )
+                    } else {
+                        forcedInputUID = nil
+                        if bluetoothStabilization.inputUID == failedUID {
+                            self.logBluetoothStartupStabilizationEnded(
+                                uid: failedUID,
+                                elapsed: bluetoothStabilization.elapsed(at: now),
+                                outcome: "budget_exhausted"
+                            )
+                        }
+                        if retrySameInput {
+                            immediatelyRetriedInputUID = failedUID
+                        } else {
+                            failedInputUIDs.insert(failedUID)
+                            fallbackAttempt += 1
+                        }
                     }
                 }
-                guard startAttempt < maximumStartAttempts else {
+                guard retryBluetoothInput || fallbackAttempt <= maximumStartAttempts else {
                     let message: String
                     switch readiness {
                     case .timedOut:
@@ -1827,7 +1972,7 @@ final class ASRService: ObservableObject {
                     startGeneration: startGeneration,
                     completedAttempt: startAttempt,
                     reason: "readiness_\(readiness)_routeStable_\(routeStayedStable)",
-                    waitForTopologyQuiet: retrySameInput == false
+                    waitForTopologyQuiet: retryBluetoothInput || retrySameInput == false
                 )
                 startAttempt += 1
             }
@@ -2012,6 +2157,34 @@ final class ASRService: ObservableObject {
         return attemptID
     }
 
+    private func logBluetoothStartupRetry(
+        uid: String,
+        attempt: Int,
+        elapsed: TimeInterval,
+        reason: String
+    ) {
+        let elapsedMilliseconds = Int((elapsed * 1000).rounded())
+        let admissionWindowMilliseconds = Int(
+            (AudioCaptureIdlePolicy.BluetoothInputStabilization.retryAdmissionWindow * 1000).rounded()
+        )
+        self.benchmarkLog(
+            "bluetooth_start_retry uid=\(uid) attempt=\(attempt) " +
+                "elapsedMs=\(elapsedMilliseconds) " +
+                "admissionWindowMs=\(admissionWindowMilliseconds) reason=\(reason)"
+        )
+    }
+
+    private func logBluetoothStartupStabilizationEnded(
+        uid: String,
+        elapsed: TimeInterval,
+        outcome: String
+    ) {
+        self.benchmarkLog(
+            "bluetooth_start_stabilization_end uid=\(uid) outcome=\(outcome) " +
+                "elapsedMs=\(Int((elapsed * 1000).rounded()))"
+        )
+    }
+
     func cancelPendingAudioCaptureStart(reason: String) async {
         guard self.isStarting, self.isRunning == false else { return }
         self.audioCaptureStartGeneration &+= 1
@@ -2029,10 +2202,84 @@ final class ASRService: ObservableObject {
 
     private func finishAudioCaptureStart() {
         self.isStarting = false
+        let deferredRecovery = self.deferredBluetoothStartupRouteRecovery.take()
         self.audioCaptureStateSettledTick &+= 1
         let waiters = self.audioCaptureStartWaiters
         self.audioCaptureStartWaiters.removeAll(keepingCapacity: false)
         waiters.forEach { $0.resume() }
+
+        if let deferredRecovery {
+            Task { @MainActor [weak self] in
+                await self?.processDeferredBluetoothStartupRouteRecovery(deferredRecovery)
+            }
+        }
+    }
+
+    private func processDeferredBluetoothStartupRouteRecovery(
+        _ request: AudioCaptureIdlePolicy.DeferredBluetoothRouteRecovery.Request
+    ) async {
+        do {
+            try await Task.sleep(nanoseconds: self.audioRouteRecoveryDelayNanoseconds)
+        } catch {
+            return
+        }
+        guard self.isTerminating == false else { return }
+
+        let snapshot = await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let devices = AudioDevice.listInputDevicesRefreshingLiveness()
+                let defaultInputUID = AudioDevice.getDefaultInputDevice()?.uid
+                continuation.resume(returning: (devices, defaultInputUID))
+            }
+        }
+        guard self.isTerminating == false else { return }
+        if self.isStarting {
+            self.deferredBluetoothStartupRouteRecovery.preserve(
+                reason: request.reason,
+                requiresIdlePrewarm: request.requiresIdlePrewarm,
+                reconcilesInputSelection: request.reconcilesInputSelection
+            )
+            return
+        }
+
+        let microphonePreferenceCoordinator = AppServices.shared.microphonePreferenceCoordinator
+        let resolvedInput: AudioDevice.Device?
+        if request.reconcilesInputSelection {
+            resolvedInput = microphonePreferenceCoordinator.reconcileMicrophoneSelection(
+                availableInputs: snapshot.0,
+                defaultInputUID: snapshot.1
+            )
+        } else {
+            resolvedInput = microphonePreferenceCoordinator.inputDeviceForCapture(
+                availableInputs: snapshot.0,
+                defaultInputUID: snapshot.1
+            )
+        }
+        self.cacheCurrentDeviceList(snapshot.0)
+
+        let activeSnapshot = self.directAudioLifecycleController.snapshot
+        let shouldRecover = AudioCaptureIdlePolicy.shouldRecoverAfterDeferredBluetoothReconciliation(
+            isRunning: self.isRunning,
+            confirmedInputUID: microphonePreferenceCoordinator.confirmedActiveInputUID,
+            activeDeviceID: activeSnapshot.deviceID,
+            resolvedInputUID: resolvedInput?.uid,
+            resolvedDeviceID: resolvedInput?.id,
+            hasPreparedCapture: self.hasPreparedAudioCapture,
+            requiresIdlePrewarm: request.requiresIdlePrewarm
+        )
+        guard shouldRecover else {
+            self.benchmarkLog(
+                "bluetooth_deferred_reconciliation_noop event=\(request.reason) " +
+                    "resolvedUID=\(resolvedInput?.uid ?? "none")"
+            )
+            return
+        }
+
+        self.scheduleAudioRouteRecovery(
+            reason: "deferred after Bluetooth startup: \(request.reason)",
+            requiresIdlePrewarm: request.requiresIdlePrewarm,
+            reconcilesInputSelection: false
+        )
     }
 
     /// Stops the recording session and returns the transcribed text.
@@ -2972,10 +3219,50 @@ final class ASRService: ObservableObject {
     private func scheduleAudioRouteRecovery(
         reason: String,
         requiresIdlePrewarm: Bool = false,
-        reconcilesInputSelection: Bool = false
+        reconcilesInputSelection: Bool = false,
+        invalidatesCurrentStart: Bool = false
     ) {
         guard self.isTerminating == false else {
             self.benchmarkLog("route_recovery_ignored reason=app_terminating event=\(reason)")
+            return
+        }
+        if AudioCaptureIdlePolicy.shouldDeferRouteRecoveryToBluetoothStart(
+            directCaptureEnabled: SettingsStore.shared.experimentalDirectAudioCaptureEnabled,
+            isStarting: self.isStarting,
+            isRunning: self.isRunning,
+            attemptedInputIsBluetooth: self.audioStartAttemptIsBluetooth
+        ) {
+            // AirPods and other Bluetooth inputs can replace their streams more
+            // than once while entering microphone mode. The active start owns
+            // its bounded retry loop; a second recovery owner would exclude the
+            // same healthy device before the Bluetooth route settles.
+            let disposition = AudioCaptureIdlePolicy.bluetoothStartupRouteChangeDisposition(
+                invalidatesCurrentStart: invalidatesCurrentStart,
+                requiresIdlePrewarm: requiresIdlePrewarm,
+                reconcilesInputSelection: reconcilesInputSelection
+            )
+            if disposition == .retryCurrentStart {
+                // Make routeStayedStable false even if first PCM won the
+                // readiness-gate race. The startup loop then retries the same
+                // Bluetooth input without handing it to active-route recovery.
+                self.audioRouteRecoveryGeneration &+= 1
+                self.benchmarkLog(
+                    "bluetooth_start_route_invalidation_retry event=\(reason) " +
+                        "routeGeneration=\(self.audioRouteRecoveryGeneration)"
+                )
+                return
+            }
+            if disposition == .preserveDeferredWork {
+                self.deferredBluetoothStartupRouteRecovery.preserve(
+                    reason: reason,
+                    requiresIdlePrewarm: requiresIdlePrewarm,
+                    reconcilesInputSelection: reconcilesInputSelection
+                )
+            }
+            self.benchmarkLog(
+                "bluetooth_start_route_change_deferred event=\(reason) " +
+                    "disposition=\(disposition)"
+            )
             return
         }
         self.audioRouteRecoveryGeneration &+= 1
@@ -3377,7 +3664,8 @@ final class ASRService: ObservableObject {
         )
         self.scheduleAudioRouteRecovery(
             reason: "direct format changed: \(invalidation.reason)",
-            requiresIdlePrewarm: true
+            requiresIdlePrewarm: true,
+            invalidatesCurrentStart: true
         )
     }
 
@@ -4804,6 +5092,7 @@ private final nonisolated class AudioCapturePipeline: @unchecked Sendable {
     private let audioBuffer: ThreadSafeAudioBuffer
     private let onFirstAudio: (Int, UInt64, Int, Int, Double, Int, Int) -> Void
     private let onLevel: (CGFloat) -> Void
+    private let onCaptureHealth: (Int, UInt64, Int, Int, Float, Float) -> Void
 
     private let lock = NSLock()
     private var recordingEnabled: Bool = false
@@ -4818,6 +5107,10 @@ private final nonisolated class AudioCapturePipeline: @unchecked Sendable {
     private var resampleNextSourcePosition: Double = 0
     private var resamplePreviousSample: Float?
     private var lastInputSampleEnd: Int64?
+    private var captureHealthSampleCount: Int = 0
+    private var captureHealthTotalSampleCount: Int = 0
+    private var captureHealthSquareSum: Double = 0
+    private var captureHealthPeak: Float = 0
 
     // Smoothing state (kept off ASRService/@MainActor)
     private var levelHistory: [CGFloat] = []
@@ -4835,11 +5128,13 @@ private final nonisolated class AudioCapturePipeline: @unchecked Sendable {
     init(
         audioBuffer: ThreadSafeAudioBuffer,
         onFirstAudio: @escaping (Int, UInt64, Int, Int, Double, Int, Int) -> Void,
-        onLevel: @escaping (CGFloat) -> Void
+        onLevel: @escaping (CGFloat) -> Void,
+        onCaptureHealth: @escaping (Int, UInt64, Int, Int, Float, Float) -> Void
     ) {
         self.audioBuffer = audioBuffer
         self.onFirstAudio = onFirstAudio
         self.onLevel = onLevel
+        self.onCaptureHealth = onCaptureHealth
     }
 
     func setRecordingEnabled(
@@ -4857,6 +5152,7 @@ private final nonisolated class AudioCapturePipeline: @unchecked Sendable {
             self.recordingStopHostTime = nil
             self.resetResamplerLocked()
             self.lastInputSampleEnd = nil
+            self.resetCaptureHealthLocked()
             self.recordingEnabled = true
         }
         if enabled == false {
@@ -4867,6 +5163,7 @@ private final nonisolated class AudioCapturePipeline: @unchecked Sendable {
             self.recordingStopHostTime = nil
             self.resetResamplerLocked()
             self.lastInputSampleEnd = nil
+            self.resetCaptureHealthLocked()
             self.levelHistory.removeAll(keepingCapacity: true)
             self.smoothedLevel = 0.0
         }
@@ -4966,7 +5263,7 @@ private final nonisolated class AudioCapturePipeline: @unchecked Sendable {
         }
         if recordingEnabled == false {
             self.lock.unlock()
-            self.onLevel(self.calculateAudioLevel(samples))
+            self.onLevel(self.measureAudioLevel(samples).level)
             return
         }
         let startHostTime = self.recordingStartHostTime
@@ -5052,8 +5349,24 @@ private final nonisolated class AudioCapturePipeline: @unchecked Sendable {
             )
         }
         self.lock.unlock()
-        let level = self.calculateAudioLevel(mono16k)
-        self.onLevel(level)
+        let measurement = self.measureAudioLevel(mono16k)
+        self.onLevel(measurement.level)
+        if let health = self.captureHealthDiagnostic(
+            sampleCount: mono16k.count,
+            rms: measurement.rms,
+            peak: measurement.peak,
+            sessionID: recordingSessionID,
+            attemptID: recordingAttemptID
+        ) {
+            self.onCaptureHealth(
+                recordingSessionID,
+                recordingAttemptID,
+                health.audioMs,
+                health.sampleCount,
+                health.rms,
+                health.peak
+            )
+        }
     }
 
     private static func acceptedFrameRange(
@@ -5115,6 +5428,13 @@ private final nonisolated class AudioCapturePipeline: @unchecked Sendable {
         self.resamplePreviousSample = nil
     }
 
+    private func resetCaptureHealthLocked() {
+        self.captureHealthSampleCount = 0
+        self.captureHealthTotalSampleCount = 0
+        self.captureHealthSquareSum = 0
+        self.captureHealthPeak = 0
+    }
+
     /// Stateful linear resampling keeps fractional phase across small hardware
     /// callbacks. Stateless per-packet conversion silently shortens 44.1 kHz
     /// recordings and introduces a discontinuity at every device cycle.
@@ -5171,23 +5491,58 @@ private final nonisolated class AudioCapturePipeline: @unchecked Sendable {
         return output
     }
 
-    private func calculateAudioLevel(_ samples: [Float]) -> CGFloat {
-        guard samples.isEmpty == false else { return 0.0 }
+    private func measureAudioLevel(_ samples: [Float]) -> (level: CGFloat, rms: Float, peak: Float) {
+        guard samples.isEmpty == false else { return (0, 0, 0) }
 
-        // RMS
         var sum: Float = 0.0
         vDSP_svesq(samples, 1, &sum, vDSP_Length(samples.count))
         let rms = sqrt(sum / Float(samples.count))
+        var peak: Float = 0
+        vDSP_maxmgv(samples, 1, &peak, vDSP_Length(samples.count))
 
         // Noise gate
         if rms < 0.002 {
-            return self.applySmoothingAndThreshold(0.0)
+            return (self.applySmoothingAndThreshold(0), rms, peak)
         }
 
         // dB -> normalized [0, 1]
         let dbLevel = 20 * log10(max(rms, 1e-10))
         let normalizedLevel = max(0, min(1, (dbLevel + 55) / 55))
-        return self.applySmoothingAndThreshold(CGFloat(normalizedLevel))
+        return (self.applySmoothingAndThreshold(CGFloat(normalizedLevel)), rms, peak)
+    }
+
+    private func captureHealthDiagnostic(
+        sampleCount: Int,
+        rms: Float,
+        peak: Float,
+        sessionID: Int,
+        attemptID: UInt64
+    ) -> (audioMs: Int, sampleCount: Int, rms: Float, peak: Float)? {
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        guard self.recordingEnabled,
+              self.recordingSessionID == sessionID,
+              self.recordingAttemptID == attemptID
+        else { return nil }
+
+        self.captureHealthSampleCount += sampleCount
+        self.captureHealthTotalSampleCount += sampleCount
+        self.captureHealthSquareSum += Double(rms * rms) * Double(sampleCount)
+        self.captureHealthPeak = max(self.captureHealthPeak, peak)
+        guard self.captureHealthSampleCount >= 16_000 else { return nil }
+
+        let windowSampleCount = self.captureHealthSampleCount
+        let windowRMS = Float(sqrt(self.captureHealthSquareSum / Double(windowSampleCount)))
+        let result = (
+            audioMs: Int((Double(self.captureHealthTotalSampleCount) / 16_000 * 1000).rounded()),
+            sampleCount: windowSampleCount,
+            rms: windowRMS,
+            peak: self.captureHealthPeak
+        )
+        self.captureHealthSampleCount = 0
+        self.captureHealthSquareSum = 0
+        self.captureHealthPeak = 0
+        return result
     }
 
     private func applySmoothingAndThreshold(_ newLevel: CGFloat) -> CGFloat {
