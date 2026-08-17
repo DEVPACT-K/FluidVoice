@@ -1796,6 +1796,15 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    /// Routes online-call meeting mic capture through AVAudioEngine voice processing; opt-in.
+    var meetingVPIOMicCapture: Bool {
+        get { self.defaults.object(forKey: Keys.meetingVPIOMicCapture) as? Bool ?? false }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.meetingVPIOMicCapture)
+        }
+    }
+
     var enableAIStreaming: Bool {
         get {
             let value = self.defaults.object(forKey: Keys.enableAIStreaming)
@@ -3238,6 +3247,7 @@ final class SettingsStore: ObservableObject {
             hotkeyMode: self.hotkeyMode,
             enableStreamingPreview: self.enableStreamingPreview,
             skipSilentRecordingsEnabled: self.skipSilentRecordingsEnabled,
+            meetingVPIOMicCapture: self.meetingVPIOMicCapture,
             enableAIStreaming: self.enableAIStreaming,
             copyTranscriptionToClipboard: self.copyTranscriptionToClipboard,
             textInsertionMode: self.textInsertionMode,
@@ -3362,6 +3372,9 @@ final class SettingsStore: ObservableObject {
         self.enableStreamingPreview = payload.enableStreamingPreview
         if let skipSilentRecordingsEnabled = payload.skipSilentRecordingsEnabled {
             self.skipSilentRecordingsEnabled = skipSilentRecordingsEnabled
+        }
+        if let meetingVPIOMicCapture = payload.meetingVPIOMicCapture {
+            self.meetingVPIOMicCapture = meetingVPIOMicCapture
         }
         self.enableAIStreaming = payload.enableAIStreaming
         self.copyTranscriptionToClipboard = payload.copyTranscriptionToClipboard
@@ -5292,6 +5305,7 @@ private extension SettingsStore {
         static let hotkeyMode = "HotkeyMode"
         static let enableStreamingPreview = "EnableStreamingPreview"
         static let skipSilentRecordingsEnabled = "SkipSilentRecordingsEnabled"
+        static let meetingVPIOMicCapture = "MeetingVPIOMicCapture"
         static let enableAIStreaming = "EnableAIStreaming"
         static let copyTranscriptionToClipboard = "CopyTranscriptionToClipboard"
         static let textInsertionMode = "TextInsertionMode"
