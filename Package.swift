@@ -20,6 +20,7 @@ let package = Package(
             name: "CoreAudioCaptureSupport",
             path: "Sources/CoreAudioCaptureSupport",
             linkerSettings: [
+                .linkedFramework("AudioToolbox"),
                 .linkedFramework("CoreAudio"),
             ]
         ),

@@ -11,6 +11,11 @@ extern "C" {
 
 typedef void *FVCoreAudioCaptureRef;
 
+typedef enum {
+    FVCoreAudioCaptureTransportDeviceIOProc = 0,
+    FVCoreAudioCaptureTransportAUHAL = 1,
+} FVCoreAudioCaptureTransport;
+
 typedef struct {
     const float *samples;
     uint32_t frameCount;
@@ -35,6 +40,13 @@ uint32_t fv_core_audio_buffer_frame_count(
 /// The device is not started and the microphone is not active until start.
 int32_t fv_core_audio_capture_create(
     AudioObjectID deviceID,
+    FVCoreAudioCaptureRef *outCapture
+);
+
+/// Creates capture using the requested low-level Core Audio transport.
+int32_t fv_core_audio_capture_create_with_transport(
+    AudioObjectID deviceID,
+    FVCoreAudioCaptureTransport transport,
     FVCoreAudioCaptureRef *outCapture
 );
 

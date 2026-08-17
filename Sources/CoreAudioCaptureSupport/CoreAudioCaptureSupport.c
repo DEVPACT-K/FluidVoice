@@ -1,5 +1,6 @@
 #include "include/CoreAudioCaptureSupport.h"
 
+#include <AudioToolbox/AudioToolbox.h>
 #include <dispatch/dispatch.h>
 #include <limits.h>
 #include <mach/mach_time.h>
@@ -24,6 +25,8 @@ typedef struct {
     AudioObjectID deviceID;
     AudioStreamID streamID;
     AudioDeviceIOProcID ioProcID;
+    AudioUnit audioUnit;
+    FVCoreAudioCaptureTransport transport;
     AudioStreamBasicDescription format;
     uint32_t bufferFrameSize;
     uint32_t bytesPerSample;
@@ -34,6 +37,7 @@ typedef struct {
     _Atomic bool running;
     _Atomic bool formatDirty;
     _Atomic bool packetGateOpen;
+    float *auhalRenderSamples;
     FVPacketSlot slots[FV_RING_CAPACITY];
 } FVCapture;
 
@@ -57,7 +61,8 @@ static OSStatus fv_get_input_stream_format(
     );
     if (status != noErr || streamsSize != sizeof(AudioStreamID)) {
         // Multiple independent input streams can have different formats. Let
-        // AVAudioEngine handle those uncommon devices instead of guessing.
+        // Reject uncommon multi-stream devices instead of guessing which
+        // independent stream represents the selected microphone.
         return status != noErr ? status : kAudioHardwareUnsupportedOperationError;
     }
 
@@ -355,12 +360,213 @@ static OSStatus fv_io_proc(
     return noErr;
 }
 
+static OSStatus fv_auhal_input_callback(
+    void *inRefCon,
+    AudioUnitRenderActionFlags *ioActionFlags,
+    const AudioTimeStamp *inTimeStamp,
+    UInt32 inBusNumber,
+    UInt32 inNumberFrames,
+    AudioBufferList *ioData
+) {
+    (void) inBusNumber;
+    (void) ioData;
+
+    FVCapture *capture = (FVCapture *) inRefCon;
+    if (capture == NULL || capture->audioUnit == NULL ||
+        !atomic_load_explicit(&capture->running, memory_order_relaxed)) {
+        return noErr;
+    }
+    if (inNumberFrames == 0 || inNumberFrames > FV_MAX_FRAMES_PER_PACKET) {
+        atomic_fetch_add_explicit(&capture->droppedPackets, 1, memory_order_relaxed);
+        return noErr;
+    }
+
+    AudioBufferList renderData = {
+        .mNumberBuffers = 1,
+        .mBuffers = {{
+            .mNumberChannels = capture->format.mChannelsPerFrame,
+            .mDataByteSize = inNumberFrames * capture->format.mChannelsPerFrame * sizeof(float),
+            .mData = capture->auhalRenderSamples,
+        }},
+    };
+    OSStatus status = AudioUnitRender(
+        capture->audioUnit,
+        ioActionFlags,
+        inTimeStamp,
+        1,
+        inNumberFrames,
+        &renderData
+    );
+    if (status != noErr ||
+        atomic_load_explicit(&capture->formatDirty, memory_order_acquire) ||
+        !atomic_load_explicit(&capture->packetGateOpen, memory_order_acquire)) {
+        return status;
+    }
+
+    const uint64_t writeIndex =
+        atomic_load_explicit(&capture->writeIndex, memory_order_relaxed);
+    const uint64_t readIndex =
+        atomic_load_explicit(&capture->readIndex, memory_order_acquire);
+    if (writeIndex - readIndex >= FV_RING_CAPACITY) {
+        atomic_fetch_add_explicit(&capture->droppedPackets, 1, memory_order_relaxed);
+        return noErr;
+    }
+
+    FVPacketSlot *slot = &capture->slots[writeIndex % FV_RING_CAPACITY];
+    const uint32_t channelCount = capture->format.mChannelsPerFrame;
+    const float channelScale = 1.0f / (float) channelCount;
+    for (uint32_t frame = 0; frame < inNumberFrames; ++frame) {
+        const float *frameSamples =
+            capture->auhalRenderSamples + frame * channelCount;
+        float sum = 0.0f;
+        for (uint32_t channel = 0; channel < channelCount; ++channel) {
+            sum += frameSamples[channel];
+        }
+        slot->samples[frame] = sum * channelScale;
+    }
+    slot->frameCount = inNumberFrames;
+    slot->inputHostTime =
+        inTimeStamp != NULL &&
+        (inTimeStamp->mFlags & kAudioTimeStampHostTimeValid) != 0
+            ? inTimeStamp->mHostTime
+            : mach_absolute_time();
+    slot->inputSampleTime =
+        inTimeStamp != NULL &&
+        (inTimeStamp->mFlags & kAudioTimeStampSampleTimeValid) != 0
+            ? (int64_t) inTimeStamp->mSampleTime
+            : -1;
+    slot->sequence = writeIndex;
+
+    atomic_store_explicit(&capture->writeIndex, writeIndex + 1, memory_order_release);
+    dispatch_semaphore_signal(capture->packetSemaphore);
+    return noErr;
+}
+
+static OSStatus fv_create_auhal(FVCapture *capture) {
+    AudioComponentDescription description = {
+        .componentType = kAudioUnitType_Output,
+        .componentSubType = kAudioUnitSubType_HALOutput,
+        .componentManufacturer = kAudioUnitManufacturer_Apple,
+        .componentFlags = 0,
+        .componentFlagsMask = 0,
+    };
+    AudioComponent component = AudioComponentFindNext(NULL, &description);
+    if (component == NULL) {
+        return kAudioHardwareUnsupportedOperationError;
+    }
+
+    OSStatus status = AudioComponentInstanceNew(component, &capture->audioUnit);
+    UInt32 enabled = 1;
+    UInt32 disabled = 0;
+    if (status == noErr) {
+        status = AudioUnitSetProperty(
+            capture->audioUnit,
+            kAudioOutputUnitProperty_EnableIO,
+            kAudioUnitScope_Input,
+            1,
+            &enabled,
+            sizeof(enabled)
+        );
+    }
+    if (status == noErr) {
+        status = AudioUnitSetProperty(
+            capture->audioUnit,
+            kAudioOutputUnitProperty_EnableIO,
+            kAudioUnitScope_Output,
+            0,
+            &disabled,
+            sizeof(disabled)
+        );
+    }
+    if (status == noErr) {
+        status = AudioUnitSetProperty(
+            capture->audioUnit,
+            kAudioOutputUnitProperty_CurrentDevice,
+            kAudioUnitScope_Global,
+            0,
+            &capture->deviceID,
+            sizeof(capture->deviceID)
+        );
+    }
+
+    AudioStreamBasicDescription clientFormat = {
+        .mSampleRate = capture->format.mSampleRate,
+        .mFormatID = kAudioFormatLinearPCM,
+        .mFormatFlags = kAudioFormatFlagsNativeFloatPacked,
+        .mBytesPerPacket = sizeof(float) * capture->format.mChannelsPerFrame,
+        .mFramesPerPacket = 1,
+        .mBytesPerFrame = sizeof(float) * capture->format.mChannelsPerFrame,
+        .mChannelsPerFrame = capture->format.mChannelsPerFrame,
+        .mBitsPerChannel = 8 * sizeof(float),
+        .mReserved = 0,
+    };
+    if (status == noErr) {
+        status = AudioUnitSetProperty(
+            capture->audioUnit,
+            kAudioUnitProperty_StreamFormat,
+            kAudioUnitScope_Output,
+            1,
+            &clientFormat,
+            sizeof(clientFormat)
+        );
+    }
+    UInt32 maximumFramesPerSlice = FV_MAX_FRAMES_PER_PACKET;
+    if (status == noErr) {
+        status = AudioUnitSetProperty(
+            capture->audioUnit,
+            kAudioUnitProperty_MaximumFramesPerSlice,
+            kAudioUnitScope_Global,
+            0,
+            &maximumFramesPerSlice,
+            sizeof(maximumFramesPerSlice)
+        );
+    }
+    AURenderCallbackStruct callback = {
+        .inputProc = fv_auhal_input_callback,
+        .inputProcRefCon = capture,
+    };
+    if (status == noErr) {
+        status = AudioUnitSetProperty(
+            capture->audioUnit,
+            kAudioOutputUnitProperty_SetInputCallback,
+            kAudioUnitScope_Global,
+            0,
+            &callback,
+            sizeof(callback)
+        );
+    }
+    if (status == noErr) {
+        status = AudioUnitInitialize(capture->audioUnit);
+    }
+    if (status != noErr && capture->audioUnit != NULL) {
+        AudioComponentInstanceDispose(capture->audioUnit);
+        capture->audioUnit = NULL;
+    }
+    return status;
+}
+
 int32_t fv_core_audio_capture_create(
     AudioObjectID deviceID,
     FVCoreAudioCaptureRef *outCapture
 ) {
+    return fv_core_audio_capture_create_with_transport(
+        deviceID,
+        FVCoreAudioCaptureTransportDeviceIOProc,
+        outCapture
+    );
+}
+
+int32_t fv_core_audio_capture_create_with_transport(
+    AudioObjectID deviceID,
+    FVCoreAudioCaptureTransport transport,
+    FVCoreAudioCaptureRef *outCapture
+) {
     if (outCapture == NULL || deviceID == kAudioObjectUnknown) {
         return kAudioHardwareBadObjectError;
+    }
+    if (transport != FVCoreAudioCaptureTransportDeviceIOProc &&
+        transport != FVCoreAudioCaptureTransportAUHAL) {
+        return kAudioHardwareIllegalOperationError;
     }
     *outCapture = NULL;
 
@@ -369,6 +575,7 @@ int32_t fv_core_audio_capture_create(
         return kAudioHardwareUnspecifiedError;
     }
     capture->deviceID = deviceID;
+    capture->transport = transport;
 
     OSStatus status = fv_get_input_stream_format(
         deviceID,
@@ -395,13 +602,24 @@ int32_t fv_core_audio_capture_create(
          maximumBufferFrameSize > FV_MAX_FRAMES_PER_PACKET)) {
         status = kAudioHardwareUnsupportedOperationError;
     }
+    if (status == noErr && transport == FVCoreAudioCaptureTransportAUHAL) {
+        capture->auhalRenderSamples = calloc(
+            FV_MAX_FRAMES_PER_PACKET * capture->format.mChannelsPerFrame,
+            sizeof(float)
+        );
+        if (capture->auhalRenderSamples == NULL) {
+            status = kAudioHardwareUnspecifiedError;
+        }
+    }
     if (status != noErr) {
+        free(capture->auhalRenderSamples);
         free(capture);
         return status;
     }
 
     capture->packetSemaphore = dispatch_semaphore_create(0);
     if (capture->packetSemaphore == NULL) {
+        free(capture->auhalRenderSamples);
         free(capture);
         return kAudioHardwareUnspecifiedError;
     }
@@ -412,16 +630,21 @@ int32_t fv_core_audio_capture_create(
     atomic_init(&capture->formatDirty, false);
     atomic_init(&capture->packetGateOpen, false);
 
-    status = AudioDeviceCreateIOProcID(
-        deviceID,
-        fv_io_proc,
-        capture,
-        &capture->ioProcID
-    );
+    if (transport == FVCoreAudioCaptureTransportAUHAL) {
+        status = fv_create_auhal(capture);
+    } else {
+        status = AudioDeviceCreateIOProcID(
+            deviceID,
+            fv_io_proc,
+            capture,
+            &capture->ioProcID
+        );
+    }
     if (status != noErr) {
 #if !OS_OBJECT_USE_OBJC
         dispatch_release(capture->packetSemaphore);
 #endif
+        free(capture->auhalRenderSamples);
         free(capture);
         return status;
     }
@@ -432,7 +655,11 @@ int32_t fv_core_audio_capture_create(
 
 int32_t fv_core_audio_capture_start(FVCoreAudioCaptureRef captureRef) {
     FVCapture *capture = (FVCapture *) captureRef;
-    if (capture == NULL || capture->ioProcID == NULL) {
+    if (capture == NULL ||
+        (capture->transport == FVCoreAudioCaptureTransportDeviceIOProc &&
+         capture->ioProcID == NULL) ||
+        (capture->transport == FVCoreAudioCaptureTransportAUHAL &&
+         capture->audioUnit == NULL)) {
         return kAudioHardwareBadObjectError;
     }
     if (atomic_load_explicit(&capture->running, memory_order_acquire)) {
@@ -441,7 +668,10 @@ int32_t fv_core_audio_capture_start(FVCoreAudioCaptureRef captureRef) {
 
     atomic_store_explicit(&capture->packetGateOpen, false, memory_order_release);
     atomic_store_explicit(&capture->running, true, memory_order_release);
-    OSStatus status = AudioDeviceStart(capture->deviceID, capture->ioProcID);
+    OSStatus status =
+        capture->transport == FVCoreAudioCaptureTransportAUHAL
+            ? AudioOutputUnitStart(capture->audioUnit)
+            : AudioDeviceStart(capture->deviceID, capture->ioProcID);
     if (status != noErr) {
         atomic_store_explicit(&capture->running, false, memory_order_release);
         dispatch_semaphore_signal(capture->packetSemaphore);
@@ -451,7 +681,11 @@ int32_t fv_core_audio_capture_start(FVCoreAudioCaptureRef captureRef) {
 
 int32_t fv_core_audio_capture_stop(FVCoreAudioCaptureRef captureRef) {
     FVCapture *capture = (FVCapture *) captureRef;
-    if (capture == NULL || capture->ioProcID == NULL) {
+    if (capture == NULL ||
+        (capture->transport == FVCoreAudioCaptureTransportDeviceIOProc &&
+         capture->ioProcID == NULL) ||
+        (capture->transport == FVCoreAudioCaptureTransportAUHAL &&
+         capture->audioUnit == NULL)) {
         return kAudioHardwareBadObjectError;
     }
     if (!atomic_load_explicit(&capture->running, memory_order_acquire)) {
@@ -462,7 +696,10 @@ int32_t fv_core_audio_capture_stop(FVCoreAudioCaptureRef captureRef) {
     // Close publication before synchronizing with the IOProc. The consumer
     // still drains every packet already committed to the ring.
     atomic_store_explicit(&capture->packetGateOpen, false, memory_order_release);
-    OSStatus status = AudioDeviceStop(capture->deviceID, capture->ioProcID);
+    OSStatus status =
+        capture->transport == FVCoreAudioCaptureTransportAUHAL
+            ? AudioOutputUnitStop(capture->audioUnit)
+            : AudioDeviceStop(capture->deviceID, capture->ioProcID);
     atomic_store_explicit(&capture->running, false, memory_order_release);
     dispatch_semaphore_signal(capture->packetSemaphore);
     return status;
@@ -489,9 +726,21 @@ int32_t fv_core_audio_capture_destroy(FVCoreAudioCaptureRef captureRef) {
         }
         capture->ioProcID = NULL;
     }
+    if (capture->audioUnit != NULL) {
+        OSStatus uninitializeStatus = AudioUnitUninitialize(capture->audioUnit);
+        if (uninitializeStatus != noErr) {
+            return uninitializeStatus;
+        }
+        OSStatus disposeStatus = AudioComponentInstanceDispose(capture->audioUnit);
+        if (disposeStatus != noErr) {
+            return disposeStatus;
+        }
+        capture->audioUnit = NULL;
+    }
 #if !OS_OBJECT_USE_OBJC
     dispatch_release(capture->packetSemaphore);
 #endif
+    free(capture->auhalRenderSamples);
     free(capture);
     return noErr;
 }

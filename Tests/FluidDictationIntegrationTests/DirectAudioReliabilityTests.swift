@@ -289,6 +289,80 @@ final class DirectAudioReliabilityTests: XCTestCase {
         )
     }
 
+    func testChangingTransportRebuildsCaptureForSameDeviceAndFormat() async throws {
+        let fingerprint = makeFingerprint(sampleRate: 48_000, bufferFrameSize: 512)
+        let recorder = DirectAudioEventRecorder()
+        let controller = DirectCoreAudioLifecycleController(
+            packetHandler: { _, _, _, _, _ in },
+            inputFactory: { deviceID, _ in
+                recorder.record("make:device_ioproc")
+                return FakeDirectAudioInput(
+                    deviceID: deviceID,
+                    fingerprint: fingerprint,
+                    recorder: recorder
+                )
+            },
+            auhalInputFactory: { deviceID, _ in
+                recorder.record("make:auhal")
+                return FakeDirectAudioInput(
+                    deviceID: deviceID,
+                    fingerprint: fingerprint,
+                    recorder: recorder
+                )
+            },
+            fingerprintReader: { _ in fingerprint },
+            installsHardwareListeners: false,
+            onFormatInvalidated: { _ in }
+        )
+
+        _ = try await controller.start(
+            deviceID: fingerprint.deviceID,
+            deviceName: "Test microphone",
+            transport: .deviceIOProc,
+            reason: "initial_capture"
+        )
+        let fallback = try await controller.start(
+            deviceID: fingerprint.deviceID,
+            deviceName: "Test microphone",
+            transport: .auhal,
+            reason: "silent_pcm_fallback"
+        )
+        await controller.shutdown(reason: "test_complete")
+
+        XCTAssertEqual(fallback.phase, .running)
+        XCTAssertEqual(
+            recorder.events,
+            [
+                "make:device_ioproc",
+                "start:48000",
+                "invalidate:48000",
+                "make:auhal",
+                "start:48000",
+                "invalidate:48000",
+            ]
+        )
+    }
+
+    func testAUHALFallbackPolicyOnlyChangesAffectedInternalInput() {
+        var policy = DirectCoreAudioTransportFallbackPolicy()
+
+        policy.activateAUHAL(forInputUID: "built-in", isInternalMicrophone: true)
+        policy.activateAUHAL(forInputUID: "usb", isInternalMicrophone: false)
+
+        XCTAssertEqual(
+            policy.transport(forInputUID: "built-in", isInternalMicrophone: true),
+            .auhal
+        )
+        XCTAssertEqual(
+            policy.transport(forInputUID: "usb", isInternalMicrophone: false),
+            .deviceIOProc
+        )
+        XCTAssertEqual(
+            policy.transport(forInputUID: "bluetooth", isInternalMicrophone: false),
+            .deviceIOProc
+        )
+    }
+
     func testFailedStopPoisonsLifecycleAndPreventsReplacement() async throws {
         let fingerprint = makeFingerprint(sampleRate: 48_000, bufferFrameSize: 512)
         let recorder = DirectAudioEventRecorder()

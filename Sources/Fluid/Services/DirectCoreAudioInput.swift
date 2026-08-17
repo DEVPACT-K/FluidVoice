@@ -370,6 +370,30 @@ nonisolated struct DirectCoreAudioFormatFingerprint: Equatable {
 /// ring in C. This Swift wrapper drains that ring away from Core Audio's
 /// realtime thread, so resampling, level calculation, logging, and ASR buffer
 /// mutation never happen in the device callback.
+nonisolated enum DirectCoreAudioTransport: String, Equatable {
+    case deviceIOProc = "device_ioproc"
+    case auhal
+}
+
+nonisolated struct DirectCoreAudioTransportFallbackPolicy {
+    private var auhalInputUIDs = Set<String>()
+
+    mutating func activateAUHAL(forInputUID inputUID: String, isInternalMicrophone: Bool) {
+        guard isInternalMicrophone else { return }
+        self.auhalInputUIDs.insert(inputUID)
+    }
+
+    func transport(
+        forInputUID inputUID: String,
+        isInternalMicrophone: Bool
+    ) -> DirectCoreAudioTransport {
+        guard isInternalMicrophone, self.auhalInputUIDs.contains(inputUID) else {
+            return .deviceIOProc
+        }
+        return .auhal
+    }
+}
+
 nonisolated protocol DirectCoreAudioInputControlling: AnyObject, Sendable {
     var deviceID: AudioObjectID { get }
     var sampleRate: Double { get }
@@ -404,9 +428,21 @@ private final nonisolated class DirectCoreAudioInput: DirectCoreAudioInputContro
     )
     private let workerGroup = DispatchGroup()
 
-    init(deviceID: AudioObjectID, packetHandler: @escaping DirectCoreAudioPacketHandler) throws {
+    init(
+        deviceID: AudioObjectID,
+        transport: DirectCoreAudioTransport,
+        packetHandler: @escaping DirectCoreAudioPacketHandler
+    ) throws {
         var capture: FVCoreAudioCaptureRef?
-        let status = fv_core_audio_capture_create(deviceID, &capture)
+        let captureTransport = switch transport {
+        case .deviceIOProc: FVCoreAudioCaptureTransportDeviceIOProc
+        case .auhal: FVCoreAudioCaptureTransportAUHAL
+        }
+        let status = fv_core_audio_capture_create_with_transport(
+            deviceID,
+            captureTransport,
+            &capture
+        )
         guard status == noErr, let capture else {
             throw Self.error(status: status, operation: "prepare direct Core Audio input")
         }
@@ -682,6 +718,7 @@ final nonisolated class DirectCoreAudioLifecycleController: @unchecked Sendable 
 
     private let packetHandler: PacketHandler
     private let inputFactory: InputFactory
+    private let auhalInputFactory: InputFactory
     private let fingerprintReader: FingerprintReader
     private let onFormatInvalidated: @Sendable (FormatInvalidation) -> Void
     private let installsHardwareListeners: Bool
@@ -694,11 +731,23 @@ final nonisolated class DirectCoreAudioLifecycleController: @unchecked Sendable 
     private var isShutDown = false
     private var isPoisoned = false
     private var inputDeviceName: String?
+    private var inputTransport: DirectCoreAudioTransport?
 
     init(
         packetHandler: @escaping PacketHandler,
         inputFactory: @escaping InputFactory = { deviceID, handler in
-            try DirectCoreAudioInput(deviceID: deviceID, packetHandler: handler)
+            try DirectCoreAudioInput(
+                deviceID: deviceID,
+                transport: .deviceIOProc,
+                packetHandler: handler
+            )
+        },
+        auhalInputFactory: @escaping InputFactory = { deviceID, handler in
+            try DirectCoreAudioInput(
+                deviceID: deviceID,
+                transport: .auhal,
+                packetHandler: handler
+            )
         },
         fingerprintReader: @escaping FingerprintReader = {
             try DirectCoreAudioFormatFingerprint.read(deviceID: $0)
@@ -708,6 +757,7 @@ final nonisolated class DirectCoreAudioLifecycleController: @unchecked Sendable 
     ) {
         self.packetHandler = packetHandler
         self.inputFactory = inputFactory
+        self.auhalInputFactory = auhalInputFactory
         self.fingerprintReader = fingerprintReader
         self.installsHardwareListeners = installsHardwareListeners
         self.onFormatInvalidated = onFormatInvalidated
@@ -785,6 +835,7 @@ final nonisolated class DirectCoreAudioLifecycleController: @unchecked Sendable 
     func prepare(
         deviceID: AudioObjectID,
         deviceName: String,
+        transport: DirectCoreAudioTransport = .deviceIOProc,
         reason: String
     ) async throws -> Snapshot {
         try await withCheckedThrowingContinuation { continuation in
@@ -794,6 +845,7 @@ final nonisolated class DirectCoreAudioLifecycleController: @unchecked Sendable 
                         returning: self.prepareLocked(
                             deviceID: deviceID,
                             deviceName: deviceName,
+                            transport: transport,
                             reason: reason
                         )
                     )
@@ -807,6 +859,7 @@ final nonisolated class DirectCoreAudioLifecycleController: @unchecked Sendable 
     func start(
         deviceID: AudioObjectID,
         deviceName: String,
+        transport: DirectCoreAudioTransport = .deviceIOProc,
         reason: String
     ) async throws -> Snapshot {
         try await withCheckedThrowingContinuation { continuation in
@@ -818,6 +871,7 @@ final nonisolated class DirectCoreAudioLifecycleController: @unchecked Sendable 
                     var prepared = try self.prepareLocked(
                         deviceID: deviceID,
                         deviceName: deviceName,
+                        transport: transport,
                         reason: reason
                     )
                     guard let input = self.input else {
@@ -837,6 +891,7 @@ final nonisolated class DirectCoreAudioLifecycleController: @unchecked Sendable 
                         prepared = try self.prepareLocked(
                             deviceID: deviceID,
                             deviceName: deviceName,
+                            transport: transport,
                             reason: "pre_start_fingerprint_changed"
                         )
                     }
@@ -1003,6 +1058,7 @@ final nonisolated class DirectCoreAudioLifecycleController: @unchecked Sendable 
     private func prepareLocked(
         deviceID: AudioObjectID,
         deviceName: String,
+        transport: DirectCoreAudioTransport,
         reason: String
     ) throws -> Snapshot {
         guard self.isShutDown == false else {
@@ -1017,7 +1073,8 @@ final nonisolated class DirectCoreAudioLifecycleController: @unchecked Sendable 
         let currentFingerprint = try self.fingerprintReader(deviceID)
         if let input = self.input,
            input.deviceID == deviceID,
-           input.formatFingerprint == currentFingerprint
+           input.formatFingerprint == currentFingerprint,
+           self.inputTransport == transport
         {
             self.inputDeviceName = deviceName
             self.publishSnapshot(
@@ -1027,7 +1084,8 @@ final nonisolated class DirectCoreAudioLifecycleController: @unchecked Sendable 
             )
             Self.log(
                 "Direct capture prepare reuse generation=\(self.generation) " +
-                    "reason=\(reason) fingerprint={\(currentFingerprint.logDescription)}",
+                    "transport=\(transport.rawValue) reason=\(reason) " +
+                    "fingerprint={\(currentFingerprint.logDescription)}",
                 level: .debug
             )
             return self.snapshot
@@ -1057,7 +1115,7 @@ final nonisolated class DirectCoreAudioLifecycleController: @unchecked Sendable 
         let startedAt = ProcessInfo.processInfo.systemUptime
         Self.log(
             "Direct capture prepare begin generation=\(generation) " +
-                "device='\(deviceName)' reason=\(reason) " +
+                "device='\(deviceName)' transport=\(transport.rawValue) reason=\(reason) " +
                 "fingerprint={\(currentFingerprint.logDescription)}",
             level: .info
         )
@@ -1066,7 +1124,8 @@ final nonisolated class DirectCoreAudioLifecycleController: @unchecked Sendable 
         let downstreamHandler = self.packetHandler
         let input: any DirectCoreAudioInputControlling
         do {
-            input = try self.inputFactory(deviceID) { samples, frameCount, sampleRate, inputHostTime, inputSampleTime in
+            let factory = transport == .auhal ? self.auhalInputFactory : self.inputFactory
+            input = try factory(deviceID) { samples, frameCount, sampleRate, inputHostTime, inputSampleTime in
                 gate.withAcceptedPacket {
                     downstreamHandler(
                         samples,
@@ -1091,6 +1150,7 @@ final nonisolated class DirectCoreAudioLifecycleController: @unchecked Sendable 
         }
 
         self.input = input
+        self.inputTransport = transport
         self.packetGate = gate
         do {
             if self.installsHardwareListeners {
@@ -1118,6 +1178,7 @@ final nonisolated class DirectCoreAudioLifecycleController: @unchecked Sendable 
         )
         Self.log(
             "Direct capture prepare end generation=\(generation) " +
+                "transport=\(transport.rawValue) " +
                 "elapsedMs=\(Self.elapsedMilliseconds(since: startedAt)) " +
                 "fingerprint={\(input.formatFingerprint.logDescription)}",
             level: .info
@@ -1132,6 +1193,7 @@ final nonisolated class DirectCoreAudioLifecycleController: @unchecked Sendable 
     ) -> OSStatus {
         guard self.input != nil || self.listenerRegistrations.isEmpty == false else {
             self.inputDeviceName = nil
+            self.inputTransport = nil
             let phase: Phase = self.isShutDown ? .shutDown : (self.isPoisoned ? .failed : .empty)
             self.publishSnapshot(phase: phase, input: nil, fingerprint: nil)
             return noErr
@@ -1189,6 +1251,7 @@ final nonisolated class DirectCoreAudioLifecycleController: @unchecked Sendable 
         }
         self.input = nil
         self.inputDeviceName = nil
+        self.inputTransport = nil
         let finalPhase: Phase =
             self.isShutDown ? .shutDown : (self.isPoisoned ? .failed : .empty)
         self.publishSnapshot(
