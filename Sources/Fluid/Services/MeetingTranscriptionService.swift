@@ -172,7 +172,14 @@ nonisolated enum SpeakerLabeledTranscriptionPolicy {
             gaps: gaps,
             diarizedDurationSeconds: diarizedDurationSeconds
         )
-        return "Speaker labeling omitted too much audio (gaps=\(coverage.gapCount), skipped=\(String(format: "%.3f", coverage.skippedDurationSeconds))s, maxGap=\(String(format: "%.3f", coverage.maxGapDurationSeconds))s, diarized=\(String(format: "%.3f", coverage.diarizedDurationSeconds))s, ratio=\(String(format: "%.4f", coverage.skippedRatio)))"
+        return String(
+            format: "Speaker labeling omitted too much audio (gaps=%d, skipped=%.3fs, maxGap=%.3fs, diarized=%.3fs, ratio=%.4f)",
+            coverage.gapCount,
+            coverage.skippedDurationSeconds,
+            coverage.maxGapDurationSeconds,
+            coverage.diarizedDurationSeconds,
+            coverage.skippedRatio
+        )
     }
 
     static func limitationNotice(for gaps: [SpeakerTranscriptGap]) -> String? {
