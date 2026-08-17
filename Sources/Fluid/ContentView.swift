@@ -2370,52 +2370,6 @@ struct ContentView: View {
             } else if !shouldShowAIProcessingFailure {
                 self.hideOverlayAfterOutput()
             }
-
-            if shouldCopyToClipboard, deliveryResult.wasDispatched {
-                AnalyticsService.shared.capture(
-                    .outputDelivered,
-                    properties: [
-                        "mode": AnalyticsMode.dictation.rawValue,
-                        "method": AnalyticsOutputMethod.clipboard.rawValue,
-                    ]
-                )
-            }
-        }
-
-        if didTypeExternally {
-            AnalyticsService.shared.capture(
-                .outputDelivered,
-                properties: [
-                    "mode": AnalyticsMode.dictation.rawValue,
-                    "method": AnalyticsOutputMethod.typed.rawValue,
-                ]
-            )
-
-            // Register the post-transcription edit observation after insertion is dispatched.
-            let wordsBucket = AnalyticsBuckets.bucketWords(AnalyticsBuckets.wordCount(in: finalText))
-            let modelInfo = self.currentDictationAIModelInfo(
-                dictationSlot: activeDictationSlot,
-                appBundleID: appInfo.bundleId
-            )
-            await PostTranscriptionEditTracker.shared.markTranscriptionCompleted(
-                mode: AnalyticsMode.dictation.rawValue,
-                outputMethod: AnalyticsOutputMethod.typed.rawValue,
-                wordsBucket: wordsBucket,
-                aiUsed: shouldUseAI,
-                aiModel: modelInfo.model,
-                aiProvider: modelInfo.provider
-            )
-        } else if shouldPersistOutputs,
-                  SettingsStore.shared.copyTranscriptionToClipboard == false,
-                  SettingsStore.shared.saveTranscriptionHistory
-        {
-            AnalyticsService.shared.capture(
-                .outputDelivered,
-                properties: [
-                    "mode": AnalyticsMode.dictation.rawValue,
-                    "method": AnalyticsOutputMethod.historyOnly.rawValue,
-                ]
-            )
         }
 
         if !didTypeExternally, !shouldShowAIProcessingFailure, !didFailTextDelivery {
@@ -2444,13 +2398,6 @@ struct ContentView: View {
         }
         NotchContentState.shared.showTextDeliveryFailure(message: message, transcript: transcript)
         self.menuBarManager.finishProcessingKeepingOverlayVisible()
-        AnalyticsService.shared.capture(
-            .errorOccurred,
-            properties: [
-                "domain": "text_delivery",
-                "category": failure.rawValue,
-            ]
-        )
     }
 
     private func showPrivateAIEditModeUnavailableIfNeeded() -> Bool {
@@ -3005,22 +2952,6 @@ struct ContentView: View {
                 self.showTextDeliveryFailure(failure, transcript: self.rewriteModeService.rewrittenText)
                 return
             }
-            if SettingsStore.shared.copyTranscriptionToClipboard {
-                AnalyticsService.shared.capture(
-                    .outputDelivered,
-                    properties: [
-                        "mode": AnalyticsMode.rewrite.rawValue,
-                        "method": AnalyticsOutputMethod.clipboard.rawValue,
-                    ]
-                )
-            }
-            AnalyticsService.shared.capture(
-                .outputDelivered,
-                properties: [
-                    "mode": AnalyticsMode.rewrite.rawValue,
-                    "method": AnalyticsOutputMethod.typed.rawValue,
-                ]
-            )
 
             // Clear the rewrite service state for next use
             self.rewriteModeService.clearState()
