@@ -143,7 +143,6 @@ final class RewriteModeService: ObservableObject {
             self.appendDiagnosticLog(
                 "processRewriteRequest failure | writeMode=\(self.isWriteMode) | error=\(error.localizedDescription)"
             )
-
         }
     }
 
@@ -151,7 +150,6 @@ final class RewriteModeService: ObservableObject {
         guard !self.rewrittenText.isEmpty else { return }
         NSApp.hide(nil) // Restore focus to the previous app
         self.typingService.typeTextInstantly(self.rewrittenText)
-
     }
 
     func clearState() {
