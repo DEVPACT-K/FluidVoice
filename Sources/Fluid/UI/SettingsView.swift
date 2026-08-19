@@ -1480,6 +1480,27 @@ struct SettingsView: View {
                     }
                     .padding(16)
                 }
+
+                ThemedCard(style: .standard) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack(spacing: 8) {
+                            Label("Experimental", systemImage: "flask.fill")
+                                .font(.headline)
+                                .foregroundStyle(.primary)
+                        }
+
+                        self.settingsToggleRow(
+                            title: "Faster Long Dictation",
+                            description: "For long recordings, reuse completed live windows and process only the remaining tail when you stop.",
+                            footnote: "Parakeet only. Falls back to normal transcription if reuse is unavailable or fails.",
+                            isOn: Binding(
+                                get: { SettingsStore.shared.experimentalParakeetUnifiedFinalEnabled },
+                                set: { SettingsStore.shared.experimentalParakeetUnifiedFinalEnabled = $0 }
+                            )
+                        )
+                    }
+                    .padding(16)
+                }
             }
             .padding(16)
         }

@@ -1786,6 +1786,16 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    /// Reuses finalized Parakeet windows so long recordings only process their remaining tail at stop.
+    /// Experimental and enabled by default; users can fall back to full-buffer finalization.
+    var experimentalParakeetUnifiedFinalEnabled: Bool {
+        get { self.defaults.object(forKey: Keys.experimentalParakeetUnifiedFinalEnabled) as? Bool ?? true }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.experimentalParakeetUnifiedFinalEnabled)
+        }
+    }
+
     /// Skips clearly silent recordings up to four seconds before invoking ASR.
     /// Opt-in so quiet speech keeps the existing transcription behavior by default.
     var skipSilentRecordingsEnabled: Bool {
@@ -3207,6 +3217,7 @@ final class SettingsStore: ObservableObject {
             pressAndHoldMode: self.pressAndHoldMode,
             hotkeyMode: self.hotkeyMode,
             enableStreamingPreview: self.enableStreamingPreview,
+            experimentalParakeetUnifiedFinalEnabled: self.experimentalParakeetUnifiedFinalEnabled,
             skipSilentRecordingsEnabled: self.skipSilentRecordingsEnabled,
             enableAIStreaming: self.enableAIStreaming,
             copyTranscriptionToClipboard: self.copyTranscriptionToClipboard,
@@ -3330,6 +3341,9 @@ final class SettingsStore: ObservableObject {
         self.shareAnonymousAnalytics = payload.shareAnonymousAnalytics
         self.hotkeyMode = payload.hotkeyMode ?? (payload.pressAndHoldMode ? .hold : .toggle)
         self.enableStreamingPreview = payload.enableStreamingPreview
+        if let experimentalParakeetUnifiedFinalEnabled = payload.experimentalParakeetUnifiedFinalEnabled {
+            self.experimentalParakeetUnifiedFinalEnabled = experimentalParakeetUnifiedFinalEnabled
+        }
         if let skipSilentRecordingsEnabled = payload.skipSilentRecordingsEnabled {
             self.skipSilentRecordingsEnabled = skipSilentRecordingsEnabled
         }
@@ -5259,6 +5273,7 @@ private extension SettingsStore {
         static let pressAndHoldMode = "PressAndHoldMode"
         static let hotkeyMode = "HotkeyMode"
         static let enableStreamingPreview = "EnableStreamingPreview"
+        static let experimentalParakeetUnifiedFinalEnabled = "ExperimentalParakeetUnifiedFinalEnabled"
         static let skipSilentRecordingsEnabled = "SkipSilentRecordingsEnabled"
         static let enableAIStreaming = "EnableAIStreaming"
         static let copyTranscriptionToClipboard = "CopyTranscriptionToClipboard"
