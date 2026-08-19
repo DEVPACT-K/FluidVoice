@@ -4824,6 +4824,46 @@ final class ASRService: ObservableObject {
         )
     }
 
+    func typeOutputPlanToActiveFieldAndWait(
+        _ plan: DictationLiteralOutputPlan,
+        preferredTargetPID: pid_t?,
+        textReadyAt: TimeInterval? = nil,
+        tracksDictionaryCorrections: Bool = false,
+        postInsertionKey: SettingsStore.SpokenSendKey? = nil,
+        requiredFocusTarget: TypingService.CapturedFocusTarget? = nil
+    ) async -> TypingService.DeliveryOutcome {
+        let requestedAt = ProcessInfo.processInfo.systemUptime
+        let textReadyAge = textReadyAt.map { Int(((requestedAt - $0) * 1000).rounded()) }
+        let text = plan.plainText
+        DebugLogger.shared.benchmark(
+            "TYPING_BENCH",
+            message: "asr_type_request chars=\(text.count) preferredPID=\(preferredTargetPID.map { String($0) } ?? "nil") textReadyAgeMs=\(textReadyAge.map { String($0) } ?? "nil")",
+            source: "TypingBenchmark"
+        )
+        let outcome = await withCheckedContinuation { continuation in
+            self.typingService.typeOutputPlanInstantly(
+                plan,
+                preferredTargetPID: preferredTargetPID,
+                textReadyAt: textReadyAt,
+                tracksDictionaryCorrections: tracksDictionaryCorrections,
+                postInsertionKey: postInsertionKey,
+                requiredFocusTarget: requiredFocusTarget
+            ) { outcome in
+                continuation.resume(returning: outcome)
+            }
+        }
+        let dispatchedAt = ProcessInfo.processInfo.systemUptime
+        let textReadyToDispatchMs = textReadyAt.map {
+            String(Int(((dispatchedAt - $0) * 1000).rounded()))
+        } ?? "nil"
+        DebugLogger.shared.benchmark(
+            "TYPING_BENCH",
+            message: "asr_type_dispatched chars=\(text.count) preferredPID=\(preferredTargetPID.map { String($0) } ?? "nil") textReadyToDispatchMs=\(textReadyToDispatchMs)",
+            source: "TypingBenchmark"
+        )
+        return outcome
+    }
+
     /// Removes filler sounds from transcribed text
     static func removeFillerWords(_ text: String) -> String {
         guard SettingsStore.shared.removeFillerWordsEnabled else { return text }
