@@ -252,6 +252,75 @@ final class FluidAudioProvider: TranscriptionProvider {
         return ASRTranscriptionResult(text: result.text, confidence: result.confidence)
     }
 
+    /// Returns the first sample not yet accepted by the active incremental session.
+    /// Callers can use this to copy only newly captured PCM instead of the full
+    /// growing recording on every live-preview tick.
+    func incrementalPreviewDeltaStart(totalSampleCount: Int) -> Int? {
+        Self.incrementalPreviewDeltaRange(
+            enabled: SettingsStore.shared.experimentalParakeetUnifiedFinalEnabled,
+            hasSession: self.incrementalSession != nil,
+            acceptedSampleCount: self.incrementalAcceptedSampleCount,
+            totalSampleCount: totalSampleCount
+        )?.lowerBound
+    }
+
+    static func incrementalPreviewDeltaRange(
+        enabled: Bool,
+        hasSession: Bool,
+        acceptedSampleCount: Int,
+        totalSampleCount: Int
+    ) -> Range<Int>? {
+        guard enabled,
+              hasSession,
+              acceptedSampleCount > self.incrementalChunkingThresholdSamples,
+              totalSampleCount > acceptedSampleCount
+        else { return nil }
+        return acceptedSampleCount..<totalSampleCount
+    }
+
+    /// Advances an existing incremental session with only the newly captured PCM.
+    /// Any failure invalidates the session; the caller should retry through
+    /// `transcribeStreaming(_:)` with the full prefix so normal fallback remains intact.
+    func transcribeStreamingDelta(
+        _ newSamples: [Float],
+        totalSampleCount: Int
+    ) async throws -> ASRTranscriptionResult {
+        guard let session = self.incrementalSession,
+              self.incrementalAcceptedSampleCount + newSamples.count == totalSampleCount
+        else {
+            self.resetIncrementalSession()
+            throw NSError(
+                domain: "FluidAudioProvider",
+                code: -4,
+                userInfo: [NSLocalizedDescriptionKey: "Incremental preview delta no longer matches the recording"]
+            )
+        }
+
+        let startedAt = Date().timeIntervalSince1970
+        do {
+            try await session.append(newSamples)
+            self.incrementalAcceptedSampleCount = totalSampleCount
+            let result = try await session.preview()
+            let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            self.latestStreamingPreviewText = text
+            self.latestStreamingPreviewSampleCount = totalSampleCount
+            self.latestStreamingPreviewFinishedAt = Date().timeIntervalSince1970
+            self.logStreamingBenchmark(
+                sampleCount: totalSampleCount,
+                text: text,
+                startedAt: startedAt,
+                inputSampleCount: newSamples.count
+            )
+            return ASRTranscriptionResult(text: result.text, confidence: result.confidence)
+        } catch {
+            self.resetIncrementalSession()
+            if Task.isCancelled || error is CancellationError {
+                throw CancellationError()
+            }
+            throw error
+        }
+    }
+
     func transcribeDictionaryTraining(_ samples: [Float]) async throws -> ASRTranscriptionResult {
         guard let manager = self.streamingAsrManager else {
             throw NSError(
@@ -582,6 +651,25 @@ final class FluidAudioProvider: TranscriptionProvider {
             ASR_BENCH provider_final_done samples=\(samples.count) audioMs=\(audioMs) \
             elapsedMs=\(elapsedMs) textChars=\(text.trimmingCharacters(in: .whitespacesAndNewlines).count) \
             rtf=\(String(format: "%.3f", rtf)) fallback=\(usedFallback) source=\(source)
+            """,
+            source: "ASRBenchmark"
+        )
+    }
+
+    private func logStreamingBenchmark(
+        sampleCount: Int,
+        text: String,
+        startedAt: TimeInterval,
+        inputSampleCount: Int
+    ) {
+        let elapsedMs = Int(((Date().timeIntervalSince1970 - startedAt) * 1000).rounded())
+        let audioMs = Int((Double(sampleCount) / 16_000.0 * 1000).rounded())
+        let rtf = audioMs > 0 ? Double(elapsedMs) / Double(audioMs) : 0
+        DebugLogger.shared.info(
+            """
+            ASR_BENCH provider_streaming_delta_done samples=\(sampleCount) inputSamples=\(inputSampleCount) \
+            audioMs=\(audioMs) elapsedMs=\(elapsedMs) textChars=\(text.count) \
+            rtf=\(String(format: "%.3f", rtf))
             """,
             source: "ASRBenchmark"
         )

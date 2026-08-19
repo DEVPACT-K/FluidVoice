@@ -2914,6 +2914,7 @@ private extension SettingsView {
                         )
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 170)
+                        .accessibilityLabel("Spoken Send phrase")
                     }
 
                     HStack(alignment: .center) {
@@ -2938,6 +2939,7 @@ private extension SettingsView {
                         }
                         .pickerStyle(.menu)
                         .frame(width: 170, alignment: .trailing)
+                        .accessibilityLabel("Spoken Send command")
                     }
                 }
                 .padding(.leading, 12)

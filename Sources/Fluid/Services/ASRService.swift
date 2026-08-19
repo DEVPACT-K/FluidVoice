@@ -4674,8 +4674,25 @@ final class ASRService: ObservableObject {
             return
         }
 
-        // Thread-safe copy of the data
-        let chunk = self.audioBuffer.getPrefix(currentSampleCount)
+        // Once FluidAudio has an incremental session, copy only newly captured PCM.
+        // Other providers and the first incremental preview still receive the full prefix.
+        #if arch(arm64)
+        let incrementalProvider = self.transcriptionProvider as? FluidAudioProvider
+        let incrementalDeltaStart = incrementalProvider?.incrementalPreviewDeltaStart(
+            totalSampleCount: currentSampleCount
+        )
+        #else
+        let incrementalDeltaStart: Int? = nil
+        #endif
+        let chunk: [Float]
+        if let incrementalDeltaStart {
+            chunk = self.audioBuffer.getRange(
+                startingAt: incrementalDeltaStart,
+                count: currentSampleCount - incrementalDeltaStart
+            )
+        } else {
+            chunk = self.audioBuffer.getPrefix(currentSampleCount)
+        }
 
         // Validate chunk is not empty (defensive check)
         guard !chunk.isEmpty else {
@@ -4689,15 +4706,50 @@ final class ASRService: ObservableObject {
 
         let startTime = Date()
         let startedAt = startTime.timeIntervalSince1970
-        let newSamples = max(0, chunk.count - self.benchmarkLastChunkSampleCount)
-        self.benchmarkLastChunkSampleCount = chunk.count
-        self.benchmarkLog("chunk_start index=\(chunkIndex) ageMs=\(chunkAgeMs) samples=\(chunk.count) newSamples=\(newSamples) audioMs=\(Int((Double(chunk.count) / 16_000.0 * 1000).rounded())) provider=\(self.transcriptionProvider.name)")
+        let newSamples = max(0, currentSampleCount - self.benchmarkLastChunkSampleCount)
+        self.benchmarkLastChunkSampleCount = currentSampleCount
+        let audioMilliseconds = Int((Double(currentSampleCount) / 16_000.0 * 1000).rounded())
+        self.benchmarkLog(
+            "chunk_start index=\(chunkIndex) ageMs=\(chunkAgeMs) samples=\(currentSampleCount) " +
+                "inputSamples=\(chunk.count) newSamples=\(newSamples) audioMs=\(audioMilliseconds) " +
+                "provider=\(self.transcriptionProvider.name)"
+        )
 
         do {
-            DebugLogger.shared.debug("Streaming chunk starting transcription (samples: \(chunk.count)) using \(self.transcriptionProvider.name)", source: "ASRService")
-            let result = try await transcriptionExecutor.run { [provider = self.transcriptionProvider] in
+            DebugLogger.shared.debug("Streaming chunk starting transcription (samples: \(currentSampleCount), input: \(chunk.count)) using \(self.transcriptionProvider.name)", source: "ASRService")
+            let result: ASRTranscriptionResult
+            #if arch(arm64)
+            if incrementalDeltaStart != nil, let incrementalProvider {
+                do {
+                    result = try await self.transcriptionExecutor.run {
+                        try await incrementalProvider.transcribeStreamingDelta(
+                            chunk,
+                            totalSampleCount: currentSampleCount
+                        )
+                    }
+                } catch {
+                    if Task.isCancelled || error is CancellationError {
+                        throw CancellationError()
+                    }
+                    DebugLogger.shared.warning(
+                        "Incremental delta preview failed; retrying with the full prefix",
+                        source: "ASRService"
+                    )
+                    let fullPrefix = self.audioBuffer.getPrefix(currentSampleCount)
+                    result = try await self.transcriptionExecutor.run { [provider = self.transcriptionProvider] in
+                        try await provider.transcribeStreaming(fullPrefix)
+                    }
+                }
+            } else {
+                result = try await self.transcriptionExecutor.run { [provider = self.transcriptionProvider] in
+                    try await provider.transcribeStreaming(chunk)
+                }
+            }
+            #else
+            result = try await self.transcriptionExecutor.run { [provider = self.transcriptionProvider] in
                 try await provider.transcribeStreaming(chunk)
             }
+            #endif
 
             let duration = Date().timeIntervalSince(startTime)
             DebugLogger.shared.debug(
@@ -4710,7 +4762,7 @@ final class ASRService: ObservableObject {
             )
             self.recordWordBoostHitIfAny(transcribedText: newText)
             self.benchmarkCompletedStreamingChunks += 1
-            self.lastProcessedSampleCount = chunk.count
+            self.lastProcessedSampleCount = currentSampleCount
 
             // Mark first transcription as complete to clear loading state
             if !self.hasCompletedFirstTranscription {
@@ -4730,11 +4782,11 @@ final class ASRService: ObservableObject {
 
                 DebugLogger.shared.debug("✅ Streaming: '\(updatedText)' (\(String(format: "%.2f", duration))s)", source: "ASRService")
             }
-            let rtf = chunk.isEmpty ? 0 : duration / (Double(chunk.count) / 16_000.0)
+            let rtf = duration / (Double(currentSampleCount) / 16_000.0)
             let chunkDoneAgeMs = self.elapsedMilliseconds(since: self.benchmarkRecordingStartedAt)
             self.benchmarkLog(
                 "chunk_done index=\(chunkIndex) elapsedMs=\(self.elapsedMilliseconds(since: startedAt)) ageMs=\(chunkDoneAgeMs) " +
-                    "samples=\(chunk.count) rawChars=\(rawText.count) cleanedChars=\(newText.count) rtf=\(String(format: "%.3f", rtf))"
+                    "samples=\(currentSampleCount) inputSamples=\(chunk.count) rawChars=\(rawText.count) cleanedChars=\(newText.count) rtf=\(String(format: "%.3f", rtf))"
             )
 
             // If transcription takes longer than the interval, skip next to prevent queue buildup
@@ -4748,7 +4800,7 @@ final class ASRService: ObservableObject {
             }
         } catch {
             DebugLogger.shared.error("❌ Streaming failed: \(error)", source: "ASRService")
-            self.benchmarkLog("chunk_fail index=\(chunkIndex) elapsedMs=\(self.elapsedMilliseconds(since: startedAt)) samples=\(chunk.count) error=\(error.localizedDescription)")
+            self.benchmarkLog("chunk_fail index=\(chunkIndex) elapsedMs=\(self.elapsedMilliseconds(since: startedAt)) samples=\(currentSampleCount) inputSamples=\(chunk.count) error=\(error.localizedDescription)")
             self.skipNextChunk = true
         }
     }

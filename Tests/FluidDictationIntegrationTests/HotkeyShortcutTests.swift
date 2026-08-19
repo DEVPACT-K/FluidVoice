@@ -171,6 +171,43 @@ final class HotkeyShortcutTests: XCTestCase {
     }
 
     @MainActor
+    func testIncrementalParakeetCopiesOnlyTheUnacceptedTailAfterSessionStarts() {
+        XCTAssertEqual(
+            FluidAudioProvider.incrementalPreviewDeltaRange(
+                enabled: true,
+                hasSession: true,
+                acceptedSampleCount: 320_000,
+                totalSampleCount: 330_000
+            ),
+            320_000..<330_000
+        )
+        XCTAssertNil(
+            FluidAudioProvider.incrementalPreviewDeltaRange(
+                enabled: false,
+                hasSession: true,
+                acceptedSampleCount: 320_000,
+                totalSampleCount: 330_000
+            )
+        )
+        XCTAssertNil(
+            FluidAudioProvider.incrementalPreviewDeltaRange(
+                enabled: true,
+                hasSession: false,
+                acceptedSampleCount: 320_000,
+                totalSampleCount: 330_000
+            )
+        )
+        XCTAssertNil(
+            FluidAudioProvider.incrementalPreviewDeltaRange(
+                enabled: true,
+                hasSession: true,
+                acceptedSampleCount: 240_000,
+                totalSampleCount: 250_000
+            )
+        )
+    }
+
+    @MainActor
     func testLegacySystemModeBackupQueuesMicrophonePriorityMigration() async throws {
         let document = await BackupService.shared.makeBackupDocument()
 

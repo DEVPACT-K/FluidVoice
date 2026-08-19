@@ -2,6 +2,7 @@ import CoreGraphics
 @testable import FluidVoice_Debug
 import XCTest
 
+@MainActor
 final class SpokenSendTests: XCTestCase {
     func testDisabledFeatureLeavesTextUntouched() {
         XCTAssertEqual(
