@@ -80,6 +80,7 @@ final class SystemPasteboardManager: PasteboardManaging {
     }
 
     func captureSnapshot() -> PasteboardSnapshot? {
+        let startedAt = ProcessInfo.processInfo.systemUptime
         for attempt in 1...2 {
             let startingChangeCount = self.pasteboard.changeCount
             guard let sourceItems = self.pasteboard.pasteboardItems else {
@@ -102,6 +103,7 @@ final class SystemPasteboardManager: PasteboardManaging {
             }
             var items: [PasteboardSnapshot.Item] = []
             var totalBytes = 0
+            var totalPortableImageBytes = 0
             var totalRepresentations = 0
             var failure: (reason: String, itemIndex: Int, type: NSPasteboard.PasteboardType?)?
 
@@ -124,10 +126,12 @@ final class SystemPasteboardManager: PasteboardManaging {
                     totalRepresentations += 1
                 }
                 let item = PasteboardSnapshot.Item(representations: representations)
+                let portableImage = Self.portableImageRepresentation(for: item)
+                totalPortableImageBytes += portableImage?.data.count ?? 0
                 items.append(
                     .init(
                         representations: representations,
-                        portableImage: Self.portableImageRepresentation(for: item)
+                        portableImage: portableImage
                     )
                 )
             }
@@ -154,7 +158,9 @@ final class SystemPasteboardManager: PasteboardManaging {
             }
 
             self.log(
-                "clipboard_snapshot_complete items=\(items.count) representations=\(totalRepresentations) bytes=\(totalBytes) firstItem=\(Self.representationSummary(items.first))"
+                "clipboard_snapshot_complete items=\(items.count) representations=\(totalRepresentations) " +
+                    "bytes=\(totalBytes) portableImageBytes=\(totalPortableImageBytes) " +
+                    "elapsedMs=\(Self.elapsedMs(since: startedAt)) firstItem=\(Self.representationSummary(items.first))"
             )
             return PasteboardSnapshot(items: items)
         }
@@ -309,11 +315,17 @@ final class SystemPasteboardManager: PasteboardManaging {
         if !sourceTypes.isDisjoint(with: Self.fileSemanticTypes) {
             guard Self.fileItemContainsImage(item) else { return nil }
 
+            // Preserve an image file's encoded bytes directly. Decoding and re-encoding it
+            // here would put work proportional to its pixel count on the paste critical path.
             if let fileURL = Self.fileURL(in: item),
-               let image = NSImage(contentsOf: fileURL),
-               let pngData = Self.pngData(from: image)
+               let fileType = UTType(filenameExtension: fileURL.pathExtension),
+               fileType.conforms(to: .image),
+               let imageData = try? Data(contentsOf: fileURL, options: .mappedIfSafe)
             {
-                return .init(type: .png, data: pngData)
+                return .init(
+                    type: NSPasteboard.PasteboardType(fileType.identifier),
+                    data: imageData
+                )
             }
         }
 
@@ -430,6 +442,10 @@ final class SystemPasteboardManager: PasteboardManaging {
     private func log(_ message: String) {
         DebugLogger.shared.benchmark("TYPING_BENCH", message: message, source: "TypingBenchmark")
     }
+
+    private static func elapsedMs(since start: TimeInterval) -> Int {
+        Int(((ProcessInfo.processInfo.systemUptime - start) * 1000).rounded())
+    }
 }
 
 @MainActor
@@ -491,8 +507,6 @@ enum KeyboardLayoutKeyCodeResolver {
 
 @MainActor
 final class SystemPasteCommandPoster: PasteCommandPosting {
-    nonisolated static let clipboardSettleDelayNanoseconds: UInt64 = 50_000_000
-
     func postGlobalPasteCommand() async -> Bool {
         guard AXIsProcessTrusted() else { return false }
 
@@ -513,8 +527,8 @@ final class SystemPasteCommandPoster: PasteCommandPosting {
         vDown.flags = .maskCommand
         vUp.flags = .maskCommand
 
-        // Match Muesli's publication delay and two-event Command+V sequence.
-        try? await Task.sleep(nanoseconds: Self.clipboardSettleDelayNanoseconds)
+        // The coordinator verifies pasteboard ownership before reaching this point,
+        // so the temporary item is ready to consume without an additional delay.
         vDown.post(tap: .cghidEventTap)
         vUp.post(tap: .cghidEventTap)
         return true

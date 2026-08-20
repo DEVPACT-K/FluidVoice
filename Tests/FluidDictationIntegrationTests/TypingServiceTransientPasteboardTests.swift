@@ -284,6 +284,7 @@ final class TypingServiceTransientPasteboardTests: XCTestCase {
         XCTAssertEqual(restoredItem.string(forType: .fileURL), imageURL.absoluteString)
         XCTAssertEqual(restoredItem.data(forType: icnsType), iconData)
         XCTAssertNotEqual(restoredItem.data(forType: .png), iconData)
+        XCTAssertEqual(restoredItem.data(forType: .png), sourceImageData)
 
         let restoredPNG = try XCTUnwrap(restoredItem.data(forType: .png))
         let restoredBitmap = try XCTUnwrap(NSBitmapImageRep(data: restoredPNG))

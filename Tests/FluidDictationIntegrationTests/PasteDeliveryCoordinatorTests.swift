@@ -225,8 +225,7 @@ final class PasteDeliveryCoordinatorTests: XCTestCase {
         XCTAssertEqual(pasteboard.restoreCount, 1)
     }
 
-    func testPasteTimingMatchesMuesli() {
-        XCTAssertEqual(SystemPasteCommandPoster.clipboardSettleDelayNanoseconds, 50_000_000)
+    func testClipboardRestorationUsesHalfSecondDelay() {
         XCTAssertEqual(PasteDeliveryCoordinator.defaultSettlementDelayNanoseconds, 500_000_000)
     }
 
