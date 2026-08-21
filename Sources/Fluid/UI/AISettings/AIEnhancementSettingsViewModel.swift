@@ -148,6 +148,11 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
 
     func onAppear() {
         self.appear = true
+        // Monterey 4GB: defer heavy provider refresh to keep AI settings fast
+        if ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024, !CPUArchitecture.isAppleSilicon {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.loadSettings() }
+            return
+        }
         self.loadSettings()
     }
 
