@@ -17,6 +17,8 @@ enum PrivateAIMLXUpgradeCoordinator {
             forInfoDictionaryKey: "CFBundleShortVersionString"
         ) as? String ?? ""
     ) -> Bool {
+        // Monterey Intel 4GB: never offer 3.5GB Fluid Intelligence — keep path clean & fast
+        if CPUArchitecture.isIntel, ProcessInfo.processInfo.physicalMemory <= 8 * 1024 * 1024 * 1024 { return false }
         if defaults.bool(forKey: self.upgradePendingKey) {
             self.restorePreviousLlama(settings: settings, defaults: defaults)
             return false
