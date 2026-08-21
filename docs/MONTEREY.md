@@ -42,3 +42,4 @@ Monterey compat loop has covered deployment, toolchain, notch, SMAppService, onC
 - **Deploy target regression**: `build.sh` fails fast if `15.0` reappears.
 - **Slow dictate paste**: Clipboard retries once on 12.7; AX selection retries 80ms.
 - **Deploy deps still 15.0**: Run `./scripts/patch-deps-for-monterey.sh` after `swift package resolve`.
+- **swift-tools-version 5.9**: Fixed — `Package.swift` stays at `5.7` for Xcode 14.3; `build.sh` fails fast if it regresses.
