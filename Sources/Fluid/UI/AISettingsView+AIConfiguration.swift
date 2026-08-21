@@ -13,11 +13,13 @@ import SwiftUI
 /// Applies drawingGroup() only when enabled, allowing conditional GPU rasterization.
 /// Used for collapsed provider cards to improve scroll performance while
 /// preserving interactive elements in expanded cards.
+// Monterey 4GB: drawingGroup is GPU heavy — disable on 2015 Air
 private struct ConditionalDrawingGroup: ViewModifier {
     let enabled: Bool
+    private var isLowRAMIntel: Bool { ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024 && !CPUArchitecture.isAppleSilicon }
 
     func body(content: Content) -> some View {
-        if self.enabled {
+        if self.enabled && !self.isLowRAMIntel {
             content.drawingGroup()
         } else {
             content
