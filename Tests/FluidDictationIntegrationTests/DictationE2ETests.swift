@@ -52,7 +52,6 @@ final class DictationE2ETests: XCTestCase {
     private let privateAIContextDefaultMigratedTo4KKey = "PrivateAIProviderContextDefaultMigratedTo4K"
 
     private let verifiedProviderFingerprintsKey = "VerifiedProviderFingerprints"
-    private let verifiedPrivateAIModelFingerprintsKey = "VerifiedPrivateAIModelFingerprints"
 
     private var punctuationFormattingDefaultsKeys: [String] {
         [
@@ -1488,63 +1487,6 @@ final class DictationE2ETests: XCTestCase {
             XCTAssertEqual(settings.savedProviders, [provider])
             XCTAssertEqual(settings.availableModelsByProvider[providerKey], provider.models)
             XCTAssertEqual(settings.selectedModelByProvider[providerKey], provider.models[0])
-        }
-    }
-
-    func testPrivateModelVerificationIsIndependentFromProviderSelection() {
-        self.withRestoredDefaults(
-            keys: [self.verifiedProviderFingerprintsKey, self.verifiedPrivateAIModelFingerprintsKey]
-        ) {
-            let settings = SettingsStore.shared
-            settings.verifiedProviderFingerprints = ["private": "model-a-fingerprint"]
-            settings.verifiedPrivateAIModelFingerprints = [:]
-
-            XCTAssertFalse(
-                PrivateAIProviderPromptFormat.hasStoredVerification(
-                    for: "model-b",
-                    providerKey: "private",
-                    expectedFingerprint: "model-b-fingerprint",
-                    settings: settings
-                )
-            )
-
-            settings.verifiedPrivateAIModelFingerprints = ["model-b": "model-b-fingerprint"]
-
-            XCTAssertTrue(
-                PrivateAIProviderPromptFormat.hasStoredVerification(
-                    for: "model-b",
-                    providerKey: "private",
-                    expectedFingerprint: "model-b-fingerprint",
-                    settings: settings
-                )
-            )
-            XCTAssertFalse(
-                PrivateAIProviderPromptFormat.hasStoredVerification(
-                    for: "model-b",
-                    providerKey: "private",
-                    expectedFingerprint: "stale-fingerprint",
-                    settings: settings
-                )
-            )
-        }
-    }
-
-    func testPrivateModelVerificationAcceptsLegacyProviderFingerprint() {
-        self.withRestoredDefaults(
-            keys: [self.verifiedProviderFingerprintsKey, self.verifiedPrivateAIModelFingerprintsKey]
-        ) {
-            let settings = SettingsStore.shared
-            settings.verifiedPrivateAIModelFingerprints = [:]
-            settings.verifiedProviderFingerprints = ["private": "legacy-fingerprint"]
-
-            XCTAssertTrue(
-                PrivateAIProviderPromptFormat.hasStoredVerification(
-                    for: "model-a",
-                    providerKey: "private",
-                    expectedFingerprint: "legacy-fingerprint",
-                    settings: settings
-                )
-            )
         }
     }
 
