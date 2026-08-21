@@ -29,7 +29,9 @@ final nonisolated class AudioEngineRetirementDrain: @unchecked Sendable {
     private var scheduledReleaseCount = 0
 
     init(label: String = "app.fluidvoice.audio-engine-retirement") {
-        self.queue = DispatchQueue(label: label, qos: .utility)
+        // Monterey 4GB: use userInitiated for faster engine swap on slow CPU (still off main actor)
+        let qos: DispatchQoS = ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024 ? .userInitiated : .utility
+        self.queue = DispatchQueue(label: label, qos: qos)
     }
 
     func schedule(_ token: AudioEngineRetirementToken) {
