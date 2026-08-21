@@ -146,7 +146,8 @@ final class FileTranscriptionHistoryStore: ObservableObject {
     static let shared = FileTranscriptionHistoryStore()
 
     private let defaults = UserDefaults.standard
-    private let maxEntries = 50
+    // Monterey 4GB: keep file history light (20) vs 50 for fast launch
+    private var maxEntries: Int { ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024 ? 20 : 50 }
 
     private enum Keys {
         static let fileTranscriptionHistory = "FileTranscriptionHistoryEntries"
