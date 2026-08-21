@@ -13,4 +13,11 @@ final class MontereyBuildGuardTests: XCTestCase {
         let content = try String(contentsOf: build)
         XCTAssertTrue(content.contains("swift-tools-version: 5.9") && content.contains("5.7"), "build.sh should guard swift-tools-version")
     }
+
+    func testFluidAudioBranchIsMontereyCompatible() throws {
+        let pkg = URL(fileURLWithPath: #file).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Package.swift")
+        let content = try String(contentsOf: pkg)
+        XCTAssertFalse(content.contains("B/cohere-coreml-asr"), "Monterey needs FluidAudio main, not B/cohere-coreml-asr (15-only)")
+        XCTAssertTrue(content.contains("FluidAudio.git") && content.contains("branch: \"main\""))
+    }
 }
