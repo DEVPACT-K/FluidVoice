@@ -35,6 +35,8 @@ final class DictationPromptTestCoordinator: ObservableObject {
 
     func updateDraftPromptText(_ text: String) {
         guard self.isActive else { return }
-        self.draftPromptText = text
+        // Monterey 4GB: cap draft length to keep test fast
+        let cap = ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024 ? 500 : 2000
+        self.draftPromptText = text.count > cap ? String(text.prefix(cap)) : text
     }
 }
