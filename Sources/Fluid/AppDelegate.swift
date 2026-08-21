@@ -33,10 +33,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         if self.wasLaunchedAsLoginItem {
             self.analyticsActivationSuppressionDeadline = Date().addingTimeInterval(3)
         }
+        let arch = CPUArchitecture.isAppleSilicon ? "arm64" : "intel"
+        let ramGB = ProcessInfo.processInfo.physicalMemory / (1024*1024*1024)
         DebugLogger.shared.info(
-            "Application launched [loginItemLaunch=\(self.wasLaunchedAsLoginItem)]",
+            "Application launched [loginItemLaunch=\(self.wasLaunchedAsLoginItem) arch=\(arch) ram=\(ramGB)GB macOS=\(ProcessInfo.processInfo.operatingSystemVersionString)]",
             source: "AppDelegate"
         )
+        if arch == "intel" { DebugLogger.shared.info("Monterey compat: default Whisper Tiny, bottom overlay, FI suppressed on low-RAM Intel", source: "AppDelegate") }
         UNUserNotificationCenter.current().delegate = self
 
         // Initialize app settings (dock visibility, etc.)
