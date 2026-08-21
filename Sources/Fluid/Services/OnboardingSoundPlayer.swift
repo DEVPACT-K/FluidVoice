@@ -10,6 +10,8 @@ final class OnboardingSoundPlayer {
     private init() {}
 
     func playWelcomeSound() {
+        // Monterey 4GB: skip onboarding sound to keep launch fast
+        if ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024, !CPUArchitecture.isAppleSilicon { return }
         let settings = SettingsStore.shared
         guard settings.enableTranscriptionSounds, settings.transcriptionStartSound != .none else { return }
         guard let url = Bundle.main.url(forResource: "onboarding_welcome", withExtension: "m4a") else {
