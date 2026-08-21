@@ -400,7 +400,9 @@ struct OnboardingTryoutStepView: View {
         self.shortcutAnimationRevision += 1
         let revision = self.shortcutAnimationRevision
 
-        if self.reduceMotion {
+        // Monterey 4GB: skip glow animation to keep tryout responsive
+        let isLowRAMIntel = ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024 && !CPUArchitecture.isAppleSilicon
+        if self.reduceMotion || isLowRAMIntel {
             self.isShortcutKeyPressed = false
             self.isShortcutGlowActive = isListening
             return
