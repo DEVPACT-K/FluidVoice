@@ -7,9 +7,13 @@ final nonisolated class ThreadSafeAudioBuffer {
     private let lock = NSLock()
 
     /// Appends new samples to the buffer in a thread-safe manner
+    /// Monterey 4GB: pre-reserve 30s (480k floats) on first append to avoid reallocation stalls during dictate
     func append(_ newSamples: [Float]) {
         self.lock.lock()
         defer { lock.unlock() }
+        if self.buffer.isEmpty, self.buffer.capacity < 480_000, ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024 {
+            self.buffer.reserveCapacity(480_000)
+        }
         self.buffer.append(contentsOf: newSamples)
     }
 
