@@ -3068,6 +3068,28 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    /// Stored verification fingerprints per private model ID. Provider-level fingerprints remain
+    /// for backward compatibility, while this map allows Dictation and Edit Mode to use different
+    /// installed models without invalidating each other.
+    var verifiedPrivateAIModelFingerprints: [String: String] {
+        get {
+            guard let data = self.defaults.data(forKey: Keys.verifiedPrivateAIModelFingerprints),
+                  let decoded = try? JSONDecoder().decode([String: String].self, from: data)
+            else {
+                return [:]
+            }
+            return decoded
+        }
+        set {
+            objectWillChange.send()
+            if let encoded = try? JSONEncoder().encode(newValue) {
+                self.defaults.set(encoded, forKey: Keys.verifiedPrivateAIModelFingerprints)
+            } else {
+                self.defaults.removeObject(forKey: Keys.verifiedPrivateAIModelFingerprints)
+            }
+        }
+    }
+
     // MARK: - Stats Settings
 
     /// User's typing speed in words per minute (for time saved calculation)
@@ -5264,6 +5286,7 @@ private extension SettingsStore {
         static let providerAPIKeyIdentifiers = "ProviderAPIKeyIdentifiers"
         static let savedProviders = "SavedProviders"
         static let verifiedProviderFingerprints = "VerifiedProviderFingerprints"
+        static let verifiedPrivateAIModelFingerprints = "VerifiedPrivateAIModelFingerprints"
         static let shareAnonymousAnalytics = "ShareAnonymousAnalytics"
         static let privateAIInterestCaptured = "PrivateAIProviderInterestCaptured"
         static let hotkeyShortcutKey = "HotkeyShortcutKey"

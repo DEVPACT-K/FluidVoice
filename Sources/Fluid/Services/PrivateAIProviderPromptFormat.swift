@@ -26,14 +26,30 @@ enum PrivateAIProviderPromptFormat {
         guard PrivateFeatures.privateAIProvider else { return nil }
         let key = self.providerKey(for: PrivateAIProviderFeature.shared.providerID)
         let modelID = PrivateAIModelRegistry.canonicalModelID(for: selectedModelID) ?? selectedModelID
+        let expectedFingerprint = PrivateAIProviderFeature.verificationFingerprint(for: modelID)
         guard let model = PrivateAIModelRegistry.model(id: modelID),
               PrivateAIIntegrationService.isModelInstalled(model),
-              settings.verifiedProviderFingerprints[key] == PrivateAIProviderFeature.verificationFingerprint(for: modelID)
+              self.hasStoredVerification(
+                  for: modelID,
+                  providerKey: key,
+                  expectedFingerprint: expectedFingerprint,
+                  settings: settings
+              )
         else {
             return nil
         }
 
         return modelID
+    }
+
+    static func hasStoredVerification(
+        for modelID: String,
+        providerKey: String,
+        expectedFingerprint: String,
+        settings: SettingsStore = .shared
+    ) -> Bool {
+        settings.verifiedPrivateAIModelFingerprints[modelID] == expectedFingerprint ||
+            settings.verifiedProviderFingerprints[providerKey] == expectedFingerprint
     }
 
     private static func isSoleStoredVerifiedProvider(settings: SettingsStore) -> Bool {
