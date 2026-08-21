@@ -246,7 +246,8 @@ final class ModelRepository {
 
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-        request.timeoutInterval = 15
+        // Monterey 4GB: shorter timeout keeps UI snappy
+        request.timeoutInterval = ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024 ? 8 : 15
 
         // Add authentication headers (different for Anthropic)
         if let key = apiKey, !key.isEmpty {
