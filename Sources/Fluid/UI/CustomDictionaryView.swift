@@ -1274,7 +1274,7 @@ struct CustomDictionaryView: View {
                             .font(self.theme.typography.sectionTitle)
 
                         Button {
-                            withAnimation(self.reduceMotion ? nil : .easeOut(duration: 0.14)) {
+                            withAnimation((self.reduceMotion || ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024) ? nil : .easeOut(duration: 0.14)) {
                                 self.isPunctuationInfoExpanded.toggle()
                             }
                         } label: {
