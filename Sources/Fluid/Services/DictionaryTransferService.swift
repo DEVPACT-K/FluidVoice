@@ -233,7 +233,8 @@ final class DictionaryTransferService {
     static let shared = DictionaryTransferService()
 
     private static let importedCustomWordWeight: Float = 10.0
-    private static let maxCustomWords = 256
+    // Monterey 4GB: cap custom words lower to save memory for Whisper
+    private static var maxCustomWords: Int { ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024 ? 100 : 256 }
 
     private init() {}
 
