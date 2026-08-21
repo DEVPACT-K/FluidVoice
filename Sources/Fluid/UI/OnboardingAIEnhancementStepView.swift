@@ -136,6 +136,10 @@ struct OnboardingAIEnhancementStepView: View {
         self.isDownloadingPrivateAI || self.isLoadingPrivateAI || self.isDeletingPrivateAI
     }
 
+    private var isLowRAMIntel: Bool {
+        !CPUArchitecture.isAppleSilicon && ProcessInfo.processInfo.physicalMemory <= 8 * 1024 * 1024 * 1024
+    }
+
     private var canNavigateOrMutate: Bool {
         !self.isPrivateAIBusy && !self.isRunning && !self.isRecordingShortcut
     }
@@ -183,7 +187,8 @@ struct OnboardingAIEnhancementStepView: View {
     }
 
     private var isPrimaryPrivateAIButtonEnabled: Bool {
-        self.canNavigateOrMutate && !(self.isPrivateAIAvailable && self.shouldShowTryout)
+        if self.isLowRAMIntel { return false }
+        return self.canNavigateOrMutate && !(self.isPrivateAIAvailable && self.shouldShowTryout)
     }
 
     private var canFinishSetup: Bool {
