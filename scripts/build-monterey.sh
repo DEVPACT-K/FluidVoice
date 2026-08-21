@@ -8,6 +8,11 @@ if ! xcodebuild -version >/dev/null 2>&1; then
   echo "  https://xcodereleases.com — then: sudo xcode-select -s /Applications/Xcode.app"
   exit 1
 fi
+# Verify deployment target before building (fail fast on regression)
+if grep -q 'MACOSX_DEPLOYMENT_TARGET = 15' Fluid.xcodeproj/project.pbxproj 2>/dev/null; then
+  echo "ERROR: Deployment target regressed to 15.0 — fix Package.swift/project.pbxproj first" >&2
+  exit 1
+fi
 echo "Building FluidVoice for Monterey 12.7 Intel (unsigned, Whisper Tiny default)..."
 ./build.sh unsigned
 APP="DerivedData/Build/Products/Debug/FluidVoice Debug.app"
