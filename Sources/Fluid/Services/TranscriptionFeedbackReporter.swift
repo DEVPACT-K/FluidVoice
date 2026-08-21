@@ -34,7 +34,8 @@ enum TranscriptionFeedbackReporter {
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.timeoutInterval = 12
+        // Monterey 4GB: shorter timeout keeps feedback fast
+        request.timeoutInterval = ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024 ? 8 : 12
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(payload)
 
