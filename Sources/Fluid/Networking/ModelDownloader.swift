@@ -96,6 +96,9 @@ final class HuggingFaceModelDownloader {
     }
 
     func ensureModelsPresent(at targetRoot: URL, onProgress: ((Double, String) -> Void)? = nil) async throws {
+        #if !arch(arm64)
+        throw NSError(domain: "HF", code: -10, userInfo: [NSLocalizedDescriptionKey: "Parakeet/CoreML models require Apple Silicon — use Whisper on Intel."])
+        #endif
         try Task.checkCancellation()
         try FileManager.default.createDirectory(at: targetRoot, withIntermediateDirectories: true)
         onProgress?(0.0, "")
