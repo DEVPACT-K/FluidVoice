@@ -3201,8 +3201,9 @@ struct ContentView: View {
     /// Capture app context at start to avoid mismatches if the user switches apps mid-session
     private func startRecording() {
         let model = SettingsStore.shared.selectedSpeechModel
+        let compat = CPUArchitecture.isIntel ? "monterey-intel-compat" : "apple-silicon"
         DebugLogger.shared.info(
-            "ContentView: startRecording() for model=\(model.displayName), supportsStreaming=\(model.supportsStreaming)",
+            "ContentView: startRecording() for model=\(model.displayName), supportsStreaming=\(model.supportsStreaming) [\(compat)]",
             source: "ContentView"
         )
         guard !self.asr.isRunningOrStarting else {
