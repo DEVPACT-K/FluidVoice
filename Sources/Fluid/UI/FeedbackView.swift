@@ -258,7 +258,7 @@ struct FeedbackView: View {
             feedbackContent += "\n\n--- Debug Information ---\n"
             feedbackContent += "App Version: \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown")\n"
             feedbackContent += "Build: \(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "Unknown")\n"
-            feedbackContent += "macOS Version: \(ProcessInfo.processInfo.operatingSystemVersionString)\n"
+            feedbackContent += "macOS Version: \(ProcessInfo.processInfo.operatingSystemVersionString) [\(CPUArchitecture.isMontereyIntel ? "monterey-intel" : CPUArchitecture.isIntel ? "intel" : "apple-silicon")]\n"
             feedbackContent += "Date: \(Date().formatted())\n\n"
 
             // Add recent log entries
