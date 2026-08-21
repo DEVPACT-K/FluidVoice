@@ -53,6 +53,10 @@ extension SettingsStore {
 
     func setLaunchAtStartup(_ enabled: Bool) {
         #if os(macOS)
+        if #unavailable(macOS 13.0) {
+            DebugLogger.shared.warning("Launch at startup requires macOS 13+ — ignoring on Monterey", source: "SettingsStore")
+            return
+        }
         let service = SMAppService.mainApp
         let statusBeforeChange = self.currentLaunchAtStartupSystemState()
 
@@ -102,6 +106,7 @@ extension SettingsStore {
 
     #if os(macOS)
     private func currentLaunchAtStartupSystemState() -> LaunchAtStartupSystemState {
+        if #unavailable(macOS 13.0) { return .disabled }
         let service = SMAppService.mainApp
         switch service.status {
         case .enabled:
