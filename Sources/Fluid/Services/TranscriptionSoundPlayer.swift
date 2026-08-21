@@ -12,6 +12,8 @@ final class TranscriptionSoundPlayer {
     private init() {}
 
     func playStartSound() {
+        // Monterey 4GB: skip sounds during dictate to keep Whisper CPU clean
+        if ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024, CPUArchitecture.isIntel { return }
         let settings = SettingsStore.shared
         guard settings.enableTranscriptionSounds else { return }
         let selected = settings.transcriptionStartSound
