@@ -11,7 +11,7 @@ Your Mac: 2015 Air, 1.6GHz i5, 4GB, no notch. Deployment target lowered to 12.7.
    ./build.sh unsigned
    # app at DerivedData/Build/Products/Debug/FluidVoice\ Debug.app
    ```
-4. Launch, grant Mic + Accessibility, pick **Whisper Tiny** (default on 4GB Intel). Apple Speech also works. Parakeet/Nemotron are auto-blocked on Intel with a clear error.
+4. Launch, grant Mic + Accessibility — **Whisper Tiny** is now default on all Monterey Intel (not just 4GB) for fast clean dictate. Apple Speech also works. Parakeet/Nemotron are auto-blocked on Intel with a clear error.
 
 ## Why Tiny on 4GB
 
