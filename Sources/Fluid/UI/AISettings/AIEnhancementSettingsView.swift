@@ -95,7 +95,7 @@ struct AIEnhancementSettingsView: View {
     @State var promptEditorModelDraft: String = ""
     @State var promptEditorOriginalConfiguration: SettingsStore.DictationPromptConfiguration? = nil
 
-    private var isLowRAMIntel: Bool { CPUArchitecture.isMontereyIntel && ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024 }
+    private var isLowRAMIntel: Bool { CPUArchitecture.isMontereyIntel }
     var body: some View {
         self.aiConfigurationCard
             .onAppear {
