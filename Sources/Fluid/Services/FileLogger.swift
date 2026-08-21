@@ -12,7 +12,8 @@ final nonisolated class FileLogger: @unchecked Sendable {
     private let backupLogURL: URL
     private let legacyLogFileURL: URL
     private let legacyBackupLogURL: URL
-    private let maxLogFileSize: UInt64 = 1 * 1024 * 1024 // 1 MB limit per log file
+    // Monterey 4GB: 512KB keeps I/O light for fast dictate
+    private var maxLogFileSize: UInt64 { ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024 ? 512 * 1024 : 1 * 1024 * 1024 }
     private let maxLogFileAge: TimeInterval = 72 * 60 * 60 // Rotate every 72 hours
     private static var crashFileDescriptor: Int32 = -1
     private static var crashHandlersInstalled = false
