@@ -14,6 +14,7 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROFILE="${1:-${BUILD_PROFILE:-public}}"
 
+echo "Monterey target: $(grep -o 'MACOSX_DEPLOYMENT_TARGET = [0-9.]*' Fluid.xcodeproj/project.pbxproj | head -1)"
 # Monterey compat guards
 if grep -q 'MARKETING_VERSION = 1.5.1' "$PROJECT_DIR/Fluid.xcodeproj/project.pbxproj" 2>/dev/null; then
   echo "ERROR: MARKETING_VERSION still 1.5.1 — bump to 1.6.10 for Monterey parity" >&2
