@@ -80,8 +80,9 @@ final class AppleSpeechProvider: TranscriptionProvider {
 
         // 3. Create Request
         let request = SFSpeechAudioBufferRecognitionRequest()
-        request.shouldReportPartialResults = false // We want the final result for this chunk
-        request.requiresOnDeviceRecognition = false // Allow macOS to use the best available Apple speech path.
+        request.shouldReportPartialResults = false
+        // Monterey Intel: prefer on-device for fast clean responses (no network hop)
+        request.requiresOnDeviceRecognition = true
         request.append(buffer)
         request.endAudio() // Signal that this buffer is the complete utterance for this request
 
