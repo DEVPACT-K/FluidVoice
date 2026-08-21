@@ -185,9 +185,11 @@ final class NotchOverlayManager {
         ActiveAppMonitor.shared.startMonitoring()
         let targetScreen = OverlayScreenResolver.screenForCurrentPointer()
 
-        // Monterey Intel fallback: 2015 Air has no notch; DynamicNotchKit looks broken there.
-        // Also prefer bottom when user asked for it.
-        let hasNotch = targetScreen?.auxiliaryTopLeftArea != nil
+        // Monterey 12.7: auxiliaryTopLeftArea is 13+, so guard availability; 2015 Air has no notch anyway.
+        let hasNotch: Bool = {
+            if #available(macOS 13.0, *) { return targetScreen?.auxiliaryTopLeftArea != nil }
+            return false
+        }()
         let shouldUseBottom = SettingsStore.shared.overlayPosition == .bottom || hasNotch == false
         if shouldUseBottom {
             Self.overlayBench("show_internal_route target=bottom reason=\(hasNotch == false ? "no-notch-fallback" : "preference")")
@@ -731,7 +733,10 @@ final class NotchOverlayManager {
     }
 
     private func supportsCompactPresentation(on screen: NSScreen) -> Bool {
-        screen.auxiliaryTopLeftArea?.width != nil && screen.auxiliaryTopRightArea?.width != nil
+        if #available(macOS 13.0, *) {
+            return screen.auxiliaryTopLeftArea?.width != nil && screen.auxiliaryTopRightArea?.width != nil
+        }
+        return false
     }
 
     private func refreshNotchPresentationPolicy(for screen: NSScreen? = nil) {
