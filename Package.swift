@@ -6,7 +6,7 @@ import PackageDescription
 let package = Package(
     name: "FluidVoice",
     platforms: [
-        .macOS("15.0"),
+        .macOS("12.7"),
     ],
     dependencies: [
         .package(url: "https://github.com/mxcl/AppUpdater.git", from: "1.0.0"),
