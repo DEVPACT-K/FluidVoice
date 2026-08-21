@@ -10,5 +10,8 @@ jobs:
           ! grep -q 'MACOSX_DEPLOYMENT_TARGET = 15' Fluid.xcodeproj/project.pbxproj || (echo "Deployment regressed to 15" && exit 1)
           grep -q 'MACOSX_DEPLOYMENT_TARGET = 12.7' Fluid.xcodeproj/project.pbxproj
           grep -q '12.7' Package.swift
+          ! grep -q 'MARKETING_VERSION = 1.5.1' Fluid.xcodeproj/project.pbxproj || (echo "Marketing version regressed to 1.5.1" && exit 1)
+          grep -q 'MARKETING_VERSION = 1.6.10' Fluid.xcodeproj/project.pbxproj
+          ! grep -q 'B/cohere-coreml-asr' Package.swift || (echo "FluidAudio branch regressed" && exit 1)
       - name: Build unsigned (Monterey)
         run: ./build.sh unsigned
