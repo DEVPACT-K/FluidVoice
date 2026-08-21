@@ -3858,17 +3858,16 @@ final class SettingsStore: ObservableObject {
 
     private func syncLinkedProviderSelections(to providerID: String) {
         let trimmed = providerID.trimmingCharacters(in: .whitespacesAndNewlines)
-        let linkedProviderID = self.isPrivateAIProviderID(trimmed) ? "" : trimmed
-        let model = self.modelSelection(for: linkedProviderID)
 
         if self.rewriteModeLinkedToGlobal {
-            self.rewriteModeSelectedProviderID = linkedProviderID
-            self.rewriteModeSelectedModel = model
+            self.rewriteModeSelectedProviderID = trimmed
+            self.rewriteModeSelectedModel = self.modelSelection(for: trimmed)
         }
 
         if self.commandModeLinkedToGlobal {
+            let linkedProviderID = self.isPrivateAIProviderID(trimmed) ? "" : trimmed
             self.commandModeSelectedProviderID = linkedProviderID
-            self.commandModeSelectedModel = model
+            self.commandModeSelectedModel = self.modelSelection(for: linkedProviderID)
         }
     }
 

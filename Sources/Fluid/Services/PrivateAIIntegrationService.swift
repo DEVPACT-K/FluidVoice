@@ -407,6 +407,20 @@ actor PrivateAIIntegrationService {
             streamHandler: streamHandler
         )
     }
+
+    func rewrite(
+        _ inputText: String,
+        systemPrompt: String,
+        runtime: RuntimeConfiguration,
+        context: AppContext
+    ) async throws -> EnhancementResult {
+        try await Self.provider.rewrite(
+            inputText,
+            systemPrompt: systemPrompt,
+            runtime: runtime,
+            context: context
+        )
+    }
 }
 
 private struct PrivateAIModelRemovalError: LocalizedError {
