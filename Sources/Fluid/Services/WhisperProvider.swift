@@ -192,10 +192,11 @@ final class WhisperProvider: TranscriptionProvider {
 
         guard self.isModelFileValid(at: self.modelURL, for: targetModel) else {
             try? FileManager.default.removeItem(at: self.modelURL)
+            let hint = CPUArchitecture.isIntel ? " (Monterey Intel: check docs/MONTEREY.md, ensure Whisper Tiny downloaded via ./scripts/build-monterey.sh)" : ""
             throw NSError(
                 domain: "WhisperProvider",
                 code: -3,
-                userInfo: [NSLocalizedDescriptionKey: "Whisper model file is missing or corrupted. Please re-download the model."]
+                userInfo: [NSLocalizedDescriptionKey: "Whisper model file is missing or corrupted\(hint). Please re-download the model."]
             )
         }
         self.removeLegacyModelIfNeeded()
