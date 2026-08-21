@@ -30,6 +30,10 @@ No-notch hardware auto-falls back to bottom pill overlay (DynamicNotchKit skippe
 - No Fluid Intelligence (3.5GB)
 - Streaming preview uses Whisper `timestamps: .segment` — clean segments, not word-level
 
+## Loop Status (87 iterations)
+
+Monterey compat loop has covered deployment, toolchain, notch, SMAppService, onChange, Whisper Tiny, history caps, and 40+ 4GB perf gates. Next validation is hardware: `./scripts/build-monterey.sh` on the 2015 Air.
+
 ## Troubleshooting
 
 - **onChange two-param error**: Fixed — all `onChange { _, newValue` → `{ newValue` for 12.7 SDK.
