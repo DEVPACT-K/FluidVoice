@@ -1,4 +1,5 @@
 import XCTest
+@testable import Fluid
 
 /// Monterey 12.7 Intel invariants — ensures the 2015 Air fast path doesn't regress.
 /// These are compile-time + logic checks, runnable even without Xcode on the Air via `swift test`.
