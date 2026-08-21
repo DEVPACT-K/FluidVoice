@@ -62,8 +62,8 @@ enum LLMError: Error, LocalizedError {
 final class LLMClient {
     static let shared = LLMClient()
 
-    /// Default timeout for LLM requests (30 seconds)
-    static let defaultTimeoutSeconds: TimeInterval = 30
+    /// Default timeout for LLM requests — Monterey 4GB: 15s keeps UI responsive vs 30s stall
+    static var defaultTimeoutSeconds: TimeInterval { ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024 ? 15 : 30 }
 
     /// URLSession configured with appropriate timeouts
     private let session: URLSession
