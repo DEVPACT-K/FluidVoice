@@ -19,8 +19,16 @@ struct VoiceEngineSettingsView: View {
         self.colorScheme == .light ? Color(nsColor: .labelColor).opacity(0.85) : self.theme.palette.secondaryText
     }
 
+    private var isMontereyIntel: Bool { !CPUArchitecture.isAppleSilicon && ProcessInfo.processInfo.operatingSystemVersion.majorVersion == 12 }
+
     var body: some View {
-        self.speechRecognitionCard
+        VStack(alignment: .leading, spacing: 8) {
+            self.speechRecognitionCard
+            if self.isMontereyIntel {
+                Text("Monterey Intel: Whisper Tiny & Apple Speech only — Parakeet/Nemotron require Apple Silicon for fast responses.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+        }
             .onAppear { self.viewModel.onAppear() }
             .onChange(of: self.settings.selectedSpeechModel) { _, newValue in
                 self.viewModel.handleSelectedSpeechModelChange(newValue)
