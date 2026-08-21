@@ -237,7 +237,8 @@ final class DictationPostProcessingService {
             temperature: settings.isTemperatureUnsupported(resolved.model) ? nil : 0.2,
             extraParameters: extraParams
         )
-        config.timeoutSeconds = 120
+        // Monterey 4GB: shorter timeout keeps paste fast
+        config.timeoutSeconds = ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024 ? 30 : 120
 
         let response = try await LLMClient.shared.call(config)
         guard !response.content.isEmpty else {
