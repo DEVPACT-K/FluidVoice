@@ -261,6 +261,16 @@ final class RewriteModeService: ObservableObject {
                 userInfo: [NSLocalizedDescriptionKey: "No AI model selected"]
             )
         }
+        if usesPrivateAIProvider {
+            let verifiedModelID = PrivateAIProviderPromptFormat.verifiedModelID(settings: settings)
+            guard verifiedModelID == model else {
+                throw NSError(
+                    domain: "RewriteMode",
+                    code: -5,
+                    userInfo: [NSLocalizedDescriptionKey: "Selected Fluid-1 model is not installed and verified"]
+                )
+            }
+        }
         self.appendDiagnosticLog(
             "LLM config | writeMode=\(isWriteMode) | linkedToGlobal=\(settings.rewriteModeLinkedToGlobal) | " +
                 "provider=\(providerID) | model=\(model) | profile=\(selectedPromptName) | " +

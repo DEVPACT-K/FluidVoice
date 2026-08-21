@@ -59,6 +59,20 @@ final class TypingService {
         return !isSecureTextField && modifiersReleased && exactFocusIsActive
     }
 
+    nonisolated static func canInsertBeforePostInsertionAction(
+        preferredTargetPID: pid_t?,
+        requiredTargetPID: pid_t?,
+        isSecureTextField: Bool,
+        exactFocusIsActive: Bool
+    ) -> Bool {
+        guard let preferredTargetPID, preferredTargetPID > 0,
+              requiredTargetPID == preferredTargetPID
+        else {
+            return false
+        }
+        return !isSecureTextField && exactFocusIsActive
+    }
+
     // Logging toggle (off by default). Enable by setting env FLUID_TYPING_LOGS=1
     // or UserDefaults bool for key "enableTypingLogs".
     private static var isLoggingEnabled: Bool {
@@ -480,11 +494,13 @@ final class TypingService {
                     outcome = .actionSuppressed
                     return
                 }
-                guard Self.canDispatchPostInsertionAction(
+                // A held dictation modifier must suppress only the key action,
+                // not the dictated text. The longer check below waits for
+                // modifiers after insertion before deciding whether to send.
+                guard Self.canInsertBeforePostInsertionAction(
                     preferredTargetPID: preferredTargetPID,
                     requiredTargetPID: requiredFocusTarget.pid,
                     isSecureTextField: requiredFocusTarget.isSecureTextField,
-                    modifiersReleased: self.waitForPhysicalModifiersToRelease(timeout: 0.2),
                     exactFocusIsActive: Self.isExactFocusTargetActive(requiredFocusTarget)
                 ) else {
                     outcome = .actionSuppressed

@@ -345,6 +345,41 @@ final class SpokenSendTests: XCTestCase {
         XCTAssertFalse(TypingService.DeliveryOutcome.insertedActionSuppressed.didDispatchAction)
     }
 
+    func testHeldModifierDoesNotBlockSafeTextInsertionBeforeSendDecision() {
+        XCTAssertTrue(
+            TypingService.canInsertBeforePostInsertionAction(
+                preferredTargetPID: 42,
+                requiredTargetPID: 42,
+                isSecureTextField: false,
+                exactFocusIsActive: true
+            )
+        )
+        XCTAssertFalse(
+            TypingService.canInsertBeforePostInsertionAction(
+                preferredTargetPID: 42,
+                requiredTargetPID: 41,
+                isSecureTextField: false,
+                exactFocusIsActive: true
+            )
+        )
+        XCTAssertFalse(
+            TypingService.canInsertBeforePostInsertionAction(
+                preferredTargetPID: 42,
+                requiredTargetPID: 42,
+                isSecureTextField: true,
+                exactFocusIsActive: true
+            )
+        )
+        XCTAssertFalse(
+            TypingService.canInsertBeforePostInsertionAction(
+                preferredTargetPID: 42,
+                requiredTargetPID: 42,
+                isSecureTextField: false,
+                exactFocusIsActive: false
+            )
+        )
+    }
+
     func testOverlayIndicatorVisibilityCoversEveryActiveState() {
         XCTAssertFalse(SpokenSendIndicatorState.hidden.isVisible)
         XCTAssertTrue(SpokenSendIndicatorState.detected.isVisible)

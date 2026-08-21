@@ -2380,7 +2380,7 @@ struct ContentView: View {
 
         let shouldShowAIProcessingFailure = shouldPersistOutputs && aiFallbackReason != nil
         if shouldShowAIProcessingFailure {
-            self.pendingAIReprocessText = transcribedText
+            self.pendingAIReprocessText = spokenSendParse.shouldSend ? normalizedTranscribedText : transcribedText
             NotchContentState.shared.showAIProcessingFailure()
             self.menuBarManager.finishProcessingKeepingOverlayVisible()
         } else {
@@ -2517,6 +2517,7 @@ struct ContentView: View {
     }
 
     private func handleSpokenSendPartialTranscription(_ text: String) {
+        guard self.settings.spokenSendEnabled else { return }
         self.spokenSendPartialRevision &+= 1
         let isDictationMode = self.activeRecordingMode == .dictate || self.activeRecordingMode == .promptMode
         let shouldStop = isDictationMode &&
