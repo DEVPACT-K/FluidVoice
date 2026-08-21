@@ -154,7 +154,9 @@ enum AudioCaptureIdlePolicy {
     }
 
     static func shouldPrewarmCapture(experimentalDirectAudioCaptureEnabled: Bool) -> Bool {
-        experimentalDirectAudioCaptureEnabled
+        // Monterey 4GB: skip prewarm to save CPU for Whisper
+        if ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024, !CPUArchitecture.isAppleSilicon { return false }
+        return experimentalDirectAudioCaptureEnabled
     }
 
     static func didResolvedPriorityInputChange(
