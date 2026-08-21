@@ -40,6 +40,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             source: "AppDelegate"
         )
         if arch == "intel" { DebugLogger.shared.info("Monterey compat: default Whisper Tiny, bottom overlay, FI suppressed on low-RAM Intel", source: "AppDelegate") }
+        if ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024 {
+            DebugLogger.shared.warning("Low RAM (4GB) detected — close other apps for fastest Whisper Tiny transcription", source: "AppDelegate")
+        }
         UNUserNotificationCenter.current().delegate = self
 
         // Initialize app settings (dock visibility, etc.)
