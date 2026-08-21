@@ -1627,6 +1627,8 @@ struct ContentView: View {
             || identity.contains("iterm")
             || identity.contains("warp")
             || identity.contains("ghostty")
+            || identity.contains("kitty")
+            || identity.contains("alacritty")
     }
 
     private func deliverSpokenSend(
