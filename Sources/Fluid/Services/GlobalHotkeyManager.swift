@@ -1,6 +1,13 @@
 import AppKit
 import Foundation
 
+// Monterey 12.7 Intel: CGEvent tap requires Accessibility; Carbon fallback is more reliable on 2015 Air
+private let montereyHotkeyPrefersCarbon = ProcessInfo.processInfo.operatingSystemVersion.majorVersion == 12
+
+extension GlobalHotkeyManager {
+    var prefersCarbonOnMonterey: Bool { montereyHotkeyPrefersCarbon }
+}
+
 nonisolated enum HotkeyHoldModeType: Hashable {
     case transcription
     case promptMode
