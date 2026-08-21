@@ -26,6 +26,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "FluidVoice",
+            swiftSettings: [.define("MONTEREY_COMPAT")],
             dependencies: [
                 "AppUpdater",
                 "CoreAudioCaptureSupport",
