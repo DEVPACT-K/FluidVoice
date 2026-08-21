@@ -388,6 +388,8 @@ final class BottomOverlayWindowController {
         panel.isMovableByWindowBackground = false
         panel.hidesOnDeactivate = false
         panel.animationBehavior = .none
+        // Monterey 4GB: lower level to avoid statusBar contention on 2015 Air
+        if ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024 { panel.level = .floating }
 
         let contentView = BottomOverlayView()
         let hostingView = BottomOverlayHostingView(rootView: contentView)
