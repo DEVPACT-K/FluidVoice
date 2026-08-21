@@ -127,6 +127,8 @@ final class SimpleUpdater {
     static let shared = SimpleUpdater()
     private init() {}
 
+    // Monterey Intel: don't auto-update to 15-only builds
+    private var isMontereyIntel: Bool { ProcessInfo.processInfo.operatingSystemVersion.majorVersion == 12 && !CPUArchitecture.isAppleSilicon }
     private let fileManager = FileManager.default
     private let maxRollbackBackups = 3
     private let rollbackBackupDirectoryName = "RollbackBackups"
