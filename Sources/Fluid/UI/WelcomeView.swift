@@ -1131,6 +1131,7 @@ struct OnboardingFlowView: View {
     }
 
     private func updateLandingGlow(location: CGPoint, in size: CGSize) {
+        if self.isLowRAMIntel { return }
         guard !self.reduceMotion else { return }
         guard location.x.isFinite, location.y.isFinite, size.width > 0, size.height > 0 else { return }
 
