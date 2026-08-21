@@ -346,6 +346,11 @@ final class ASRService: ObservableObject {
     /// Uses the new SettingsStore.selectedSpeechModel instead of old TranscriptionProviderOption.
     private var transcriptionProvider: TranscriptionProvider {
         let model = SettingsStore.shared.selectedSpeechModel
+        // Monterey Intel: Apple Silicon providers (FluidAudio/Nemotron/Parakeet/Cohere) can't run — fall back to Whisper
+        if model.requiresAppleSilicon, CPUArchitecture.isIntel {
+            DebugLogger.shared.warning("ASRService: \(model.rawValue) requires Apple Silicon, falling back to Whisper on Intel", source: "ASRService")
+            return self.getWhisperProvider()
+        }
 
         switch model {
         case .appleSpeechAnalyzer:
