@@ -261,14 +261,21 @@ final class RewriteModeService: ObservableObject {
                 userInfo: [NSLocalizedDescriptionKey: "No AI model selected"]
             )
         }
+        var runtimeModel = model
+        var localModelPath = PrivateAIIntegrationService.configuredLocalModelPath
         if usesPrivateAIProvider {
-            guard PrivateAIProviderPromptFormat.verifiedModelID(for: model, settings: settings) != nil else {
+            guard let verifiedModelID = PrivateAIProviderPromptFormat.verifiedModelID(for: model, settings: settings),
+                  let verifiedModel = PrivateAIModelRegistry.model(id: verifiedModelID),
+                  let verifiedModelPath = PrivateAIIntegrationService.localModelPath(for: verifiedModel)
+            else {
                 throw NSError(
                     domain: "RewriteMode",
                     code: -5,
                     userInfo: [NSLocalizedDescriptionKey: "Selected Fluid-1 model is not installed and verified"]
                 )
             }
+            runtimeModel = verifiedModelID
+            localModelPath = verifiedModelPath
         }
         self.appendDiagnosticLog(
             "LLM config | writeMode=\(isWriteMode) | linkedToGlobal=\(settings.rewriteModeLinkedToGlobal) | " +
@@ -298,9 +305,9 @@ final class RewriteModeService: ObservableObject {
                     selectedProviderID: providerID,
                     providerKey: self.providerKey(for: providerID),
                     baseURL: baseURL,
-                    model: model,
+                    model: runtimeModel,
                     apiKey: apiKey,
-                    localModelPath: PrivateAIIntegrationService.configuredLocalModelPath,
+                    localModelPath: localModelPath,
                     usesStablePromptPrefixKVCache: settings.privateAIPrefixKVCacheEnabled,
                     usesFluid1Boost: settings.privateAIBoostEnabled,
                     contextTokenLimit: settings.privateAIContextTokenLimit
