@@ -46,6 +46,8 @@ final nonisolated class AudioCaptureReadinessGate: @unchecked Sendable {
         attemptID: UInt64,
         timeoutNanoseconds: UInt64
     ) async -> AudioCaptureReadinessResult {
+        // Monterey 4GB: extend timeout 1.5x for slow CoreAudio on 2015 Air
+        let effectiveTimeout = ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024 ? timeoutNanoseconds + timeoutNanoseconds/2 : timeoutNanoseconds
         let key = Key(sessionID: sessionID, attemptID: attemptID)
         guard Task.isCancelled == false else { return .cancelled }
 
@@ -83,7 +85,7 @@ final nonisolated class AudioCaptureReadinessGate: @unchecked Sendable {
                 self.timeoutTask?.cancel()
                 self.timeoutTask = Task { [weak self] in
                     do {
-                        try await Task.sleep(nanoseconds: timeoutNanoseconds)
+                        try await Task.sleep(nanoseconds: effectiveTimeout)
                     } catch {
                         return
                     }
