@@ -10,7 +10,15 @@ private let montereyWhisperSampleRate: Double = 16_000
 
 /// Monterey Intel helper: returns Whisper-native rate on 4GB Intel to skip extra resampling.
 func directCoreAudioPreferredSampleRate() -> Double {
-    ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024 ? montereyWhisperSampleRate : 48_000
+    // Monterey 4GB: prefer 16kHz to avoid resampling for Whisper
+    if ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024 { return montereyWhisperSampleRate }
+    return 48_000
+}
+
+// Monterey Intel: log preferred rate at capture start for debugging
+func logDirectCoreAudioMontereyRate() {
+    let rate = directCoreAudioPreferredSampleRate()
+    DebugLogger.shared.info("DirectCoreAudio Monterey rate \(Int(rate))Hz", source: "DirectCoreAudioInput")
 }
 
 nonisolated enum DirectCoreAudioDeviceSelection: Equatable {
