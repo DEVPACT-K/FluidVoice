@@ -9,7 +9,8 @@ struct ChangelogView: View {
 
     private let owner = "altic-dev"
     private let repo = "Fluid-oss"
-    private let releaseLimit = 3
+    // Monterey 4GB: fetch 2 vs 3 to keep network light
+    private var releaseLimit: Int { ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024 ? 2 : 3 }
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: true) {
