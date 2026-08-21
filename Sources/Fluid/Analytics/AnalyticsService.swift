@@ -183,7 +183,8 @@ private actor AnalyticsCore {
     private var activeUploadTask: Task<Int, Error>?
     private var isFlushing = false
 
-    private let batchSize = 50
+    // Monterey 4GB: smaller batch keeps flush light on 2015 Air
+    private var batchSize: Int { ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024 ? 20 : 50 }
 
     init(consentGate: AnalyticsConsentGate) {
         self.consentGate = consentGate
