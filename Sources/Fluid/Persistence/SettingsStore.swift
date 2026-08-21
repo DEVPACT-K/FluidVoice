@@ -5717,15 +5717,15 @@ extension SettingsStore {
                 if requiresAppleSiliconWhisper, !CPUArchitecture.isAppleSilicon {
                     return .whisperBase
                 }
-                // Validate model is available on this architecture
+                // Validate model is available on this architecture — migrate to Monterey-fast fallback
                 if model.requiresAppleSilicon && !CPUArchitecture.isAppleSilicon {
-                    return .whisperBase
+                    return SpeechModel.defaultModel
                 }
                 if model.requiresMacOS15, #unavailable(macOS 15.0) {
-                    return .whisperBase
+                    return CPUArchitecture.isAppleSilicon ? .appleSpeech : SpeechModel.defaultModel
                 }
                 if model.requiresMacOS26, #unavailable(macOS 26.0) {
-                    return .whisperBase
+                    return .appleSpeech
                 }
                 return model
             }
