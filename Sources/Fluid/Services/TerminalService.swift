@@ -75,8 +75,9 @@ final class TerminalService {
         let outputPipe = Pipe()
         let errorPipe = Pipe()
 
-        // Use zsh (default macOS shell)
-        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        // Monterey 12.7: /bin/zsh is 5.8, but some 2015 Air setups still default to bash — use zsh where available, bash fallback
+        let shellPath = FileManager.default.isExecutableFile(atPath: "/bin/zsh") ? "/bin/zsh" : "/bin/bash"
+        process.executableURL = URL(fileURLWithPath: shellPath)
         process.arguments = ["-c", command]
 
         // Set working directory
