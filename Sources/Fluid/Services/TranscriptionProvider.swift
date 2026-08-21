@@ -223,4 +223,8 @@ enum CPUArchitecture {
     static var isIntel: Bool {
         current == .intel
     }
+
+    static var isMontereyIntel: Bool {
+        isIntel && ProcessInfo.processInfo.operatingSystemVersion.majorVersion == 12
+    }
 }
