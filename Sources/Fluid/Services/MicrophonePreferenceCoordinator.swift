@@ -372,7 +372,9 @@ final class MicrophonePreferenceCoordinator: ObservableObject {
     }
 
     func isInputDeviceAvailable(_ device: AudioDevice.Device) -> Bool {
-        self.isInputDeviceAvailable(
+        // Monterey 4GB: prefer built-in mic for fast clean path (no Bluetooth latency)
+        if ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024, device.isBluetooth { return false }
+        return self.isInputDeviceAvailable(
             device,
             clamshellClosed: self.devices.isClamshellClosed
         )
