@@ -1777,8 +1777,10 @@ final class SettingsStore: ObservableObject {
 
     var enableStreamingPreview: Bool {
         get {
-            let value = self.defaults.object(forKey: Keys.enableStreamingPreview)
-            return value as? Bool ?? true // Default to true (enabled)
+            if let value = self.defaults.object(forKey: Keys.enableStreamingPreview) as? Bool { return value }
+            // Monterey 4GB Intel: preview every tick thrashes Whisper CPU — default off for clean fast final
+            if CPUArchitecture.isIntel, ProcessInfo.processInfo.physicalMemory <= 8 * 1024 * 1024 * 1024 { return false }
+            return true
         }
         set {
             objectWillChange.send()
