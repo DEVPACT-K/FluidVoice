@@ -163,6 +163,9 @@ final class WhisperProvider: TranscriptionProvider {
         }
 
         guard !self.isReady else { return }
+        if CPUArchitecture.isIntel {
+            DebugLogger.shared.info("WhisperProvider: Monterey Intel compat — using CPU backend for \(targetModel.displayName) (fast clean path)", source: "WhisperProvider")
+        }
 
         try Self.backendInitialization.get()
         try self.validateBackendAvailability(for: targetModel)
