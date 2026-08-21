@@ -95,7 +95,14 @@ nonisolated enum AudioDevice {
 
     private static let inputLivenessCache = InputLivenessCache()
 
+    // Monterey 12.7: cache devices for 2s on 4GB Intel to avoid HAL churn during dictate
+    private static var cachedDevices: [Device]?
+    private static var cacheTimestamp: TimeInterval = 0
     static func listAllDevices() -> [Device] {
+        if ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024,
+           let cached = cachedDevices, ProcessInfo.processInfo.systemUptime - cacheTimestamp < 2 {
+            return cached
+        }
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDevices,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -166,7 +173,12 @@ nonisolated enum AudioDevice {
             )
         }
 
-        return devices.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        let sorted = devices.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        if ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024 {
+            cachedDevices = sorted
+            cacheTimestamp = ProcessInfo.processInfo.systemUptime
+        }
+        return sorted
     }
 
     static func listInputDevices() -> [Device] {
