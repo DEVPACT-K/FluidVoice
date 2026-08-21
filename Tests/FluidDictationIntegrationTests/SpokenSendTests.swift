@@ -144,7 +144,7 @@ final class SpokenSendTests: XCTestCase {
         )
     }
 
-    func testImmediateStopCompletionRequiresFreshTranscriptAndSilence() {
+    func testImmediateStopCompletionRequiresTerminalPhraseAndSilence() {
         let arguments = (
             text: "Ready, send it.",
             phrase: "send it",
@@ -158,17 +158,6 @@ final class SpokenSendTests: XCTestCase {
                 phrase: arguments.phrase,
                 spokenSendEnabled: arguments.spokenSendEnabled,
                 sendImmediatelyEnabled: arguments.sendImmediatelyEnabled,
-                receivedFreshTranscript: false,
-                quietDuration: 2
-            )
-        )
-        XCTAssertFalse(
-            SpokenSendParser.canCompleteImmediateStop(
-                arguments.text,
-                phrase: arguments.phrase,
-                spokenSendEnabled: arguments.spokenSendEnabled,
-                sendImmediatelyEnabled: arguments.sendImmediatelyEnabled,
-                receivedFreshTranscript: true,
                 quietDuration: 0
             )
         )
@@ -178,7 +167,6 @@ final class SpokenSendTests: XCTestCase {
                 phrase: arguments.phrase,
                 spokenSendEnabled: arguments.spokenSendEnabled,
                 sendImmediatelyEnabled: arguments.sendImmediatelyEnabled,
-                receivedFreshTranscript: true,
                 quietDuration: SpokenSendParser.immediateStopRequiredSilenceDuration
             )
         )
@@ -191,7 +179,6 @@ final class SpokenSendTests: XCTestCase {
                 phrase: "send it",
                 spokenSendEnabled: true,
                 sendImmediatelyEnabled: true,
-                receivedFreshTranscript: true,
                 quietDuration: 2
             )
         )

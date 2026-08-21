@@ -283,7 +283,6 @@ struct ContentView: View {
     @State private var overlayLifecycleID: UInt64 = 0
     @State private var spokenSendAutoStopTask: Task<Void, Never>?
     @State private var spokenSendAutoStopTriggered = false
-    @State private var spokenSendPartialRevision: UInt64 = 0
     @State private var spokenSendCountdownStartedAt: TimeInterval?
     @State private var spokenSendLastVoiceActivityAt: TimeInterval = 0
     @State private var spokenSendVoiceActivityCancellable: AnyCancellable?
@@ -2509,7 +2508,6 @@ struct ContentView: View {
         self.spokenSendAutoStopTask = nil
         self.stopSpokenSendVoiceActivityMonitoring()
         self.spokenSendAutoStopTriggered = false
-        self.spokenSendPartialRevision = 0
         self.spokenSendCountdownStartedAt = nil
         self.spokenSendLastVoiceActivityAt = ProcessInfo.processInfo.systemUptime
         self.overlayLifecycleID &+= 1
@@ -2518,7 +2516,6 @@ struct ContentView: View {
 
     private func handleSpokenSendPartialTranscription(_ text: String) {
         guard self.settings.spokenSendEnabled else { return }
-        self.spokenSendPartialRevision &+= 1
         let isDictationMode = self.activeRecordingMode == .dictate || self.activeRecordingMode == .promptMode
         let shouldStop = isDictationMode &&
             self.currentDictationOutputRouteForHotkeyStop() == .normal &&
@@ -2549,7 +2546,6 @@ struct ContentView: View {
         }
 
         let expectedOverlayLifecycleID = self.overlayLifecycleID
-        let expectedPartialRevision = self.spokenSendPartialRevision
         let countdownStartedAt = ProcessInfo.processInfo.systemUptime
         self.spokenSendCountdownStartedAt = countdownStartedAt
         self.spokenSendLastVoiceActivityAt = countdownStartedAt
@@ -2571,7 +2567,6 @@ struct ContentView: View {
                       phrase: self.settings.spokenSendPhrase,
                       spokenSendEnabled: self.settings.spokenSendEnabled,
                       sendImmediatelyEnabled: self.settings.spokenSendImmediatelyEnabled,
-                      receivedFreshTranscript: self.spokenSendPartialRevision > expectedPartialRevision,
                       quietDuration: quietDuration
                   )
             else {

@@ -27,11 +27,9 @@ enum SpokenSendParser {
         phrase: String,
         spokenSendEnabled: Bool,
         sendImmediatelyEnabled: Bool,
-        receivedFreshTranscript: Bool,
         quietDuration: TimeInterval
     ) -> Bool {
-        receivedFreshTranscript &&
-            quietDuration >= self.immediateStopRequiredSilenceDuration &&
+        quietDuration >= self.immediateStopRequiredSilenceDuration &&
             self.shouldStopImmediately(
                 text,
                 phrase: phrase,
