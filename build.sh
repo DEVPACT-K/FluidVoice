@@ -15,6 +15,10 @@ PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROFILE="${1:-${BUILD_PROFILE:-public}}"
 
 # Monterey compat guards
+if grep -q 'B/cohere-coreml-asr' "$PROJECT_DIR/Package.swift" 2>/dev/null; then
+  echo "ERROR: FluidAudio still on B/cohere-coreml-asr — Monterey needs main (15-only CoreML)" >&2
+  exit 1
+fi
 if grep -q 'swift-tools-version: 5.9' "$PROJECT_DIR/Package.swift" 2>/dev/null; then
   echo "ERROR: swift-tools-version still 5.9 — Monterey needs 5.7 (Xcode 14.3)" >&2
   exit 1
