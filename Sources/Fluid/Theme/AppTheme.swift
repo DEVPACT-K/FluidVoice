@@ -271,6 +271,8 @@ struct AppTheme {
     let typography: Typography
     let metrics: Metrics
     let materials: Materials
+    // Monterey 4GB: use solid colors vs materials to save GPU
+    var isLowRAMIntel: Bool { ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024 && !CPUArchitecture.isAppleSilicon }
 
     static func adaptive(accent: Color, colorScheme: ColorScheme) -> AppTheme {
         switch colorScheme {
