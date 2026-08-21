@@ -76,7 +76,12 @@ final class TextSelectionService {
 
     private func getSelectedText(from element: AXUIElement) -> String? {
         var value: CFTypeRef?
-        let result = AXUIElementCopyAttributeValue(element, kAXSelectedTextAttribute as CFString, &value)
+        var result = AXUIElementCopyAttributeValue(element, kAXSelectedTextAttribute as CFString, &value)
+        // Monterey 12.7 Intel: AX can be slow under Whisper CPU load — retry once
+        if result != .success, ProcessInfo.processInfo.operatingSystemVersion.majorVersion == 12 {
+            Thread.sleep(forTimeInterval: 0.08)
+            result = AXUIElementCopyAttributeValue(element, kAXSelectedTextAttribute as CFString, &value)
+        }
 
         if result == .success, let text = value as? String {
             self.diag("kAXSelectedTextAttribute succeeded (chars=\(text.count))")
