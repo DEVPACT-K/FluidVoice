@@ -175,6 +175,8 @@ struct StandardThinkingParser: ThinkingParser {
     }
 
     func finalize(thinkingBuffer: [String], contentBuffer: [String], finalState: ThinkingParserState) -> (thinking: String, content: String) {
+        // Monterey 4GB: skip heavy tag strip on huge content for fast paste
+        if ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024, contentBuffer.joined().count > 2000 { return (thinkingBuffer.joined(), contentBuffer.joined().trimmingCharacters(in: .whitespacesAndNewlines)) }
         let thinking = thinkingBuffer.joined()
         var content = contentBuffer.joined()
 
