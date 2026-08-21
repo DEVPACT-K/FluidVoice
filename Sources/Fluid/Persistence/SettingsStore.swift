@@ -4745,8 +4745,12 @@ final class SettingsStore: ObservableObject {
         }
 
         /// Default model for the current architecture
+        /// Monterey Intel 4GB: whisperTiny is faster and avoids swapping vs whisperBase (3GB req).
         static var defaultModel: SpeechModel {
-            CPUArchitecture.isAppleSilicon ? .parakeetTDT : .whisperBase
+            if CPUArchitecture.isAppleSilicon { return .parakeetTDT }
+            // 4GB Intel (e.g. 2015 Air): prefer tiny for clean fast responses; base needs 3GB
+            if ProcessInfo.processInfo.physicalMemory <= 8 * 1024 * 1024 * 1024 { return .whisperTiny }
+            return .whisperBase
         }
 
         // MARK: - UI Card Metadata
