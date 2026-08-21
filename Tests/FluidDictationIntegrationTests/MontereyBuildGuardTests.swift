@@ -27,4 +27,10 @@ final class MontereyBuildGuardTests: XCTestCase {
         XCTAssertFalse(content.contains("MARKETING_VERSION = 1.5.1"), "Monterey needs 1.6.10, not 1.5.1")
         XCTAssertTrue(content.contains("MARKETING_VERSION = 1.6.10"))
     }
+
+    func testBuildShLogsDeploymentTarget() throws {
+        let build = URL(fileURLWithPath: #file).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("build.sh")
+        let content = try String(contentsOf: build)
+        XCTAssertTrue(content.contains("MACOSX_DEPLOYMENT_TARGET"), "build.sh should log Monterey target")
+    }
 }
