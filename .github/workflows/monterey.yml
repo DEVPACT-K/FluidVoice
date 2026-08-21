@@ -14,5 +14,7 @@ jobs:
           grep -q 'MARKETING_VERSION = 1.6.10' Fluid.xcodeproj/project.pbxproj
           ! grep -q 'B/cohere-coreml-asr' Package.swift || (echo "FluidAudio branch regressed" && exit 1)
           grep -q 'MACOSX_DEPLOYMENT_TARGET' build.sh || (echo "build.sh should log deployment" && exit 1)
+      - name: Run Monterey tests
+        run: xcodebuild test -project Fluid.xcodeproj -scheme Fluid -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO -only-testing:FluidDictationIntegrationTests/MontereyOverlayTests -only-testing:FluidDictationIntegrationTests/MontereyCompatTests 2>&1 | tail -20
       - name: Build unsigned (Monterey)
         run: ./build.sh unsigned
