@@ -99,10 +99,10 @@ enum AudioCaptureIdlePolicy {
     }
 
     struct BluetoothInputStabilization {
-        /// New same-device retries may begin within this window. An admitted
-        /// attempt still gets its normal readiness timeout so a nearly settled
-        /// Bluetooth route is not cancelled at the deadline.
-        static let retryAdmissionWindow: TimeInterval = 5
+        /// Monterey 2015 Air: Bluetooth route settles slower under CPU load — extend window on low-RAM Intel
+        static var retryAdmissionWindow: TimeInterval {
+            ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024 && !CPUArchitecture.isAppleSilicon ? 8 : 5
+        }
 
         private(set) var inputUID: String?
         private(set) var startedAt: TimeInterval?
