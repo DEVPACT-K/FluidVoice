@@ -94,7 +94,8 @@ final class ChatHistoryStore: ObservableObject {
     static let shared = ChatHistoryStore()
 
     private let defaults = UserDefaults.standard
-    private let maxChats = 30
+    // Monterey 4GB: keep command history light for fast launch
+    private var maxChats: Int { ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024 ? 10 : 30 }
 
     private enum Keys {
         static let chatSessions = "CommandModeChatSessions"
