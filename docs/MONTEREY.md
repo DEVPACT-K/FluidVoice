@@ -45,3 +45,4 @@ Monterey compat loop has covered deployment, toolchain, notch, SMAppService, onC
 - **swift-tools-version 5.9**: Fixed — `Package.swift` stays at `5.7` for Xcode 14.3; `build.sh` fails fast if it regresses.
 - **FluidAudio B/cohere-coreml-asr**: Fixed — `Package.swift` pins `main` for Monterey; `build.sh` fails fast if 15-only branch reappears.
 - **MARKETING_VERSION 1.5.1**: Fixed — stays at `1.6.10` for Monterey parity; `build.sh` fails fast if it regresses.
+- **Build log**: `build.sh` now echoes `MACOSX_DEPLOYMENT_TARGET` before building for inspectability.
