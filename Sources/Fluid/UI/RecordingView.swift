@@ -73,7 +73,7 @@ struct RecordingView: View {
                             .fluidButton(.primary, size: .large, isRecording: self.asr.isRunning)
                             .buttonHoverEffect()
                             .scaleEffect(self.asr.isRunning ? 1.05 : 1.0)
-                            .animation(.spring(response: 0.3), value: self.asr.isRunning)
+                            .animation(ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024 ? nil : .spring(response: 0.3), value: self.asr.isRunning)
                             .disabled(!self.asr.isAsrReady && !self.asr.isRunning)
                         }
                     }
