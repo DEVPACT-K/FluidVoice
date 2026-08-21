@@ -14,7 +14,11 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROFILE="${1:-${BUILD_PROFILE:-public}}"
 
-# Monterey compat guard: ensure deployment target hasn't drifted back to 15
+# Monterey compat guards
+if grep -q 'swift-tools-version: 5.9' "$PROJECT_DIR/Package.swift" 2>/dev/null; then
+  echo "ERROR: swift-tools-version still 5.9 — Monterey needs 5.7 (Xcode 14.3)" >&2
+  exit 1
+fi
 if grep -q 'MACOSX_DEPLOYMENT_TARGET = 15' "$PROJECT_DIR/Fluid.xcodeproj/project.pbxproj" 2>/dev/null; then
   echo "ERROR: Deployment target still 15.0 — run deployment fix or see docs/MONTEREY.md" >&2
   exit 1
