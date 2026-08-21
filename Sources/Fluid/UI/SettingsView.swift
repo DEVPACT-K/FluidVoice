@@ -221,6 +221,12 @@ struct SettingsView: View {
             microphoneSettingsScrollRequest: self.microphoneSettingsScrollRequest
         ) {
             VStack(spacing: 16) {
+                if !CPUArchitecture.isAppleSilicon && ProcessInfo.processInfo.operatingSystemVersion.majorVersion == 12 {
+                    ThemedCard(style: .standard) {
+                        Label("Monterey Intel: Whisper Tiny & Apple Speech active for fast clean dictate. Parakeet/Nemotron require Apple Silicon.", systemImage: "info.circle")
+                            .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
                 // App Settings Card
                 ThemedCard(style: .standard) {
                     VStack(alignment: .leading, spacing: 14) {
