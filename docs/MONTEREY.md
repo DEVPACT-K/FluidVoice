@@ -29,3 +29,12 @@ No-notch hardware auto-falls back to bottom pill overlay (DynamicNotchKit skippe
 - No Parakeet/Nemotron/Cohere on Intel
 - No Fluid Intelligence (3.5GB)
 - Streaming preview uses Whisper `timestamps: .segment` — clean segments, not word-level
+
+## Troubleshooting
+
+- **onChange two-param error**: Fixed — all `onChange { _, newValue` → `{ newValue` for 12.7 SDK.
+- **SMAppService not found**: Fixed — launch-at-startup gated to 13+ on Monterey.
+- **auxiliaryTopLeftArea error**: Fixed — notch check wrapped in `#available(macOS 13)`.
+- **Deploy target regression**: `build.sh` fails fast if `15.0` reappears.
+- **Slow dictate paste**: Clipboard retries once on 12.7; AX selection retries 80ms.
+- **Deploy deps still 15.0**: Run `./scripts/patch-deps-for-monterey.sh` after `swift package resolve`.
