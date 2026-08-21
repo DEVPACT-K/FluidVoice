@@ -7,6 +7,8 @@ extension ASRService {
         bundleID: String? = nil,
         windowTitle: String? = nil
     ) -> String {
+        // Monterey 4GB: skip heavy spoken punctuation formatting for fast clean path (Whisper Tiny already punctuates)
+        if ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024, !CPUArchitecture.isAppleSilicon, text.count > 500 { return text }
         let settings = SettingsStore.shared
         guard settings.autoConvertPunctuationEnabled else { return text }
         return SpokenPunctuationFormatter.apply(
