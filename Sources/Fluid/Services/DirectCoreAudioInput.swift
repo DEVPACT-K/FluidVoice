@@ -4,6 +4,15 @@ import CoreAudioCaptureSupport
 #endif
 import Foundation
 
+// Monterey 12.7 Intel: 2015 Air mic is 44.1kHz/48kHz — Whisper wants 16kHz mono. Prefer 16kHz to avoid
+// heavy resampling on 4GB and keep dictate fast/clean.
+private let montereyWhisperSampleRate: Double = 16_000
+
+/// Monterey Intel helper: returns Whisper-native rate on 4GB Intel to skip extra resampling.
+func directCoreAudioPreferredSampleRate() -> Double {
+    ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024 ? montereyWhisperSampleRate : 48_000
+}
+
 nonisolated enum DirectCoreAudioDeviceSelection: Equatable {
     case systemDefault
     case preferredUID(String)
