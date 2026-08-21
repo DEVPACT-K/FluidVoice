@@ -13,6 +13,12 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROFILE="${1:-${BUILD_PROFILE:-public}}"
+
+# Monterey compat guard: ensure deployment target hasn't drifted back to 15
+if grep -q 'MACOSX_DEPLOYMENT_TARGET = 15' "$PROJECT_DIR/Fluid.xcodeproj/project.pbxproj" 2>/dev/null; then
+  echo "ERROR: Deployment target still 15.0 — run deployment fix or see docs/MONTEREY.md" >&2
+  exit 1
+fi
 PRIVATE_FI_BUILD_SCRIPT="${PROJECT_DIR}/build_with_FI_incremental.sh"
 DERIVED_DATA_PATH="${FLUIDVOICE_DERIVED_DATA_PATH:-${PROJECT_DIR}/DerivedData}"
 
