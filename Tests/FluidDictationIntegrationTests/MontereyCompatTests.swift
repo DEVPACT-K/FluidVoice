@@ -27,6 +27,11 @@ final class MontereyCompatTests: XCTestCase {
         #endif
     }
 
+    func testIsMontereyIntelHelperExists() {
+        // isMontereyIntel centralizes the 12.7 Intel check — must be false on CI (Intel but not 12) and compile
+        XCTAssertNotNil(CPUArchitecture.isMontereyIntel.description)
+    }
+
     func testDeploymentTargetIsMonterey() {
         // Guard against accidental bump back to 15.0
         let plistPath = Bundle.main.path(forResource: "Info", ofType: "plist") ?? ""
