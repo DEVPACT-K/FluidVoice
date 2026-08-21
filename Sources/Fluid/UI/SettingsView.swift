@@ -871,6 +871,9 @@ struct SettingsView: View {
                                     }
                                     Divider().opacity(0.2)
 
+                                    self.spokenSendSettings
+                                    Divider().opacity(0.2)
+
                                     self.optionToggleRow(
                                         title: "Save Transcription History",
                                         description: "Save transcriptions for stats tracking. Disable for privacy.",
@@ -1477,6 +1480,27 @@ struct SettingsView: View {
                                 .font(self.theme.typography.bodySmall)
                                 .foregroundStyle(self.settingsSecondaryText)
                         }
+                    }
+                    .padding(16)
+                }
+
+                ThemedCard(style: .standard) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack(spacing: 8) {
+                            Label("Experimental", systemImage: "flask.fill")
+                                .font(.headline)
+                                .foregroundStyle(.primary)
+                        }
+
+                        self.settingsToggleRow(
+                            title: "Faster Long Dictation",
+                            description: "For long recordings, reuse completed live windows and process only the remaining tail when you stop.",
+                            footnote: "Parakeet only. Falls back to normal transcription if reuse is unavailable or fails.",
+                            isOn: Binding(
+                                get: { SettingsStore.shared.experimentalParakeetUnifiedFinalEnabled },
+                                set: { SettingsStore.shared.experimentalParakeetUnifiedFinalEnabled = $0 }
+                            )
+                        )
                     }
                     .padding(16)
                 }
@@ -2843,6 +2867,84 @@ struct FlowLayout: Layout {
 
         cache.containerSize = CGSize(width: maxWidth, height: y + rowHeight)
         cache.lastWidth = maxWidth
+    }
+}
+
+private extension SettingsView {
+    var spokenSendSettings: some View {
+        Group {
+            self.optionToggleRow(
+                title: "Spoken Send",
+                description: "Say a phrase at the end of dictation to send with your chosen Enter command.",
+                isOn: Binding(
+                    get: { self.settings.spokenSendEnabled },
+                    set: { self.settings.spokenSendEnabled = $0 }
+                )
+            )
+
+            if self.settings.spokenSendEnabled {
+                VStack(spacing: 10) {
+                    self.optionToggleRow(
+                        title: "Send Immediately",
+                        description: "Stop listening and send as soon as the phrase is recognized. May not work with all voice models; Parakeet is recommended.",
+                        isOn: Binding(
+                            get: { self.settings.spokenSendImmediatelyEnabled },
+                            set: { self.settings.spokenSendImmediatelyEnabled = $0 }
+                        )
+                    )
+
+                    HStack(alignment: .center) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Send Phrase")
+                                .font(self.theme.typography.bodyStrong)
+                                .foregroundStyle(self.settingsTitleText)
+                            Text("Say it at the end. Say “literal \(self.settings.spokenSendPhrase)” to dictate it normally.")
+                                .font(self.theme.typography.bodySmall)
+                                .foregroundStyle(self.settingsSecondaryText)
+                        }
+
+                        Spacer()
+
+                        TextField(
+                            "send it",
+                            text: Binding(
+                                get: { self.settings.spokenSendPhrase },
+                                set: { self.settings.spokenSendPhrase = $0 }
+                            )
+                        )
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 170)
+                        .accessibilityLabel("Spoken Send phrase")
+                    }
+
+                    HStack(alignment: .center) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Send Command")
+                                .font(self.theme.typography.bodyStrong)
+                                .foregroundStyle(self.settingsTitleText)
+                            Text("Choose the Enter behavior expected by the destination app.")
+                                .font(self.theme.typography.bodySmall)
+                                .foregroundStyle(self.settingsSecondaryText)
+                        }
+
+                        Spacer()
+
+                        Picker("", selection: Binding(
+                            get: { self.settings.spokenSendKey },
+                            set: { self.settings.spokenSendKey = $0 }
+                        )) {
+                            ForEach(SettingsStore.SpokenSendKey.allCases) { key in
+                                Text(key.displayName).tag(key)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .frame(width: 170, alignment: .trailing)
+                        .accessibilityLabel("Spoken Send command")
+                    }
+                }
+                .padding(.leading, 12)
+            }
+        }
     }
 }
 

@@ -1786,6 +1786,16 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    /// Reuses finalized Parakeet windows so long recordings only process their remaining tail at stop.
+    /// Experimental and enabled by default; users can fall back to full-buffer finalization.
+    var experimentalParakeetUnifiedFinalEnabled: Bool {
+        get { self.defaults.object(forKey: Keys.experimentalParakeetUnifiedFinalEnabled) as? Bool ?? true }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.experimentalParakeetUnifiedFinalEnabled)
+        }
+    }
+
     /// Skips clearly silent recordings up to four seconds before invoking ASR.
     /// Opt-in so quiet speech keeps the existing transcription behavior by default.
     var skipSilentRecordingsEnabled: Bool {
@@ -3058,6 +3068,28 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    /// Stored verification fingerprints per private model ID. Provider-level fingerprints remain
+    /// for backward compatibility, while this map allows Dictation and Edit Mode to use different
+    /// installed models without invalidating each other.
+    var verifiedPrivateAIModelFingerprints: [String: String] {
+        get {
+            guard let data = self.defaults.data(forKey: Keys.verifiedPrivateAIModelFingerprints),
+                  let decoded = try? JSONDecoder().decode([String: String].self, from: data)
+            else {
+                return [:]
+            }
+            return decoded
+        }
+        set {
+            objectWillChange.send()
+            if let encoded = try? JSONEncoder().encode(newValue) {
+                self.defaults.set(encoded, forKey: Keys.verifiedPrivateAIModelFingerprints)
+            } else {
+                self.defaults.removeObject(forKey: Keys.verifiedPrivateAIModelFingerprints)
+            }
+        }
+    }
+
     // MARK: - Stats Settings
 
     /// User's typing speed in words per minute (for time saved calculation)
@@ -3207,10 +3239,15 @@ final class SettingsStore: ObservableObject {
             pressAndHoldMode: self.pressAndHoldMode,
             hotkeyMode: self.hotkeyMode,
             enableStreamingPreview: self.enableStreamingPreview,
+            experimentalParakeetUnifiedFinalEnabled: self.experimentalParakeetUnifiedFinalEnabled,
             skipSilentRecordingsEnabled: self.skipSilentRecordingsEnabled,
             enableAIStreaming: self.enableAIStreaming,
             copyTranscriptionToClipboard: self.copyTranscriptionToClipboard,
             textInsertionMode: self.textInsertionMode,
+            spokenSendEnabled: self.spokenSendEnabled,
+            spokenSendImmediatelyEnabled: self.spokenSendImmediatelyEnabled,
+            spokenSendPhrase: self.spokenSendPhrase,
+            spokenSendKey: self.spokenSendKey,
             preferredInputDeviceUID: self.preferredInputDeviceUID,
             microphonePriority: self.microphonePriority,
             suppressedMicrophoneUIDs: self.suppressedMicrophoneUIDs.sorted(),
@@ -3330,12 +3367,27 @@ final class SettingsStore: ObservableObject {
         self.shareAnonymousAnalytics = payload.shareAnonymousAnalytics
         self.hotkeyMode = payload.hotkeyMode ?? (payload.pressAndHoldMode ? .hold : .toggle)
         self.enableStreamingPreview = payload.enableStreamingPreview
+        if let experimentalParakeetUnifiedFinalEnabled = payload.experimentalParakeetUnifiedFinalEnabled {
+            self.experimentalParakeetUnifiedFinalEnabled = experimentalParakeetUnifiedFinalEnabled
+        }
         if let skipSilentRecordingsEnabled = payload.skipSilentRecordingsEnabled {
             self.skipSilentRecordingsEnabled = skipSilentRecordingsEnabled
         }
         self.enableAIStreaming = payload.enableAIStreaming
         self.copyTranscriptionToClipboard = payload.copyTranscriptionToClipboard
         self.textInsertionMode = payload.textInsertionMode
+        if let spokenSendEnabled = payload.spokenSendEnabled {
+            self.spokenSendEnabled = spokenSendEnabled
+        }
+        if let spokenSendImmediatelyEnabled = payload.spokenSendImmediatelyEnabled {
+            self.spokenSendImmediatelyEnabled = spokenSendImmediatelyEnabled
+        }
+        if let spokenSendPhrase = payload.spokenSendPhrase {
+            self.spokenSendPhrase = spokenSendPhrase
+        }
+        if let spokenSendKey = payload.spokenSendKey {
+            self.spokenSendKey = spokenSendKey
+        }
         self.preferredInputDeviceUID = payload.preferredInputDeviceUID
         self.suppressedMicrophoneUIDs = Set(payload.suppressedMicrophoneUIDs ?? [])
         if let microphonePriority = payload.microphonePriority {
@@ -3828,17 +3880,16 @@ final class SettingsStore: ObservableObject {
 
     private func syncLinkedProviderSelections(to providerID: String) {
         let trimmed = providerID.trimmingCharacters(in: .whitespacesAndNewlines)
-        let linkedProviderID = self.isPrivateAIProviderID(trimmed) ? "" : trimmed
-        let model = self.modelSelection(for: linkedProviderID)
 
         if self.rewriteModeLinkedToGlobal {
-            self.rewriteModeSelectedProviderID = linkedProviderID
-            self.rewriteModeSelectedModel = model
+            self.rewriteModeSelectedProviderID = trimmed
+            self.rewriteModeSelectedModel = self.modelSelection(for: trimmed)
         }
 
         if self.commandModeLinkedToGlobal {
+            let linkedProviderID = self.isPrivateAIProviderID(trimmed) ? "" : trimmed
             self.commandModeSelectedProviderID = linkedProviderID
-            self.commandModeSelectedModel = model
+            self.commandModeSelectedModel = self.modelSelection(for: linkedProviderID)
         }
     }
 
@@ -5235,6 +5286,7 @@ private extension SettingsStore {
         static let providerAPIKeyIdentifiers = "ProviderAPIKeyIdentifiers"
         static let savedProviders = "SavedProviders"
         static let verifiedProviderFingerprints = "VerifiedProviderFingerprints"
+        static let verifiedPrivateAIModelFingerprints = "VerifiedPrivateAIModelFingerprints"
         static let shareAnonymousAnalytics = "ShareAnonymousAnalytics"
         static let privateAIInterestCaptured = "PrivateAIProviderInterestCaptured"
         static let hotkeyShortcutKey = "HotkeyShortcutKey"
@@ -5259,10 +5311,15 @@ private extension SettingsStore {
         static let pressAndHoldMode = "PressAndHoldMode"
         static let hotkeyMode = "HotkeyMode"
         static let enableStreamingPreview = "EnableStreamingPreview"
+        static let experimentalParakeetUnifiedFinalEnabled = "ExperimentalParakeetUnifiedFinalEnabled"
         static let skipSilentRecordingsEnabled = "SkipSilentRecordingsEnabled"
         static let enableAIStreaming = "EnableAIStreaming"
         static let copyTranscriptionToClipboard = "CopyTranscriptionToClipboard"
         static let textInsertionMode = "TextInsertionMode"
+        static let spokenSendEnabled = "SpokenSendEnabled"
+        static let spokenSendImmediatelyEnabled = "SpokenSendImmediatelyEnabled"
+        static let spokenSendPhrase = "SpokenSendPhrase"
+        static let spokenSendKey = "SpokenSendKey"
         static let autoUpdateCheckEnabled = "AutoUpdateCheckEnabled"
         static let betaReleasesEnabled = "BetaReleasesEnabled"
         static let lastUpdateCheckDate = "LastUpdateCheckDate"
@@ -5392,6 +5449,77 @@ private extension SettingsStore {
 }
 
 extension SettingsStore {
+    enum SpokenSendKey: String, CaseIterable, Identifiable, Codable {
+        case enter
+        case shiftEnter
+        case commandEnter
+
+        var id: String {
+            self.rawValue
+        }
+
+        var displayName: String {
+            switch self {
+            case .enter:
+                return "Enter"
+            case .shiftEnter:
+                return "Shift + Enter"
+            case .commandEnter:
+                return "Command + Enter"
+            }
+        }
+
+        var eventFlags: CGEventFlags {
+            switch self {
+            case .enter:
+                return []
+            case .shiftEnter:
+                return .maskShift
+            case .commandEnter:
+                return .maskCommand
+            }
+        }
+    }
+
+    var spokenSendEnabled: Bool {
+        get { self.defaults.object(forKey: Keys.spokenSendEnabled) as? Bool ?? false }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.spokenSendEnabled)
+        }
+    }
+
+    var spokenSendImmediatelyEnabled: Bool {
+        get { self.defaults.object(forKey: Keys.spokenSendImmediatelyEnabled) as? Bool ?? true }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.spokenSendImmediatelyEnabled)
+        }
+    }
+
+    var spokenSendPhrase: String {
+        get { self.defaults.string(forKey: Keys.spokenSendPhrase) ?? "send it" }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.spokenSendPhrase)
+        }
+    }
+
+    var spokenSendKey: SpokenSendKey {
+        get {
+            guard let raw = self.defaults.string(forKey: Keys.spokenSendKey),
+                  let key = SpokenSendKey(rawValue: raw)
+            else {
+                return .enter
+            }
+            return key
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue.rawValue, forKey: Keys.spokenSendKey)
+        }
+    }
+
     enum TextInsertionMode: String, CaseIterable, Identifiable, Codable {
         case standard
         case reliablePaste

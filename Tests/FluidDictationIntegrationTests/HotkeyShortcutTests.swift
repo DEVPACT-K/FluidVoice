@@ -17,6 +17,7 @@ final class HotkeyShortcutTests: XCTestCase {
     private let microphoneSelectionMigrationVersionKey = "AppOnlyMicrophoneSelectionMigrationVersion"
     private let showMicrophoneChangeAlertsKey = "ShowMicrophoneChangeAlerts"
     private let experimentalDirectAudioCaptureEnabledKey = "ExperimentalDirectAudioCaptureEnabled"
+    private let incrementalParakeetEnabledKey = "ExperimentalParakeetUnifiedFinalEnabled"
 
     @MainActor
     func testBottomOverlayRapidStopStartStopDoesNotDropFinalHide() async {
@@ -138,6 +139,72 @@ final class HotkeyShortcutTests: XCTestCase {
         let legacyData = try JSONSerialization.data(withJSONObject: root)
         let decoded = try BackupService.shared.decode(legacyData)
         XCTAssertNil(decoded.settings.skipSilentRecordingsEnabled)
+    }
+
+    @MainActor
+    func testIncrementalParakeetDefaultsOnAndRoundTripsWithoutBreakingLegacyBackups() async throws {
+        let defaults = UserDefaults.standard
+        let originalValue = defaults.object(forKey: self.incrementalParakeetEnabledKey)
+        defer {
+            if let originalValue {
+                defaults.set(originalValue, forKey: self.incrementalParakeetEnabledKey)
+            } else {
+                defaults.removeObject(forKey: self.incrementalParakeetEnabledKey)
+            }
+        }
+
+        defaults.removeObject(forKey: self.incrementalParakeetEnabledKey)
+        XCTAssertTrue(SettingsStore.shared.experimentalParakeetUnifiedFinalEnabled)
+
+        SettingsStore.shared.experimentalParakeetUnifiedFinalEnabled = false
+        let document = await BackupService.shared.makeBackupDocument()
+        XCTAssertEqual(document.settings.experimentalParakeetUnifiedFinalEnabled, false)
+
+        let encoded = try BackupService.shared.encode(document)
+        var root = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        var settings = try XCTUnwrap(root["settings"] as? [String: Any])
+        settings.removeValue(forKey: "experimentalParakeetUnifiedFinalEnabled")
+        root["settings"] = settings
+
+        let legacyBackup = try BackupService.shared.decode(JSONSerialization.data(withJSONObject: root))
+        XCTAssertNil(legacyBackup.settings.experimentalParakeetUnifiedFinalEnabled)
+    }
+
+    @MainActor
+    func testIncrementalParakeetCopiesOnlyTheUnacceptedTailAfterSessionStarts() {
+        XCTAssertEqual(
+            FluidAudioProvider.incrementalPreviewDeltaRange(
+                enabled: true,
+                hasSession: true,
+                acceptedSampleCount: 320_000,
+                totalSampleCount: 330_000
+            ),
+            320_000..<330_000
+        )
+        XCTAssertNil(
+            FluidAudioProvider.incrementalPreviewDeltaRange(
+                enabled: false,
+                hasSession: true,
+                acceptedSampleCount: 320_000,
+                totalSampleCount: 330_000
+            )
+        )
+        XCTAssertNil(
+            FluidAudioProvider.incrementalPreviewDeltaRange(
+                enabled: true,
+                hasSession: false,
+                acceptedSampleCount: 320_000,
+                totalSampleCount: 330_000
+            )
+        )
+        XCTAssertNil(
+            FluidAudioProvider.incrementalPreviewDeltaRange(
+                enabled: true,
+                hasSession: true,
+                acceptedSampleCount: 240_000,
+                totalSampleCount: 250_000
+            )
+        )
     }
 
     @MainActor
@@ -976,7 +1043,7 @@ final class HotkeyShortcutTests: XCTestCase {
         ))
         for _ in 0...AudioCaptureIdlePolicy.SilentPCMRecoveryWatchdog.requiredSilentWindows {
             XCTAssertFalse(ambientWatchdog.shouldRecover(
-                isInternalMicrophone: true, isDirectCapture: true, rms: 0.000_1, peak: 0.001
+                isInternalMicrophone: true, isDirectCapture: true, rms: 0.0001, peak: 0.001
             ))
         }
     }

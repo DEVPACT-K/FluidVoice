@@ -243,6 +243,7 @@ struct ContentView: View {
     @State private var playgroundUsed: Bool = SettingsStore.shared.playgroundUsed
     @State private var recordingAppInfo: (name: String, bundleId: String, windowTitle: String)? = nil
     @State private var recordingPrecedingText: String = ""
+    @State private var recordingFocusTarget: TypingService.CapturedFocusTarget? = nil
 
     // Command Mode State
     // @State private var showCommandMode: Bool = false
@@ -280,6 +281,11 @@ struct ContentView: View {
     @State private var accessibilityGuideRequestID: UUID?
     @State private var prewarmDictationTask: Task<Void, Never>?
     @State private var overlayLifecycleID: UInt64 = 0
+    @State private var spokenSendAutoStopTask: Task<Void, Never>?
+    @State private var spokenSendAutoStopTriggered = false
+    @State private var spokenSendCountdownStartedAt: TimeInterval?
+    @State private var spokenSendLastVoiceActivityAt: TimeInterval = 0
+    @State private var spokenSendVoiceActivityCancellable: AnyCancellable?
 
     private var isRecordingAnyShortcutCapture: Bool {
         self.activeShortcutRecordingTarget != nil
@@ -352,6 +358,9 @@ struct ContentView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: .settingsBackupDidRestore)) { _ in
                 self.reloadSettingsStateAfterBackupRestore()
+            }
+            .onReceive(self.asr.$partialTranscription) { text in
+                self.handleSpokenSendPartialTranscription(text)
             }
             .toolbar {
                 if !self.settings.shouldShowOnboarding {
@@ -1610,6 +1619,50 @@ struct ContentView: View {
         return (name: "Unknown", bundleId: "unknown", windowTitle: "")
     }
 
+    private func isSpokenSendBlockedApp(
+        _ appInfo: (name: String, bundleId: String, windowTitle: String)
+    ) -> Bool {
+        let identity = "\(appInfo.name) \(appInfo.bundleId)".lowercased()
+        return identity.contains("terminal")
+            || identity.contains("iterm")
+            || identity.contains("warp")
+            || identity.contains("ghostty")
+            || identity.contains("kitty")
+            || identity.contains("alacritty")
+    }
+
+    private func deliverSpokenSend(
+        _ outputPlan: DictationLiteralOutputPlan,
+        targetPID: pid_t?,
+        textReadyAt: TimeInterval
+    ) async -> TypingService.DeliveryOutcome {
+        let sendsExistingDraft = outputPlan.plainText.isEmpty
+        let outcome = await self.asr.typeOutputPlanToActiveFieldAndWait(
+            outputPlan,
+            preferredTargetPID: targetPID,
+            textReadyAt: textReadyAt,
+            postInsertionKey: self.settings.spokenSendKey,
+            requiredFocusTarget: self.recordingFocusTarget
+        )
+        if outcome.didDispatchAction {
+            NotchContentState.shared.setSpokenSendIndicatorState(.sent)
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            return outcome
+        }
+
+        NotchContentState.shared.setSpokenSendIndicatorState(.failed)
+        DebugLogger.shared.warning(
+            "Spoken Send skipped because delivery safety checks did not pass",
+            source: "ContentView"
+        )
+        let message = outcome.didInsert
+            ? "Text inserted — send skipped"
+            : sendsExistingDraft ? "Couldn't send" : "Couldn't insert or send"
+        NotchOverlayManager.shared.updateTranscriptionText(message)
+        try? await Task.sleep(nanoseconds: 650_000_000)
+        return outcome
+    }
+
     /// Best-effort frontmost window title lookup for the current app
     private func getFrontmostWindowTitle(ownerPid: pid_t) -> String? {
         let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
@@ -1628,7 +1681,9 @@ struct ContentView: View {
     private func captureRecordingTargetContext() {
         // Capture the focused target PID BEFORE any overlay/UI changes.
         // Used to restore focus when the user interacts with overlay dropdowns.
-        let focusedPID = TypingService.captureSystemFocusedPID()
+        let focusTarget = TypingService.captureSystemFocusTarget()
+        self.recordingFocusTarget = focusTarget
+        let focusedPID = focusTarget?.pid
             ?? NSWorkspace.shared.frontmostApplication?.processIdentifier
         NotchContentState.shared.recordingTargetPID = focusedPID
 
@@ -2050,7 +2105,8 @@ struct ContentView: View {
             !wasRewriteMode &&
             !wasCommandMode &&
             !promptTest.isActive &&
-            !shouldUseAIOnStop
+            !shouldUseAIOnStop &&
+            !self.settings.spokenSendEnabled
         var didRequestOverlayHideOnStop = false
         DebugLogger.shared.info(
             "Routing decision snapshot | activeMode=\(modeAtStop.rawValue) | rewrite=\(wasRewriteMode) | command=\(wasCommandMode) | overlay=\(NotchContentState.shared.mode.rawValue)",
@@ -2174,16 +2230,25 @@ struct ContentView: View {
         var aiFallbackReason: String?
         var postProcessingModel: String?
         let appInfo = self.recordingAppInfo ?? self.getCurrentAppInfo()
-        let normalizedTranscribedText = ASRService.applySpokenPunctuationFormatting(
+        let punctuationFormattedText = ASRService.applySpokenPunctuationFormatting(
             transcribedText,
             appName: appInfo.name,
             bundleID: appInfo.bundleId,
             windowTitle: appInfo.windowTitle
         )
+        let spokenSendParse = SpokenSendParser.parse(
+            punctuationFormattedText,
+            phrase: self.settings.spokenSendPhrase,
+            enabled: route == .normal && self.settings.spokenSendEnabled
+        )
+        self.updateSpokenSendIndicatorForFinalParse(shouldSend: spokenSendParse.shouldSend)
+        let normalizedTranscribedText = spokenSendParse.text
+        let sendsExistingDraft = spokenSendParse.shouldSend &&
+            normalizedTranscribedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
 
-        let shouldUseAI = activeDictationSlot.map {
+        let shouldUseAI = !sendsExistingDraft && (activeDictationSlot.map {
             DictationAIPostProcessingGate.isConfigured(for: $0, appBundleID: appInfo.bundleId)
-        } ?? DictationAIPostProcessingGate.isConfigured(for: .primary, appBundleID: appInfo.bundleId)
+        } ?? DictationAIPostProcessingGate.isConfigured(for: .primary, appBundleID: appInfo.bundleId))
         let transcriptionModelInfo = self.currentTranscriptionModelInfo()
         let postProcessingModelInfo = self.currentDictationAIModelInfo(
             dictationSlot: activeDictationSlot,
@@ -2316,7 +2381,7 @@ struct ContentView: View {
 
         let shouldShowAIProcessingFailure = shouldPersistOutputs && aiFallbackReason != nil
         if shouldShowAIProcessingFailure {
-            self.pendingAIReprocessText = transcribedText
+            self.pendingAIReprocessText = spokenSendParse.shouldSend ? normalizedTranscribedText : transcribedText
             NotchContentState.shared.showAIProcessingFailure()
             self.menuBarManager.finishProcessingKeepingOverlayVisible()
         } else {
@@ -2328,13 +2393,13 @@ struct ContentView: View {
         let isFluidFrontmost = frontmostApp?.bundleIdentifier == Bundle.main.bundleIdentifier
 
         // Save to transcription history (transcription mode only, if enabled)
-        if shouldPersistOutputs, SettingsStore.shared.saveTranscriptionHistory {
+        if shouldPersistOutputs, !sendsExistingDraft, SettingsStore.shared.saveTranscriptionHistory {
             let historyEntryID = UUID()
             let historyTimestamp = Date()
             TranscriptionHistoryStore.shared.addEntry(
                 id: historyEntryID,
                 timestamp: historyTimestamp,
-                rawText: transcribedText,
+                rawText: spokenSendParse.shouldSend ? normalizedTranscribedText : transcribedText,
                 processedText: finalText,
                 appName: appInfo.name,
                 windowTitle: appInfo.windowTitle,
@@ -2352,6 +2417,7 @@ struct ContentView: View {
         // When FluidVoice itself is frontmost, the bound editor already receives `finalText`.
         // Avoid re-inserting or overwriting the clipboard in that self-target case.
         let shouldCopyToClipboard = shouldPersistOutputs &&
+            !sendsExistingDraft &&
             SettingsStore.shared.copyTranscriptionToClipboard &&
             !isFluidFrontmost
 
@@ -2369,21 +2435,55 @@ struct ContentView: View {
 
         if shouldTypeExternally {
             let typingTarget = self.resolveTypingTargetPID()
+            let spokenSendRequested = spokenSendParse.shouldSend
+            let targetMatchesRecordingFocus = typingTarget.pid != nil
+                && typingTarget.pid == self.recordingFocusTarget?.pid
+            let spokenSendAllowed = spokenSendRequested
+                && aiFallbackReason == nil
+                && (sendsExistingDraft || !finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                && targetMatchesRecordingFocus
+                && !self.isSpokenSendBlockedApp(appInfo)
             // Dispatch insertion as soon as the destination app is ready; the
             // overlay hides asynchronously after output so it cannot delay paste.
             if typingTarget.shouldRestoreOriginalFocus {
                 await self.restoreFocusToRecordingTarget()
             }
+            if spokenSendAllowed {
+                NotchContentState.shared.setSpokenSendIndicatorState(.sending)
+                NotchOverlayManager.shared.updateTranscriptionText("Sending")
+            }
             self.appBench(
                 "text_ready_to_type_request elapsedMs=\(Int(((ProcessInfo.processInfo.systemUptime - finalTextReadyAt) * 1000).rounded()))"
             )
-            self.asr.typeOutputPlanToActiveField(
-                finalOutputPlan,
-                preferredTargetPID: typingTarget.pid,
-                textReadyAt: finalTextReadyAt,
-                tracksDictionaryCorrections: true
-            )
-            didTypeExternally = true
+            if spokenSendAllowed {
+                let deliveryOutcome = await self.deliverSpokenSend(
+                    finalOutputPlan,
+                    targetPID: typingTarget.pid,
+                    textReadyAt: finalTextReadyAt
+                )
+                didTypeExternally = deliveryOutcome.didInsert
+            } else {
+                self.asr.typeOutputPlanToActiveField(
+                    finalOutputPlan,
+                    preferredTargetPID: typingTarget.pid,
+                    textReadyAt: finalTextReadyAt,
+                    tracksDictionaryCorrections: true
+                )
+                didTypeExternally = true
+            }
+            if spokenSendRequested, !spokenSendAllowed {
+                NotchContentState.shared.setSpokenSendIndicatorState(.failed)
+                DebugLogger.shared.warning(
+                    "Spoken Send skipped because delivery safety checks did not pass",
+                    source: "ContentView"
+                )
+                if aiFallbackReason == nil {
+                    NotchOverlayManager.shared.updateTranscriptionText("Text inserted — send skipped")
+                    try? await Task.sleep(nanoseconds: 650_000_000)
+                }
+            }
+            NotchOverlayManager.shared.updateTranscriptionText("")
+            NotchContentState.shared.setSpokenSendIndicatorState(.hidden)
             if !shouldShowAIProcessingFailure, !didRequestOverlayHideOnStop {
                 self.hideOverlayAfterOutput()
             }
@@ -2398,46 +2498,139 @@ struct ContentView: View {
         self.hideOverlayAsync(reason: "after_output")
     }
 
-    private func showPrivateAIEditModeUnavailableIfNeeded() -> Bool {
-        let settings = SettingsStore.shared
-        let providerID = settings.rewriteModeLinkedToGlobal
-            ? settings.selectedProviderID
-            : settings.rewriteModeSelectedProviderID
-        guard PrivateFeatures.privateAIProvider,
-              providerID.trimmingCharacters(in: .whitespacesAndNewlines) ==
-              PrivateAIProviderFeature.shared.providerID
-        else {
-            return false
+    private func updateSpokenSendIndicatorForFinalParse(shouldSend: Bool) {
+        if shouldSend, NotchContentState.shared.spokenSendIndicatorState == .sending {
+            return
         }
-
-        guard !self.asr.isRunningOrStarting,
-              !NotchContentState.shared.isProcessing
-        else {
-            return true
-        }
-
-        self.menuBarManager.setOverlayMode(.edit)
-        self.advanceOverlayLifecycle()
-        let expectedOverlayLifecycleID = self.overlayLifecycleID
-        self.menuBarManager.showRecordingOverlayImmediately()
-        NotchContentState.shared.showAIProcessingFailure(
-            message: "Edit Mode cannot be used with Fluid-1",
-            canRetry: false
-        )
-        self.menuBarManager.finishProcessingKeepingOverlayVisible()
-
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 6_000_000_000)
-            guard self.overlayLifecycleID == expectedOverlayLifecycleID else { return }
-            NotchContentState.shared.clearAIProcessingFailure()
-            await self.menuBarManager.finishProcessingAndHideOverlay()
-        }
-        return true
+        NotchContentState.shared.setSpokenSendIndicatorState(shouldSend ? .detected : .hidden)
     }
 
     private func advanceOverlayLifecycle() {
+        self.spokenSendAutoStopTask?.cancel()
+        self.spokenSendAutoStopTask = nil
+        self.stopSpokenSendVoiceActivityMonitoring()
+        self.spokenSendAutoStopTriggered = false
+        self.spokenSendCountdownStartedAt = nil
+        self.spokenSendLastVoiceActivityAt = ProcessInfo.processInfo.systemUptime
         self.overlayLifecycleID &+= 1
         NotchContentState.shared.clearAIProcessingFailure()
+    }
+
+    private func handleSpokenSendPartialTranscription(_ text: String) {
+        guard self.settings.spokenSendEnabled else { return }
+        let isDictationMode = self.activeRecordingMode == .dictate || self.activeRecordingMode == .promptMode
+        let shouldStop = isDictationMode &&
+            self.currentDictationOutputRouteForHotkeyStop() == .normal &&
+            self.asr.isRunning &&
+            !self.spokenSendAutoStopTriggered &&
+            SpokenSendParser.shouldStopImmediately(
+                text,
+                phrase: self.settings.spokenSendPhrase,
+                spokenSendEnabled: self.settings.spokenSendEnabled,
+                sendImmediatelyEnabled: self.settings.spokenSendImmediatelyEnabled
+            )
+
+        guard shouldStop else {
+            self.spokenSendAutoStopTask?.cancel()
+            self.spokenSendAutoStopTask = nil
+            self.stopSpokenSendVoiceActivityMonitoring()
+            self.spokenSendCountdownStartedAt = nil
+            if !self.spokenSendAutoStopTriggered,
+               NotchContentState.shared.spokenSendIndicatorState == .countingDown
+            {
+                NotchContentState.shared.setSpokenSendIndicatorState(.hidden)
+            }
+            return
+        }
+
+        guard self.spokenSendAutoStopTask == nil else {
+            return
+        }
+
+        let expectedOverlayLifecycleID = self.overlayLifecycleID
+        let countdownStartedAt = ProcessInfo.processInfo.systemUptime
+        self.spokenSendCountdownStartedAt = countdownStartedAt
+        self.spokenSendLastVoiceActivityAt = countdownStartedAt
+        self.startSpokenSendVoiceActivityMonitoring()
+        let expectedCountdownID = NotchContentState.shared.beginSpokenSendCountdown()
+        self.spokenSendAutoStopTask = Task { @MainActor in
+            // Keep one countdown across harmless streaming refinements such as punctuation or casing.
+            try? await Task.sleep(nanoseconds: SpokenSendParser.immediateStopSettleNanoseconds)
+            let quietDuration = ProcessInfo.processInfo.systemUptime - self.spokenSendLastVoiceActivityAt
+            guard !Task.isCancelled,
+                  self.overlayLifecycleID == expectedOverlayLifecycleID,
+                  NotchContentState.shared.spokenSendCountdownID == expectedCountdownID,
+                  self.asr.isRunning,
+                  self.activeRecordingMode == .dictate || self.activeRecordingMode == .promptMode,
+                  self.currentDictationOutputRouteForHotkeyStop() == .normal,
+                  !self.spokenSendAutoStopTriggered,
+                  SpokenSendParser.canCompleteImmediateStop(
+                      self.asr.partialTranscription,
+                      phrase: self.settings.spokenSendPhrase,
+                      spokenSendEnabled: self.settings.spokenSendEnabled,
+                      sendImmediatelyEnabled: self.settings.spokenSendImmediatelyEnabled,
+                      quietDuration: quietDuration
+                  )
+            else {
+                if self.overlayLifecycleID == expectedOverlayLifecycleID,
+                   NotchContentState.shared.spokenSendCountdownID == expectedCountdownID
+                {
+                    self.spokenSendAutoStopTask = nil
+                    self.stopSpokenSendVoiceActivityMonitoring()
+                    self.spokenSendCountdownStartedAt = nil
+                    if NotchContentState.shared.spokenSendIndicatorState == .countingDown {
+                        NotchContentState.shared.setSpokenSendIndicatorState(.hidden)
+                    }
+                }
+                return
+            }
+
+            self.spokenSendAutoStopTask = nil
+            self.stopSpokenSendVoiceActivityMonitoring()
+            self.spokenSendCountdownStartedAt = nil
+            self.spokenSendAutoStopTriggered = true
+            NotchContentState.shared.setSpokenSendIndicatorState(.sending)
+            DebugLogger.shared.info("Spoken Send countdown completed; stopping dictation", source: "ContentView")
+            await self.stopAndProcessTranscription(route: .normal)
+        }
+    }
+
+    private func handleSpokenSendAudioLevel(_ level: CGFloat) {
+        guard SpokenSendParser.isMeaningfulVoiceActivity(level) else { return }
+
+        let activityAt = ProcessInfo.processInfo.systemUptime
+        self.spokenSendLastVoiceActivityAt = activityAt
+        guard let countdownStartedAt = self.spokenSendCountdownStartedAt,
+              SpokenSendParser.shouldCancelCountdownForVoiceActivity(
+                  countdownStartedAt: countdownStartedAt,
+                  voiceActivityAt: activityAt
+              ),
+              self.spokenSendAutoStopTask != nil
+        else {
+            return
+        }
+
+        self.spokenSendAutoStopTask?.cancel()
+        self.spokenSendAutoStopTask = nil
+        self.stopSpokenSendVoiceActivityMonitoring()
+        self.spokenSendCountdownStartedAt = nil
+        if NotchContentState.shared.spokenSendIndicatorState == .countingDown {
+            NotchContentState.shared.setSpokenSendIndicatorState(.hidden)
+        }
+    }
+
+    private func startSpokenSendVoiceActivityMonitoring() {
+        guard self.spokenSendVoiceActivityCancellable == nil else { return }
+        self.spokenSendVoiceActivityCancellable = self.asr.audioLevelPublisher
+            .receive(on: RunLoop.main)
+            .sink { level in
+                self.handleSpokenSendAudioLevel(level)
+            }
+    }
+
+    private func stopSpokenSendVoiceActivityMonitoring() {
+        self.spokenSendVoiceActivityCancellable?.cancel()
+        self.spokenSendVoiceActivityCancellable = nil
     }
 
     private func hideOverlayAsync(reason: String) {
@@ -3098,6 +3291,18 @@ struct ContentView: View {
         guard let pid = NotchContentState.shared.recordingTargetPID else { return }
         let startedAt = ProcessInfo.processInfo.systemUptime
         self.appBench("focus_restore_start targetPID=\(pid)")
+        if let focusTarget = self.recordingFocusTarget, focusTarget.pid == pid {
+            if TypingService.isExactFocusTargetActive(focusTarget) {
+                self.appBench("focus_restore_result activated=false element=true elapsedMs=0 reason=already_focused")
+                return
+            }
+            let activated = TypingService.activateApp(pid: pid)
+            let focusedElementRestored = TypingService.restoreFocusTarget(focusTarget)
+            self.appBench(
+                "focus_restore_result activated=\(activated) element=\(focusedElementRestored) elapsedMs=\(Int(((ProcessInfo.processInfo.systemUptime - startedAt) * 1000).rounded()))"
+            )
+            return
+        }
         if TypingService.isCapturedFocusStillActive(for: pid) {
             self.appBench("focus_restore_result activated=false element=true elapsedMs=0 reason=already_focused")
             DebugLogger.shared.debug(
@@ -3307,8 +3512,6 @@ struct ContentView: View {
                 }
             },
             rewriteModeCallback: {
-                guard !self.showPrivateAIEditModeUnavailableIfNeeded() else { return }
-
                 self.captureRecordingContext()
 
                 // Try to capture text first while still in the other app
