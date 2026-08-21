@@ -15,6 +15,10 @@ PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROFILE="${1:-${BUILD_PROFILE:-public}}"
 
 # Monterey compat guards
+if grep -q 'MARKETING_VERSION = 1.5.1' "$PROJECT_DIR/Fluid.xcodeproj/project.pbxproj" 2>/dev/null; then
+  echo "ERROR: MARKETING_VERSION still 1.5.1 — bump to 1.6.10 for Monterey parity" >&2
+  exit 1
+fi
 if grep -q 'B/cohere-coreml-asr' "$PROJECT_DIR/Package.swift" 2>/dev/null; then
   echo "ERROR: FluidAudio still on B/cohere-coreml-asr — Monterey needs main (15-only CoreML)" >&2
   exit 1
