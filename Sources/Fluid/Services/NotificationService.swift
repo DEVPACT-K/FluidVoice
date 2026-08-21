@@ -12,6 +12,8 @@ enum NotificationService {
     }
 
     static func showAIProcessingFallback(error: String) {
+        // Monterey 4GB: AI fallback is expected (FI disabled) — suppress noisy notification for clean UX
+        if ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024, CPUArchitecture.isIntel { return }
         guard SettingsStore.shared.notifyAIProcessingFailures else { return }
 
         let center = UNUserNotificationCenter.current()
