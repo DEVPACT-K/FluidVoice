@@ -13,7 +13,10 @@ struct TranscriptionHistoryView: View {
     @State private var selectedEntryID: UUID?
 
     private var filteredEntries: [TranscriptionHistoryEntry] {
-        self.historyStore.search(query: self.searchQuery)
+        let all = self.historyStore.search(query: self.searchQuery)
+        // Monterey 4GB: cap rendered entries to keep scroll fast
+        if ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024, all.count > 30 { return Array(all.prefix(30)) }
+        return all
     }
 
     private var selectedEntry: TranscriptionHistoryEntry? {
