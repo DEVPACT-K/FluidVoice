@@ -267,7 +267,7 @@ extension VoiceEngineSettingsView {
                     )
                 }
                 .frame(width: 140, alignment: .center)
-                .animation(.spring(response: 0.5, dampingFraction: 0.7), value: model.id)
+                .animation(ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024 ? nil : .spring(response: 0.5, dampingFraction: 0.7), value: model.id)
             }
 
             if supportsCustomWords {
