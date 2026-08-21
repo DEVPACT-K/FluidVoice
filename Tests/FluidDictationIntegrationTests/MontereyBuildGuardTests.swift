@@ -20,4 +20,11 @@ final class MontereyBuildGuardTests: XCTestCase {
         XCTAssertFalse(content.contains("B/cohere-coreml-asr"), "Monterey needs FluidAudio main, not B/cohere-coreml-asr (15-only)")
         XCTAssertTrue(content.contains("FluidAudio.git") && content.contains("branch: \"main\""))
     }
+
+    func testMarketingVersionIsMontereyParity() throws {
+        let pbx = URL(fileURLWithPath: #file).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Fluid.xcodeproj/project.pbxproj")
+        let content = try String(contentsOf: pbx)
+        XCTAssertFalse(content.contains("MARKETING_VERSION = 1.5.1"), "Monterey needs 1.6.10, not 1.5.1")
+        XCTAssertTrue(content.contains("MARKETING_VERSION = 1.6.10"))
+    }
 }
