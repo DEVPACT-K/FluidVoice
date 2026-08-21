@@ -412,9 +412,12 @@ final class WhisperProvider: TranscriptionProvider {
     private func downloadFile(from url: URL, to destination: URL, progressHandler: ((Double) -> Void)?) async throws {
         var temporaryURL: URL?
         do {
+            var config = self.urlSession.configuration
+            // Monterey 2015 Air: slow wifi + 44MB — extend timeout for clean download
+            if CPUArchitecture.isIntel { config.timeoutIntervalForResource = 600 }
             let (downloadedURL, response) = try await ProgressiveFileDownloader.download(
                 from: url,
-                configuration: self.urlSession.configuration
+                configuration: config
             ) { totalBytesWritten, totalBytesExpectedToWrite in
                 guard totalBytesExpectedToWrite > 0 else { return }
                 let pct = min(0.999, Double(totalBytesWritten) / Double(totalBytesExpectedToWrite))
