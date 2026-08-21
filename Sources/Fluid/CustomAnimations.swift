@@ -6,7 +6,8 @@ import SwiftUI
 struct PulseAnimationConfig: AudioVisualizationConfig {
     let noiseThreshold: CGFloat = 0.3
     let maxAnimationScale: CGFloat = 2.5
-    let animationSpring: Animation = .easeInOut(duration: 0.15) // Faster for 60 FPS
+    // Monterey 4GB: shorter duration keeps overlay responsive under CPU pressure
+    let animationSpring: Animation = ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024 ? .easeInOut(duration: 0.08) : .easeInOut(duration: 0.15)
 }
 
 struct WaveAnimationConfig: AudioVisualizationConfig {
