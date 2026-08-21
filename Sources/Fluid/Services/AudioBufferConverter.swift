@@ -64,6 +64,10 @@ enum AudioBufferConverter {
         }
 
         converter.downmix = sourceFormat.channelCount > 1
+        // Monterey 4GB: use faster SRC to keep conversion snappy
+        if ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024 {
+            converter.sampleRateConverterQuality = .min
+        }
 
         let ratio = targetSampleRate / sourceFormat.sampleRate
         let estimatedFrameCount = AVAudioFrameCount(
