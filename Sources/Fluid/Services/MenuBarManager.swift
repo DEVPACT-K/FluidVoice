@@ -453,10 +453,14 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
         do {
             try self.setupMenuBar()
             self.isSetup = true
+            if ProcessInfo.processInfo.operatingSystemVersion.majorVersion == 12 {
+                DebugLogger.shared.info("MenuBar setup OK on Monterey 12.7", source: "MenuBarManager")
+            }
         } catch {
-            // If setup fails, retry after delay
-            DebugLogger.shared.error("MenuBar setup failed, retrying: \(error)", source: "MenuBarManager")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            // If setup fails, retry after delay — Monterey 12.7 can be slower under load
+            let retry: TimeInterval = ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024 ? 1.0 : 0.5
+            DebugLogger.shared.error("MenuBar setup failed, retrying in \(retry)s: \(error)", source: "MenuBarManager")
+            DispatchQueue.main.asyncAfter(deadline: .now() + retry) { [weak self] in
                 self?.setupMenuBarSafely()
             }
         }
