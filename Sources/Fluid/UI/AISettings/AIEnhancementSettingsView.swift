@@ -95,9 +95,11 @@ struct AIEnhancementSettingsView: View {
     @State var promptEditorModelDraft: String = ""
     @State var promptEditorOriginalConfiguration: SettingsStore.DictationPromptConfiguration? = nil
 
+    private var isLowRAMIntel: Bool { ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024 && !CPUArchitecture.isAppleSilicon }
     var body: some View {
         self.aiConfigurationCard
             .onAppear {
+                if self.isLowRAMIntel { self.selectedConfigurationSection = .providers }
                 self.viewModel.onAppear()
                 self.privateAISelectedModelID = PrivateAIIntegrationService.configuredModelID
                 self.refreshPrivateAILoadState()
