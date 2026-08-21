@@ -185,9 +185,12 @@ final class NotchOverlayManager {
         ActiveAppMonitor.shared.startMonitoring()
         let targetScreen = OverlayScreenResolver.screenForCurrentPointer()
 
-        // Route to bottom overlay if user preference is set
-        if SettingsStore.shared.overlayPosition == .bottom {
-            Self.overlayBench("show_internal_route target=bottom")
+        // Monterey Intel fallback: 2015 Air has no notch; DynamicNotchKit looks broken there.
+        // Also prefer bottom when user asked for it.
+        let hasNotch = targetScreen?.auxiliaryTopLeftArea != nil
+        let shouldUseBottom = SettingsStore.shared.overlayPosition == .bottom || hasNotch == false
+        if shouldUseBottom {
+            Self.overlayBench("show_internal_route target=bottom reason=\(hasNotch == false ? "no-notch-fallback" : "preference")")
             self.showBottomOverlay(audioLevelPublisher: audioLevelPublisher, mode: mode)
             return
         }
