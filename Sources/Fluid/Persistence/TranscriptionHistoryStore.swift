@@ -211,6 +211,9 @@ final class TranscriptionHistoryStore: ObservableObject {
 
         // Insert at beginning (newest first)
         self.entries.insert(entry, at: 0)
+        // Monterey 4GB: cap history to keep memory clean/fast
+        let cap = ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024 ? 50 : 200
+        if self.entries.count > cap { self.entries.removeLast(self.entries.count - cap) }
 
         self.saveEntries()
         if audio != nil {
