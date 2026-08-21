@@ -83,6 +83,10 @@ final class VoiceEngineSettingsViewModel: ObservableObject {
 
     var filteredSpeechModels: [SettingsStore.SpeechModel] {
         var models = SettingsStore.SpeechModel.availableModels
+        // Monterey 4GB: show only fast models (Whisper Tiny + Apple Speech) to keep UI clean
+        if ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024, !CPUArchitecture.isAppleSilicon {
+            models = models.filter { $0 == .whisperTiny || $0 == .appleSpeech }
+        }
 
         switch self.providerFilter {
         case .all:
