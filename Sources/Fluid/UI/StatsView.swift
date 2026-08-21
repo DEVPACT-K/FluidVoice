@@ -8,7 +8,8 @@ struct StatsView: View {
     @State private var showResetConfirmation: Bool = false
     @State private var showWPMEditor: Bool = false
     @State private var editingWPM: String = ""
-    @State private var chartDays: Int = 7 // Toggle between 7 and 30
+    // Monterey 4GB: default 7 days keeps chart fast (30 days is heavy)
+    @State private var chartDays: Int = ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024 ? 7 : 7
     @State private var hoveredActivityIndex: Int?
 
     private static let activityTooltipDateFormatter: DateFormatter = {
