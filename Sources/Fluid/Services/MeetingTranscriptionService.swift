@@ -401,6 +401,12 @@ final class MeetingTranscriptionService: ObservableObject {
     /// - Parameters:
     ///   - fileURL: URL to the audio/video file
     func transcribeFile(_ fileURL: URL) async throws -> TranscriptionResult {
+        // Monterey 4GB: early exit if file too large for 4GB (avoid OOM)
+        if ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024,
+           let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
+           let size = attrs[.size] as? UInt64, size > 300 * 1024 * 1024 {
+            throw TranscriptionError.modelLoadFailed("File too large for 4GB Mac — try a shorter clip")
+        }
         self.isTranscribing = true
         error = nil
         self.fallbackNotice = nil
