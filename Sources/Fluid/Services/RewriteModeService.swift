@@ -262,8 +262,7 @@ final class RewriteModeService: ObservableObject {
             )
         }
         if usesPrivateAIProvider {
-            let verifiedModelID = PrivateAIProviderPromptFormat.verifiedModelID(settings: settings)
-            guard verifiedModelID == model else {
+            guard PrivateAIProviderPromptFormat.verifiedModelID(for: model, settings: settings) != nil else {
                 throw NSError(
                     domain: "RewriteMode",
                     code: -5,
