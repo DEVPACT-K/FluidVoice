@@ -85,7 +85,11 @@ final class AppServices: ObservableObject {
         // They are created lazily on first access, which happens AFTER the UI is ready.
         // This ensures SwiftUI's AttributeGraph has finished processing before
         // any heavy audio system work begins.
-        DebugLogger.shared.info("📦 AppServices singleton created (services not yet initialized)", source: "AppServices")
+        if ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024 {
+            DebugLogger.shared.info("📦 AppServices singleton created (4GB Monterey — deferring heavy services for fast launch)", source: "AppServices")
+        } else {
+            DebugLogger.shared.info("📦 AppServices singleton created (services not yet initialized)", source: "AppServices")
+        }
     }
 
     // MARK: - Change Forwarding
