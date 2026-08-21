@@ -15,7 +15,9 @@ actor AudioStartupGate {
     private var waiters: [CheckedContinuation<Void, Never>] = []
 
     /// Schedule opening the gate once. Safe to call multiple times.
-    func scheduleOpenAfterInitialUISettled(delayNanoseconds: UInt64 = 2_000_000_000) {
+    /// Monterey 2015 Air: 2s is tight under Whisper CPU pressure — extend to 3s on 4GB Intel for clean first dictate.
+    func scheduleOpenAfterInitialUISettled(delayNanoseconds: UInt64? = nil) {
+        let effectiveDelay: UInt64 = delayNanoseconds ?? (ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024 ? 3_000_000_000 : 2_000_000_000)
         guard self.isOpen == false, self.openTask == nil else { return }
 
         self.openTask = Task { @MainActor [weak self] in
@@ -26,7 +28,7 @@ actor AudioStartupGate {
             await Task.yield()
 
             // Safety delay for slower / loaded systems (e.g., long uptime, heavy background load).
-            try? await Task.sleep(nanoseconds: delayNanoseconds)
+            try? await Task.sleep(nanoseconds: effectiveDelay)
 
             await self.open()
         }
