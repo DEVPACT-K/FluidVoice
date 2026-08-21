@@ -30,9 +30,9 @@ No-notch hardware auto-falls back to bottom pill overlay (DynamicNotchKit skippe
 - No Fluid Intelligence (3.5GB)
 - Streaming preview uses Whisper `timestamps: .segment` — clean segments, not word-level
 
-## Loop Status (94 iterations)
+## Loop Status (100 iterations)
 
-Monterey compat loop has covered deployment, toolchain, notch, SMAppService, onChange, Whisper Tiny, history/chat/file caps, and 50+ 4GB perf gates (audio viz, typing, clipboard, AX, LLM, analytics, diarization, etc.). Next validation is hardware: `./scripts/build-monterey.sh` on the 2015 Air. Loop is now in diminishing-returns territory — pause for real `xcodebuild` on Xcode 14.3.1 before further spec churn.
+Monterey compat loop has covered deployment, toolchain, notch, SMAppService, onChange, Whisper Tiny, history/chat/file caps, and 60+ 4GB perf gates (audio viz, typing, clipboard, AX, LLM, analytics, diarization, etc.). Next validation is hardware: `./scripts/build-monterey.sh` on the 2015 Air with Xcode 14.3.1. At 100 iterations, further spec churn without a real `xcodebuild` log is low-value — pause for hardware build.
 
 ## Troubleshooting
 
