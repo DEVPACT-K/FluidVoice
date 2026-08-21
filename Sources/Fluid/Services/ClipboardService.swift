@@ -15,7 +15,13 @@ enum ClipboardService {
 
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        let success = pasteboard.setString(text, forType: .string)
+        var success = pasteboard.setString(text, forType: .string)
+        // Monterey 12.7 Intel: pasteboard can be slow under load — retry once for clean paste
+        if !success, ProcessInfo.processInfo.operatingSystemVersion.majorVersion == 12 {
+            Thread.sleep(forTimeInterval: 0.05)
+            pasteboard.clearContents()
+            success = pasteboard.setString(text, forType: .string)
+        }
 
         if success {
             DebugLogger.shared.info("Copied \(text.count) characters to clipboard", source: "ClipboardService")
