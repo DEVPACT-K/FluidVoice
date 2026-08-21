@@ -170,8 +170,8 @@ struct MeetingTranscriptionView: View {
                         )
                 )
 
-                // Speaker labeling options (unavailable on Intel Macs)
-                if SpeakerDiarizationService.isSupported {
+                // Speaker labeling: heavy CoreML — hide on 4GB Intel for fast UI
+                if SpeakerDiarizationService.isSupported, !(ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024 && !CPUArchitecture.isAppleSilicon) {
                     VStack(spacing: 10) {
                         Toggle(isOn: self.$settings.fileTranscriptionSpeakerLabelsEnabled) {
                             VStack(alignment: .leading, spacing: 2) {
