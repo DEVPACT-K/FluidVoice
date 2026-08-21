@@ -23,6 +23,7 @@ struct WelcomeView: View {
     @State private var isCommandModeGuideExpanded = false
     @State private var isEditModeGuideExpanded = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private var isLowRAMIntel: Bool { ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024 && !CPUArchitecture.isAppleSilicon }
     @Environment(\.theme) private var theme
 
     let accessibilityEnabled: Bool
