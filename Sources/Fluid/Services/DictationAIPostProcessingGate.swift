@@ -11,6 +11,11 @@ enum DictationAIPostProcessingGate {
     }
 
     static func isConfigured(for slot: SettingsStore.DictationShortcutSlot, appBundleID: String? = nil) -> Bool {
+        // Monterey 4GB: privateAI would need 3.5GB — gate off for clean fast path
+        if CPUArchitecture.isIntel, ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024 {
+            let sel = SettingsStore.shared.dictationPromptSelection(for: slot)
+            if sel == .privateAI { return false }
+        }
         let settings = SettingsStore.shared
         let promptSelection = settings.dictationPromptSelection(for: slot)
         guard promptSelection != .off else { return false }
