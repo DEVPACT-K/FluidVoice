@@ -153,7 +153,7 @@ struct OnboardingTryoutStepView: View {
         .onAppear {
             self.isShortcutGlowActive = self.isRunning
         }
-        .onChange(of: self.isRunning) { _, newValue in
+        .onChange(of: self.isRunning) { newValue in
             self.animateShortcutKeyToggle(to: newValue)
         }
     }

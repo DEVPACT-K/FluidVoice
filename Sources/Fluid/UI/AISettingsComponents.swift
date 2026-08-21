@@ -159,7 +159,7 @@ struct LiquidBar: View {
             // Initialize to target on first appear
             self.animatedFill = self.fillPercent
         }
-        .onChange(of: self.fillPercent) { _, newValue in
+        .onChange(of: self.fillPercent) { newValue in
             guard !self.reduceMotion else {
                 self.animatedFill = newValue
                 return

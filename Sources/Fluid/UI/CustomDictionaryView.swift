@@ -391,7 +391,7 @@ struct CustomDictionaryView: View {
                         )
                 )
         )
-        .onChange(of: self.automaticDictionaryLearningEnabled) { _, newValue in
+        .onChange(of: self.automaticDictionaryLearningEnabled) { newValue in
             SettingsStore.shared.automaticDictionaryLearningEnabled = newValue
             if !newValue {
                 AutomaticDictionaryCorrectionTracker.shared.cancel()
@@ -496,7 +496,7 @@ struct CustomDictionaryView: View {
             TextField("Type the correct text, e.g. FluidVoice", text: self.$trainingReplacement)
                 .dictionaryInputChrome()
                 .disabled(self.isTrainingRecording || self.isTrainingProcessing)
-                .onChange(of: self.trainingReplacement) { oldValue, newValue in
+                .onChange(of: self.trainingReplacement) { newValue in
                     self.handleTrainingReplacementChange(oldValue: oldValue, newValue: newValue)
                 }
 
@@ -542,7 +542,7 @@ struct CustomDictionaryView: View {
             )
             .onHover { self.isTrainedReplacementButtonHovered = $0 }
             .onAppear { self.updateTrainedReplacementGlow() }
-            .onChange(of: self.shouldPulseTrainedReplacementButton) { _, _ in
+            .onChange(of: self.shouldPulseTrainedReplacementButton) { _ in
                 self.updateTrainedReplacementGlow()
             }
         }
@@ -949,7 +949,7 @@ struct CustomDictionaryView: View {
         Toggle("Spoken Formatting", isOn: self.$punctuationAutoConvertEnabled)
             .labelsHidden()
             .toggleStyle(.switch)
-            .onChange(of: self.punctuationAutoConvertEnabled) { _, newValue in
+            .onChange(of: self.punctuationAutoConvertEnabled) { newValue in
                 SettingsStore.shared.autoConvertPunctuationEnabled = newValue
             }
             .frame(width: Self.DictionaryHeaderControlLayout.toggleColumnWidth, alignment: .trailing)
@@ -1103,7 +1103,7 @@ struct CustomDictionaryView: View {
         Toggle("Custom Words Boosting", isOn: self.$vocabBoostingEnabled)
             .labelsHidden()
             .toggleStyle(.switch)
-            .onChange(of: self.vocabBoostingEnabled) { _, newValue in
+            .onChange(of: self.vocabBoostingEnabled) { newValue in
                 SettingsStore.shared.vocabularyBoostingEnabled = newValue
             }
             .frame(width: Self.DictionaryHeaderControlLayout.toggleColumnWidth, alignment: .trailing)
@@ -1401,7 +1401,7 @@ struct CustomDictionaryView: View {
                 .toggleStyle(.switch)
                 .tint(self.theme.palette.accent)
                 .accessibilityLabel("Spoken Formatting")
-                .onChange(of: self.punctuationAutoConvertEnabled) { _, newValue in
+                .onChange(of: self.punctuationAutoConvertEnabled) { newValue in
                     SettingsStore.shared.autoConvertPunctuationEnabled = newValue
                 }
         }

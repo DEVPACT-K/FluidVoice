@@ -106,7 +106,7 @@ struct AIEnhancementSettingsView: View {
                     self.expandedProviderID = PrivateAIProviderFeature.shared.providerID
                 }
             }
-            .onChange(of: self.viewModel.connectionStatus) { oldValue, newValue in
+            .onChange(of: self.viewModel.connectionStatus) { newValue in
                 if oldValue == .success && newValue != .success {
                     self.expandedProviderID = self.viewModel.selectedProviderID
                 }

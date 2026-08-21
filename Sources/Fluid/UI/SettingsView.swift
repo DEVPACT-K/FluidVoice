@@ -836,7 +836,7 @@ struct SettingsView: View {
                                         .pickerStyle(.menu)
                                         .frame(width: 170, alignment: .trailing)
                                     }
-                                    .onChange(of: self.hotkeyMode) { _, newValue in
+                                    .onChange(of: self.hotkeyMode) { newValue in
                                         SettingsStore.shared.hotkeyMode = newValue
                                         self.hotkeyManager?.setHotkeyMode(newValue)
                                     }
@@ -847,7 +847,7 @@ struct SettingsView: View {
                                         description: "Automatically copy transcribed text to clipboard as a backup.",
                                         isOn: self.$copyToClipboard
                                     )
-                                    .onChange(of: self.copyToClipboard) { _, newValue in
+                                    .onChange(of: self.copyToClipboard) { newValue in
                                         SettingsStore.shared.copyTranscriptionToClipboard = newValue
                                     }
                                     Divider().opacity(0.2)
@@ -1147,7 +1147,7 @@ struct SettingsView: View {
 
                         VStack(alignment: .leading, spacing: 12) {
                             self.microphonePrioritySection
-                                .onChange(of: self.inputDevices) { _, newDevices in
+                                .onChange(of: self.inputDevices) { newDevices in
                                     let defaultInput = AudioDevice.getDefaultInputDevice()
                                     self.cachedDefaultInputUID = defaultInput?.uid ?? ""
                                     guard newDevices.isEmpty == false else { return }
@@ -1196,7 +1196,7 @@ struct SettingsView: View {
                                     _ = AudioDevice.setDefaultOutputDevice(uid: newUID)
                                 }
                                 // Sync selection when devices load or change
-                                .onChange(of: self.outputDevices) { _, newDevices in
+                                .onChange(of: self.outputDevices) { newDevices in
                                     // Update cached default device name when device list changes
                                     self.cachedDefaultOutputName = AudioDevice.getDefaultOutputDevice()?.name ?? ""
 
@@ -1392,7 +1392,7 @@ struct SettingsView: View {
 
                                 Toggle("", isOn: self.$enableStreamingPreview)
                                     .labelsHidden()
-                                    .onChange(of: self.enableStreamingPreview) { _, newValue in
+                                    .onChange(of: self.enableStreamingPreview) { newValue in
                                         SettingsStore.shared.enableStreamingPreview = newValue
                                     }
                             }
@@ -1584,7 +1584,7 @@ struct SettingsView: View {
                 self.refreshAudioHistoryUsage()
             }
         }
-        .onChange(of: self.visualizerNoiseThreshold) { _, newValue in
+        .onChange(of: self.visualizerNoiseThreshold) { newValue in
             SettingsStore.shared.visualizerNoiseThreshold = newValue
         }
     }

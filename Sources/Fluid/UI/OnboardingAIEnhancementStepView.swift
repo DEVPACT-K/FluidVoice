@@ -245,10 +245,10 @@ struct OnboardingAIEnhancementStepView: View {
                     .onDisappear {
                         self.cancelPrivateAIAction()
                     }
-                    .onChange(of: self.finalText) { _, newValue in
+                    .onChange(of: self.finalText) { newValue in
                         self.captureCurrentExampleOutput(newValue)
                     }
-                    .onChange(of: self.isRunning) { _, isRunning in
+                    .onChange(of: self.isRunning) { isRunning in
                         if isRunning {
                             self.activeRecordingExampleID = self.selectedExampleID
                         }

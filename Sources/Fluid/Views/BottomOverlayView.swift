@@ -2829,7 +2829,7 @@ struct BottomOverlayView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .clipped()
-            .onChange(of: previewText) { _, _ in
+            .onChange(of: previewText) { _ in
                 DispatchQueue.main.async {
                     proxy.scrollTo("bottom", anchor: .bottom)
                 }
@@ -2919,7 +2919,7 @@ struct BottomOverlayView: View {
                                                 proxy.scrollTo("bottom", anchor: .bottom)
                                             }
                                         }
-                                        .onChange(of: previewText) { _, _ in
+                                        .onChange(of: previewText) { _ in
                                             DispatchQueue.main.async {
                                                 proxy.scrollTo("bottom", anchor: .bottom)
                                             }
@@ -3183,7 +3183,7 @@ struct BottomOverlayView: View {
         .offset(y: self.overlayAnimatedOffsetY)
         .opacity(self.overlayAnimatedOpacity)
         .animation(.timingCurve(0.22, 0.0, 0.2, 1.0, duration: 0.02), value: self.contentState.isBottomOverlayDismissing)
-        .onChange(of: self.settings.overlaySize) { _, _ in
+        .onChange(of: self.settings.overlaySize) { _ in
             self.dynamicPreviewResizeBucket = self.previewResizeBucket(for: self.currentPreviewSizingText)
             self.frozenDynamicPreviewHeight = nil
             BottomOverlayWindowController.shared.refreshSizeForContent()
@@ -3191,15 +3191,15 @@ struct BottomOverlayView: View {
         .onChange(of: self.contentState.isBottomOverlayPresented) { _, presented in
             self.borderAnimationStartedAt = presented ? Date() : nil
         }
-        .onChange(of: self.settings.enableStreamingPreview) { _, _ in
+        .onChange(of: self.settings.enableStreamingPreview) { _ in
             self.dynamicPreviewResizeBucket = self.previewResizeBucket(for: self.currentPreviewSizingText)
             self.frozenDynamicPreviewHeight = nil
             BottomOverlayWindowController.shared.refreshSizeForContent()
         }
-        .onChange(of: self.contentState.cachedPreviewText) { _, _ in
+        .onChange(of: self.contentState.cachedPreviewText) { _ in
             self.refreshDynamicPreviewSizeIfNeeded(for: self.currentPreviewSizingText)
         }
-        .onChange(of: self.contentState.mode) { _, _ in
+        .onChange(of: self.contentState.mode) { _ in
             if !self.isPromptSelectableMode || self.contentState.isProcessing {
                 self.closePromptMenu()
             }
@@ -3235,11 +3235,11 @@ struct BottomOverlayView: View {
                 self.refreshDynamicPreviewSizeIfNeeded(for: self.currentPreviewSizingText)
             }
         }
-        .onChange(of: self.contentState.isAIProcessingFailureVisible) { _, _ in
+        .onChange(of: self.contentState.isAIProcessingFailureVisible) { _ in
             guard !self.layout.usesFixedCanvas else { return }
             self.refreshDynamicPreviewSizeIfNeeded(for: self.currentPreviewSizingText)
         }
-        .onChange(of: self.processingStatusVisible) { _, _ in
+        .onChange(of: self.processingStatusVisible) { _ in
             guard !self.layout.usesFixedCanvas else { return }
             self.refreshDynamicPreviewSizeIfNeeded(for: self.currentPreviewSizingText)
         }
@@ -3391,7 +3391,7 @@ struct BottomWaveformView: View {
                 self.updateBars(level: 0)
             }
         }
-        .onChange(of: self.layout.barCount) { _, newCount in
+        .onChange(of: self.layout.barCount) { newCount in
             self.barHeights = Array(repeating: self.minHeight, count: newCount)
         }
         .onAppear {

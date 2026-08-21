@@ -1008,7 +1008,7 @@ private struct CorrectionOverlayActionButton: View {
         .disabled(!self.isEnabled)
         .onHover { self.isHovered = $0 }
         .onAppear { self.updateGlow() }
-        .onChange(of: self.shouldPulse) { _, _ in
+        .onChange(of: self.shouldPulse) { _ in
             self.updateGlow()
         }
     }

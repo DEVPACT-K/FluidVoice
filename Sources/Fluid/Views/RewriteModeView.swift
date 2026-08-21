@@ -236,7 +236,7 @@ struct RewriteModeView: View {
                     .padding(.bottom, 8)
             }
         }
-        .onChange(of: self.asr.finalText) { _, newText in
+        .onChange(of: self.asr.finalText) { newText in
             if !newText.isEmpty {
                 self.inputText = newText
             }

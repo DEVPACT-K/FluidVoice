@@ -737,7 +737,7 @@ extension VoiceEngineSettingsView {
                 Toggle("", isOn: self.$viewModel.removeFillerWordsEnabled)
                     .toggleStyle(.switch)
                     .labelsHidden()
-                    .onChange(of: self.viewModel.removeFillerWordsEnabled) { _, newValue in
+                    .onChange(of: self.viewModel.removeFillerWordsEnabled) { newValue in
                         self.settings.removeFillerWordsEnabled = newValue
                     }
             }

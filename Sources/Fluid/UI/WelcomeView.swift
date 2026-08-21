@@ -961,7 +961,7 @@ struct OnboardingFlowView: View {
             AnalyticsService.shared.recordOnboardingStarted(origin: origin)
             AnalyticsService.shared.recordOnboardingStepViewed(self.step.analyticsStep, origin: origin)
         }
-        .onChange(of: self.currentStep) { _, _ in
+        .onChange(of: self.currentStep) { _ in
             if self.step != .voiceModel {
                 self.cancelOnboardingModelPreparation()
             }
@@ -993,7 +993,7 @@ struct OnboardingFlowView: View {
                 self.suspendOnboardingMicrophonePreviewForDictation()
             }
         }
-        .onChange(of: self.asr.audioCaptureStateSettledTick) { _, _ in
+        .onChange(of: self.asr.audioCaptureStateSettledTick) { _ in
             guard self.isOnboardingFlowVisible,
                   self.step == .permissions,
                   self.isMicrophoneReady
@@ -1024,11 +1024,11 @@ struct OnboardingFlowView: View {
             self.lastOnboardingMicrophoneLevelUpdate = now
             self.onboardingMicrophoneLevel = level
         }
-        .onChange(of: self.appServices.audioObserver.changeTick) { _, _ in
+        .onChange(of: self.appServices.audioObserver.changeTick) { _ in
             guard self.step == .permissions, self.isMicrophoneReady else { return }
             self.refreshOnboardingMicrophones(startPreview: true)
         }
-        .onChange(of: self.appServices.audioObserver.inputAvailabilityTick) { _, _ in
+        .onChange(of: self.appServices.audioObserver.inputAvailabilityTick) { _ in
             guard self.step == .permissions, self.isMicrophoneReady else { return }
             self.refreshOnboardingMicrophones(startPreview: true)
         }

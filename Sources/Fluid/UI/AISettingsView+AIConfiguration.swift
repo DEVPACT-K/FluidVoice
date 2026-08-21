@@ -392,7 +392,7 @@ extension AIEnhancementSettingsView {
                     }
                     .padding(4)
                 }
-                .onChange(of: self.expandedProviderID) { _, newID in
+                .onChange(of: self.expandedProviderID) { newID in
                     if let id = newID {
                         withAnimation(.easeInOut(duration: 0.3)) {
                             proxy.scrollTo(id, anchor: .top)

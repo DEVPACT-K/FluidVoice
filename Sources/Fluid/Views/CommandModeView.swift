@@ -51,21 +51,21 @@ struct CommandModeView: View {
             // Re-enable notch output when leaving in-app UI
             self.service.enableNotchOutput = true
         }
-        .onChange(of: self.asr.finalText) { _, newText in
+        .onChange(of: self.asr.finalText) { newText in
             if !newText.isEmpty {
                 self.inputText = newText
             }
         }
-        .onChange(of: self.settings.commandModeSelectedProviderID) { _, _ in
+        .onChange(of: self.settings.commandModeSelectedProviderID) { _ in
             self.updateAvailableModels()
         }
-        .onChange(of: self.settings.commandModeLinkedToGlobal) { _, _ in
+        .onChange(of: self.settings.commandModeLinkedToGlobal) { _ in
             self.updateAvailableModels()
         }
-        .onChange(of: self.settings.selectedProviderID) { _, _ in
+        .onChange(of: self.settings.selectedProviderID) { _ in
             self.updateAvailableModels()
         }
-        .onChange(of: self.settings.selectedModelByProvider) { _, _ in
+        .onChange(of: self.settings.selectedModelByProvider) { _ in
             self.updateAvailableModels()
         }
     }
@@ -307,7 +307,7 @@ struct CommandModeView: View {
                             .stroke(self.theme.palette.cardBorder.opacity(0.45), lineWidth: 1)
                     )
             )
-            .onChange(of: self.service.conversationHistory.count) { _, _ in
+            .onChange(of: self.service.conversationHistory.count) { _ in
                 self.scrollToBottom(proxy)
             }
             .onChange(of: self.service.isProcessing) { _, isProcessing in
@@ -317,7 +317,7 @@ struct CommandModeView: View {
                     self.isThinkingExpanded = false // Collapse thinking for new request
                 }
             }
-            .onChange(of: self.service.currentStep) { _, _ in
+            .onChange(of: self.service.currentStep) { _ in
                 self.scrollToBottom(proxy)
             }
             // Removed: .onChange(of: service.streamingText) - causes scroll on every token, too expensive

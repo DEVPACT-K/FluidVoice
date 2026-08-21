@@ -1655,7 +1655,7 @@ extension AIEnhancementSettingsView {
                                             .stroke(self.theme.palette.cardBorder, lineWidth: 1)
                                     )
                             )
-                            .onChange(of: self.viewModel.draftPromptText) { _, newValue in
+                            .onChange(of: self.viewModel.draftPromptText) { newValue in
                                 guard self.viewModel.draftPromptMode == .dictate else { return }
                                 let combined = self.viewModel.combinedDraftPrompt(newValue, mode: self.viewModel.draftPromptMode)
                                 self.promptTest.updateDraftPromptText(combined)
@@ -1856,10 +1856,10 @@ extension AIEnhancementSettingsView {
         .onDisappear {
             self.promptTest.deactivate()
         }
-        .onChange(of: self.viewModel.promptEditorSessionID) { _, _ in
+        .onChange(of: self.viewModel.promptEditorSessionID) { _ in
             self.preparePromptEditorConfigurationDraft(mode: mode)
         }
-        .onChange(of: self.activeShortcutRecordingTarget) { oldValue, newValue in
+        .onChange(of: self.activeShortcutRecordingTarget) { newValue in
             if case .newPrompt = mode {
                 if newValue == nil, oldValue != nil {
                     if let pending = self.viewModel.pendingNewPromptConfiguration {
@@ -1877,13 +1877,13 @@ extension AIEnhancementSettingsView {
             }
             self.promptEditorShortcutDraft = self.settings.dictationPromptConfiguration(for: selection).shortcut
         }
-        .onChange(of: self.viewModel.selectedProviderID) { _, _ in
+        .onChange(of: self.viewModel.selectedProviderID) { _ in
             self.autoDisablePromptTestIfNeeded()
         }
-        .onChange(of: self.viewModel.providerAPIKeys) { _, _ in
+        .onChange(of: self.viewModel.providerAPIKeys) { _ in
             self.autoDisablePromptTestIfNeeded()
         }
-        .onChange(of: self.viewModel.savedProviders) { _, _ in
+        .onChange(of: self.viewModel.savedProviders) { _ in
             self.autoDisablePromptTestIfNeeded()
         }
     }

@@ -390,7 +390,7 @@ struct ContentView: View {
             } message: {
                 Text(self.asr.errorMessage)
             }
-            .onChange(of: self.audioObserver.changeTick) { _, _ in
+            .onChange(of: self.audioObserver.changeTick) { _ in
                 // Hardware change detected → refresh device lists
                 self.refreshDevices()
 
@@ -398,7 +398,7 @@ struct ContentView: View {
                     self.selectedOutputUID = sysOut
                 }
             }
-            .onChange(of: self.audioObserver.inputAvailabilityTick) { _, _ in
+            .onChange(of: self.audioObserver.inputAvailabilityTick) { _ in
                 self.refreshInputDevices()
             }
             .onDisappear {
@@ -413,7 +413,7 @@ struct ContentView: View {
                 self.finishAccessibilityPermissionFlow()
                 self.removeShortcutCaptureMonitor()
             }
-            .onChange(of: self.primaryDictationShortcuts) { _, newValue in
+            .onChange(of: self.primaryDictationShortcuts) { newValue in
                 SettingsStore.shared.primaryDictationShortcuts = newValue
                 let storedShortcuts = SettingsStore.shared.primaryDictationShortcuts
                 if storedShortcuts != newValue {
@@ -434,7 +434,7 @@ struct ContentView: View {
                     )
                 }
             }
-            .onChange(of: self.selectedSidebarItem) { _, newValue in
+            .onChange(of: self.selectedSidebarItem) { newValue in
                 self.handleModeTransition(from: self.previousSidebarItem, to: newValue)
                 self.previousSidebarItem = newValue
             }
@@ -455,19 +455,19 @@ struct ContentView: View {
                     self.hotkeyManager?.reinitialize()
                 }
             }
-            .onChange(of: self.selectedModel) { _, newValue in
+            .onChange(of: self.selectedModel) { newValue in
                 if newValue != "__ADD_MODEL__" {
                     self.selectedModelByProvider[self.currentProvider] = newValue
                     SettingsStore.shared.selectedModelByProvider = self.selectedModelByProvider
                 }
             }
-            .onChange(of: self.selectedProviderID) { _, newValue in
+            .onChange(of: self.selectedProviderID) { newValue in
                 SettingsStore.shared.selectedProviderID = newValue
             }
-            .onChange(of: self.activeShortcutRecordingTarget) { _, _ in
+            .onChange(of: self.activeShortcutRecordingTarget) { _ in
                 self.hotkeyManager?.resetModifierOnlyShortcutTracking()
             }
-            .onChange(of: self.commandModeHotkeyShortcut) { _, newValue in
+            .onChange(of: self.commandModeHotkeyShortcut) { newValue in
                 SettingsStore.shared.commandModeHotkeyShortcut = newValue
                 self.hotkeyManager?.updateCommandModeShortcut(newValue)
             }
@@ -480,7 +480,7 @@ struct ContentView: View {
             .onChange(of: self.isRewriteModeShortcutEnabled) { newValue in
                 self.handleRewriteShortcutEnabledChange(newValue)
             }
-            .onChange(of: self.pasteLastTranscriptionHotkeyShortcut) { _, newValue in
+            .onChange(of: self.pasteLastTranscriptionHotkeyShortcut) { newValue in
                 // The hotkey manager reads this value live from SettingsStore, so persisting is enough.
                 SettingsStore.shared.pasteLastTranscriptionHotkeyShortcut = newValue
             }

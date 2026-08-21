@@ -935,7 +935,7 @@ struct NotchExpandedView: View {
                         .onAppear {
                             self.promptSelectorLeading = geometry.frame(in: .named(Self.notchContentCoordinateSpace)).minX
                         }
-                        .onChange(of: geometry.frame(in: .named(Self.notchContentCoordinateSpace)).minX) { _, newLeading in
+                        .onChange(of: geometry.frame(in: .named(Self.notchContentCoordinateSpace)).minX) { newLeading in
                             self.promptSelectorLeading = newLeading
                         }
                 }
@@ -976,7 +976,7 @@ struct NotchExpandedView: View {
                 self.notchBodyContent
             }
         }
-        .onChange(of: self.contentState.mode) { _, _ in
+        .onChange(of: self.contentState.mode) { _ in
             if !self.isPromptSelectableMode {
                 self.dismissPromptHoverMenu()
             }
@@ -1083,7 +1083,7 @@ struct NotchExpandedView: View {
                                 proxy.scrollTo("bottom", anchor: .bottom)
                             }
                         }
-                        .onChange(of: previewText) { _, _ in
+                        .onChange(of: previewText) { _ in
                             DispatchQueue.main.async {
                                 proxy.scrollTo("bottom", anchor: .bottom)
                             }
@@ -1601,7 +1601,7 @@ struct NotchCommandOutputExpandedView: View {
                                 proxy.scrollTo("bottom", anchor: .bottom)
                             }
                         }
-                        .onChange(of: previewText) { _, _ in
+                        .onChange(of: previewText) { _ in
                             DispatchQueue.main.async {
                                 proxy.scrollTo("bottom", anchor: .bottom)
                             }
@@ -1651,14 +1651,14 @@ struct NotchCommandOutputExpandedView: View {
                 // Always scroll to bottom when view appears
                 self.scrollToBottom(proxy, animated: false)
             }
-            .onChange(of: self.contentState.commandConversationHistory.count) { _, _ in
+            .onChange(of: self.contentState.commandConversationHistory.count) { _ in
                 self.scrollToBottom(proxy, animated: true)
             }
-            .onChange(of: self.contentState.commandStreamingText) { _, _ in
+            .onChange(of: self.contentState.commandStreamingText) { _ in
                 // Disable animation for streaming text to prevent scroll bar jitter
                 self.scrollToBottom(proxy, animated: false)
             }
-            .onChange(of: self.contentState.isCommandProcessing) { _, _ in
+            .onChange(of: self.contentState.isCommandProcessing) { _ in
                 // Scroll when processing state changes
                 self.scrollToBottom(proxy, animated: true)
             }
