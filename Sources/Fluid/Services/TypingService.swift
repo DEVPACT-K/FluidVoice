@@ -428,11 +428,13 @@ final class TypingService {
         let requestedAt = ProcessInfo.processInfo.systemUptime
         let text = plan.plainText
         let mode = self.textInsertionMode
+        // Monterey 4GB: reduce settle delay for fast paste on 2015 Air
+        let isLowRAMIntel = ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024 && !CPUArchitecture.isAppleSilicon
         let settleDelayMs: Int = {
             if mode == .reliablePaste {
-                return preferredTargetPID == nil ? 80 : 0
+                return preferredTargetPID == nil ? (isLowRAMIntel ? 40 : 80) : 0
             }
-            return preferredTargetPID == nil ? 200 : 0
+            return preferredTargetPID == nil ? (isLowRAMIntel ? 100 : 200) : 0
         }()
         let textReadyAge = textReadyAt.map { Self.elapsedMs(from: $0, to: requestedAt) }
         self.bench(
