@@ -145,7 +145,7 @@ struct FeedbackView: View {
                                     .fill(self.theme.palette.contentBackground)
                                     .overlay(RoundedRectangle(cornerRadius: 8)
                                         .strokeBorder(self.theme.palette.cardBorder.opacity(0.45), lineWidth: 1.2)))
-                                .scrollContentBackground(.hidden)
+
                                 .overlay(
                                     Group {
                                         if self.feedbackText.isEmpty {

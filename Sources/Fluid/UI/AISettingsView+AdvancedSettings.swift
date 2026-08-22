@@ -601,7 +601,7 @@ extension AIEnhancementSettingsView {
     }
 
     private func promptEditorConfigurationPanel(mode: PromptEditorMode) -> some View {
-        Grid(alignment: .leading, horizontalSpacing: 28, verticalSpacing: 14) {
+        VStack(alignment: .leading, spacing: 14) {
             self.promptEditorShortcutRow(mode: mode)
             Group {
                 self.promptEditorProviderRow
@@ -795,7 +795,7 @@ extension AIEnhancementSettingsView {
         description: String,
         @ViewBuilder content: () -> Content
     ) -> some View {
-        GridRow(alignment: .center) {
+        HStack(alignment: .top, spacing: 28) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.system(size: 13, weight: .semibold))
@@ -806,11 +806,9 @@ extension AIEnhancementSettingsView {
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            .gridColumnAlignment(.leading)
             .frame(width: AISettingsLayout.promptEditorLabelColumnWidth, alignment: .leading)
 
             content()
-                .gridColumnAlignment(.leading)
                 .frame(width: AISettingsLayout.promptEditorControlColumnWidth, alignment: .leading)
         }
     }
@@ -1196,7 +1194,7 @@ extension AIEnhancementSettingsView {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: true, vertical: false)
-                        .onChange(of: self.settings.rewriteModeLinkedToGlobal) { _, linked in
+                        .onChange(of: self.settings.rewriteModeLinkedToGlobal) { linked in
                             if linked {
                                 self.syncEditModeToGlobalSelection()
                             } else {
@@ -1860,6 +1858,8 @@ extension AIEnhancementSettingsView {
             self.preparePromptEditorConfigurationDraft(mode: mode)
         }
         .onChange(of: self.activeShortcutRecordingTarget) { newValue in
+            let oldValue = self.previousShortcutRecordingTarget
+            defer { self.previousShortcutRecordingTarget = newValue }
             if case .newPrompt = mode {
                 if newValue == nil, oldValue != nil {
                     if let pending = self.viewModel.pendingNewPromptConfiguration {

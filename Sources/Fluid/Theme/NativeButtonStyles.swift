@@ -161,7 +161,7 @@ struct GlassButtonStyle: ButtonStyle {
 
         var body: some View {
             self.configuration.label
-                .fontWeight(.semibold)
+
                 .padding(.horizontal, self.theme.metrics.spacing.lg)
                 .padding(.vertical, self.theme.metrics.spacing.sm)
                 .frame(height: self.height ?? 36)
@@ -241,7 +241,7 @@ struct PremiumButtonStyle: ButtonStyle {
 
         var body: some View {
             self.configuration.label
-                .fontWeight(.semibold)
+
                 .frame(maxWidth: .infinity)
                 .frame(height: self.height)
                 .foregroundStyle(self.isRecording ? Color.white : self.theme.palette.primaryText)
@@ -291,7 +291,7 @@ struct SecondaryButtonStyle: ButtonStyle {
 
         var body: some View {
             self.configuration.label
-                .fontWeight(.semibold)
+
                 .frame(maxWidth: .infinity)
                 .frame(height: self.height)
                 .foregroundStyle(self.theme.palette.primaryText)
@@ -359,7 +359,7 @@ struct CompactButtonStyle: ButtonStyle {
                 : (self.isHovered ? 0.64 : 0.48)
 
             self.configuration.label
-                .fontWeight(.medium)
+
                 .padding(.horizontal, self.theme.metrics.spacing.md)
                 .frame(height: self.height)
                 .foregroundStyle(foregroundColor)
@@ -412,7 +412,7 @@ struct AccentButtonStyle: ButtonStyle {
         var body: some View {
             let tone = self.tone ?? self.theme.palette.accent
             self.configuration.label
-                .fontWeight(.semibold)
+
                 .padding(.horizontal, self.compact ? 12 : self.theme.metrics.spacing.lg)
                 .padding(.vertical, self.compact ? 8 : self.theme.metrics.spacing.md)
                 .frame(minHeight: self.compact ? 32 : 36)
@@ -467,7 +467,7 @@ struct InlineButtonStyle: ButtonStyle {
         var body: some View {
             self.configuration.label
                 .font(.caption)
-                .fontWeight(.medium)
+
                 .padding(.horizontal, self.theme.metrics.spacing.md)
                 .padding(.vertical, self.theme.metrics.spacing.xs)
                 .foregroundStyle(Color.white)

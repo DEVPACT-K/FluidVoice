@@ -28,7 +28,7 @@ extension VoiceEngineSettingsView {
                         .foregroundStyle(self.theme.palette.accent)
                     Text("Voice Engine")
                         .font(.title3)
-                        .fontWeight(.semibold)
+
                     Spacer()
                 }
 
@@ -178,7 +178,7 @@ extension VoiceEngineSettingsView {
                             if let badge = model.badgeText {
                                 Text(badge)
                                     .font(.caption2)
-                                    .fontWeight(.semibold)
+
                                     .padding(.horizontal, 6)
                                     .padding(.vertical, 2)
                                     .background(Capsule().fill(badge == "FluidVoice Pick" ? .cyan.opacity(0.2) : .orange.opacity(0.2)))
@@ -454,7 +454,7 @@ extension VoiceEngineSettingsView {
                         .buttonStyle(.borderedProminent)
                         .controlSize(.small)
                         .tint(Color.fluidGreen)
-                        .fontWeight(.semibold)
+
                         .shadow(color: Color.fluidGreen.opacity(0.35), radius: 4, x: 0, y: 1)
                         .disabled(self.viewModel.areSpeechModelActionsBlocked)
                     }
@@ -579,7 +579,7 @@ extension VoiceEngineSettingsView {
                 .foregroundStyle(self.theme.palette.accent)
             Text(title)
                 .lineLimit(1)
-                .fontWeight(.semibold)
+
             Image(systemName: "chevron.down")
                 .font(.system(size: 9, weight: .semibold))
                 .foregroundStyle(self.voiceEngineTertiaryText)

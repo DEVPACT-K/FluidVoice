@@ -1,3 +1,12 @@
+
+/// macOS 12 fallback: stacked layout (ViewThatFits' vertical child semantics).
+private struct FallbackVerticalStack<Content: View>: View {
+    @ViewBuilder var content: Content
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) { content }
+    }
+}
+
 //
 //  AISettingsView+AIConfiguration.swift
 //  fluid
@@ -211,7 +220,8 @@ extension AIEnhancementSettingsView {
     }
 
     private var aiSetupSummaryBar: some View {
-        ViewThatFits(in: .horizontal) {
+        if #available(macOS 13.0, *) {
+            ViewThatFits(in: .horizontal) {
             HStack(spacing: 12) {
                 self.aiSetupSummaryItem(icon: "cpu", text: "Local models run on Mac")
                 self.aiSetupSummaryDivider
@@ -224,7 +234,22 @@ extension AIEnhancementSettingsView {
                 self.aiSetupSummaryItem(icon: "cpu", text: "Local models run on Mac")
                 self.aiSetupSummaryItem(icon: "cloud", text: "Cloud models use provider APIs")
                 self.aiSetupSummaryItem(icon: "keyboard", text: "Shortcuts choose when prompts run")
+            }}
+        } else {
+            FallbackVerticalStack {
+            HStack(spacing: 12) {
+                self.aiSetupSummaryItem(icon: "cpu", text: "Local models run on Mac")
+                self.aiSetupSummaryDivider
+                self.aiSetupSummaryItem(icon: "cloud", text: "Cloud models use provider APIs")
+                self.aiSetupSummaryDivider
+                self.aiSetupSummaryItem(icon: "keyboard", text: "Shortcuts choose when prompts run")
             }
+
+            VStack(alignment: .leading, spacing: 7) {
+                self.aiSetupSummaryItem(icon: "cpu", text: "Local models run on Mac")
+                self.aiSetupSummaryItem(icon: "cloud", text: "Cloud models use provider APIs")
+                self.aiSetupSummaryItem(icon: "keyboard", text: "Shortcuts choose when prompts run")
+            }}
         }
         .padding(.horizontal, 2)
         .padding(.vertical, 2)

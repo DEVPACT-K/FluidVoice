@@ -45,7 +45,7 @@ struct MeetingTranscriptionView: View {
             VStack(spacing: 8) {
                 Image(systemName: "waveform.circle.fill")
                     .font(.system(size: 48))
-                    .foregroundStyle(Color.fluidGreen.gradient)
+                    .foregroundStyle(LinearGradient(colors: [Color.fluidGreen, Color.fluidGreen.opacity(0.55)], startPoint: .top, endPoint: .bottom))
 
                 Text("Meeting Transcription")
                     .font(.title2)
