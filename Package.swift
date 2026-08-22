@@ -11,7 +11,7 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/mxcl/AppUpdater.git", from: "1.0.0"),
         // Monterey Intel: use main — the cohere CoreML branch pins 15-only CoreML; Intel stub handles it
-        .package(url: "https://github.com/altic-dev/FluidAudio.git", branch: "main"),
+        .package(url: "https://github.com/DEVPACT-K/FluidAudio.git", branch: "main"),
         .package(url: "https://github.com/mxcl/PromiseKit", from: "6.0.0"),
         .package(url: "https://github.com/altic-dev/DynamicNotchKit.git", branch: "main"),
         .package(url: "https://github.com/altic-dev/transcribe-cpp-swift.git", exact: "0.1.2"),
