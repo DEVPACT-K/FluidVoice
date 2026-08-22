@@ -29,4 +29,16 @@ done
 if [ "$PATCHED_ANY" -eq 0 ]; then
   echo "No dependency manifests needed patching."
 fi
+
+# FluidAudio hard-sweep: some manifests pin deployment via settings/flags beyond the
+# platforms line (e.g. unsafeFlags "-target ...macos14.0"). Normalize any baked 14.x.
+FA="$ROOT/DerivedData/SourcePackages/checkouts/FluidAudio/Package.swift"
+[ -f "$FA" ] && grep -qE 'macos1[45]|version-min=1[45]' "$FA" && {
+  echo "Hard-sweeping baked 14.x/15.x targets in FluidAudio manifest"
+  perl -i -pe 's/macos1[45]\.\d+/macos12.7/g; s/version-min=1[45]\.\d+/version-min=12.7/g' "$FA"
+}
+
+echo "--- FluidAudio manifest post-patch (platforms + any 14 refs) ---"
+sed -n '1,10p' "$FA" 2>/dev/null || true
+grep -n "1[45]" "$FA" 2>/dev/null | head -5 || echo "(no 14/15 references remain)"
 echo "Done."
