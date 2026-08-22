@@ -13,10 +13,10 @@
     {
       "identity" : "dynamicnotchkit",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/altic-dev/DynamicNotchKit.git",
+      "location" : "https://github.com/DEVPACT-K/DynamicNotchKit.git",
       "state" : {
-        "branch" : "main",
-        "revision" : "708f31da5319436c64059ee7ae566953407063d7"
+        "branch" : "monterey-12.7",
+        "revision" : "15e07e91dce0d720c2f31a8e548b985d789f8134"
       }
     },
     {

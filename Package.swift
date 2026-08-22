@@ -11,7 +11,7 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/mxcl/AppUpdater.git", from: "1.0.0"),
         .package(url: "https://github.com/mxcl/PromiseKit", from: "6.0.0"),
-        .package(url: "https://github.com/altic-dev/DynamicNotchKit.git", branch: "main"),
+        .package(url: "https://github.com/DEVPACT-K/DynamicNotchKit.git", branch: "monterey-12.7"),
         .package(url: "https://github.com/DEVPACT-K/transcribe-cpp-swift.git", branch: "monterey-12.7"),
     ],
     targets: [
