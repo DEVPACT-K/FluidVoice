@@ -1760,7 +1760,6 @@ extension AIEnhancementSettingsView {
                                     ))
                                     .font(.system(.caption, design: .monospaced))
                                     .frame(minHeight: 70)
-                                    .scrollContentBackground(.hidden)
                                     .background(
                                         RoundedRectangle(cornerRadius: 8, style: .continuous)
                                             .fill(self.theme.palette.contentBackground)
@@ -1781,7 +1780,6 @@ extension AIEnhancementSettingsView {
                                     ))
                                     .font(.system(.caption, design: .monospaced))
                                     .frame(minHeight: 110)
-                                    .scrollContentBackground(.hidden)
                                     .background(
                                         RoundedRectangle(cornerRadius: 8, style: .continuous)
                                             .fill(self.theme.palette.contentBackground)
