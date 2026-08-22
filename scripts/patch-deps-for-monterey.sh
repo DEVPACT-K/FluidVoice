@@ -13,9 +13,9 @@ PATCHED_ANY=0
 for root in "${CHECKOUT_ROOTS[@]}"; do
   [ -d "$root" ] || continue
   while IFS= read -r -d '' f; do
-    if grep -qE '\.macOS\(\.v1[45]\)|\.macOS\("1[45]\.0"\)' "$f" 2>/dev/null; then
+    if grep -qE '\.macOS\(\.v1[3-9]\)|\.macOS\("1[3-9][^"]*"\)' "$f" 2>/dev/null; then
       echo "Patching $f"
-      perl -i -pe 's/\.macOS\(\.v15\)/.macOS("12.7")/g; s/\.macOS\(\.v14\)/.macOS("12.7")/g; s/\.macOS\("15\.0"\)/.macOS("12.7")/g; s/\.macOS\("14\.0"\)/.macOS("12.7")/g' "$f"
+      perl -i -pe 's/\.macOS\(\.v1[3-9]\)/.macOS("12.7")/g; s/\.macOS\("1[3-9][^"]*"\)/.macOS("12.7")/g; s/\.macOS\(15\.0\)/.macOS("12.7")/g; s/\.macOS\(14\.0\)/.macOS("12.7")/g; s/\.macOS\(13\.0\)/.macOS("12.7")/g' "$f"
       PATCHED_ANY=1
     fi
     # Legacy catch-all from the original script: bare 15.0 strings in dep manifests.
