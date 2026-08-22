@@ -1,5 +1,6 @@
 import Foundation
 
+@MainActor
 final class LocalAPIRouter {
     private struct RouteKey: Hashable {
         let method: String
