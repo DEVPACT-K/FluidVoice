@@ -33,8 +33,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/altic-dev/FluidAudio.git",
       "state" : {
-        "branch" : "B/cohere-coreml-asr",
-        "revision" : "3fd63887eef1dc25edea8263ce4b44aa854d898b"
+        "branch" : "main",
+        "revision" : "f3dba78a23cb706d01c889bd54f7efd26871e82e"
       }
     },
     {

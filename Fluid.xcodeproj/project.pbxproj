@@ -667,7 +667,7 @@
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/altic-dev/FluidAudio.git";
 			requirement = {
-				branch = "B/cohere-coreml-asr";
+ 			branch = main;
 				kind = branch;
 			};
 		};

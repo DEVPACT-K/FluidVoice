@@ -12,9 +12,16 @@ jobs:
           grep -q '12.7' Package.swift
           ! grep -q 'MARKETING_VERSION = 1.5.1' Fluid.xcodeproj/project.pbxproj || (echo "Marketing version regressed to 1.5.1" && exit 1)
           grep -q 'MARKETING_VERSION = 1.6.10' Fluid.xcodeproj/project.pbxproj
-          ! grep -q 'B/cohere-coreml-asr' Package.swift || (echo "FluidAudio branch regressed" && exit 1)
+          ! grep -q 'B/cohere-coreml-asr' Fluid.xcodeproj/project.pbxproj || (echo "FluidAudio branch regressed" && exit 1)
           grep -q 'MACOSX_DEPLOYMENT_TARGET' build.sh || (echo "build.sh should log deployment" && exit 1)
       - name: Run Monterey tests
         run: xcodebuild test -project Fluid.xcodeproj -scheme Fluid -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO -only-testing:FluidDictationIntegrationTests/MontereyOverlayTests -only-testing:FluidDictationIntegrationTests/MontereyCompatTests -only-testing:FluidDictationIntegrationTests/MontereyDefaultModelTests 2>&1 | tail -20
       - name: Build unsigned (Monterey)
         run: ./build.sh unsigned
+      - name: Upload app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FluidVoice-Debug-Monterey-${{ github.run_number }}
+          path: DerivedData/Build/Products/Debug/*.app
+          retention-days: 14
+          if-no-files-found: error
