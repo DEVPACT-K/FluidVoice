@@ -173,6 +173,22 @@ enum ShortcutRecordingTarget: Hashable {
 
 // NOTE: Streaming and AI response parsing is now handled by LLMClient
 
+@available(macOS 13.0, *)
+private struct SplitNavigationShell<Sidebar: View, Detail: View>: View {
+    @ViewBuilder var sidebar: Sidebar
+    @ViewBuilder var detail: Detail
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+
+    var body: some View {
+        NavigationSplitView(columnVisibility: self.$columnVisibility) {
+            self.sidebar
+        } detail: {
+            self.detail
+        }
+        .navigationSplitViewStyle(.balanced)
+    }
+}
+
 // swiftlint:disable type_body_length file_length
 struct ContentView: View {
     private enum ActiveRecordingMode: String {
@@ -314,7 +330,6 @@ struct ContentView: View {
 
     @State private var savedProviders: [SettingsStore.SavedProvider] = []
     @State private var selectedProviderID: String = SettingsStore.shared.selectedProviderID
-    @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var microphoneSettingsScrollRequest = 0
 
     var body: some View {
@@ -322,14 +337,19 @@ struct ContentView: View {
             Group {
                 if self.settings.shouldShowOnboarding {
                     self.onboardingOnlyView
+                } else if #available(macOS 13.0, *) {
+                    SplitNavigationShell(
+                        sidebar: {
+                            self.sidebarView
+                                .navigationSplitViewColumnWidth(min: 220, ideal: 250, max: 300)
+                        },
+                        detail: { self.detailView }
+                    )
                 } else {
-                    NavigationSplitView(columnVisibility: self.$columnVisibility) {
+                    NavigationView {
                         self.sidebarView
-                            .navigationSplitViewColumnWidth(min: 220, ideal: 250, max: 300)
-                    } detail: {
                         self.detailView
                     }
-                    .navigationSplitViewStyle(.balanced)
                 }
             }
         )

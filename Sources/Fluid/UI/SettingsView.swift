@@ -2740,7 +2740,7 @@ struct FillerWordsEditor: View {
                 .foregroundStyle(.secondary)
 
             // Word chips
-            FlowLayout(spacing: 6) {
+            CompatFlow(spacing: 6) {
                 ForEach(self.fillerWords, id: \.self) { word in
                     HStack(spacing: 4) {
                         Text(word)
@@ -2802,6 +2802,26 @@ struct FillerWordsEditor: View {
 
 // MARK: - Flow Layout
 
+
+/// macOS 12 fallback for FlowLayout (Layout protocol is 13+): adaptive grid approximation.
+struct CompatFlow<Content: View>: View {
+    var spacing: CGFloat = 8
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        if #available(macOS 13.0, *) {
+            CompatFlow(spacing: spacing) {
+                content
+            }
+        } else {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: spacing)], spacing: spacing) {
+                content
+            }
+        }
+    }
+}
+
+@available(macOS 13.0, *)
 struct FlowLayout: Layout {
     struct Cache {
         var sizes: [CGSize] = []

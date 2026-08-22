@@ -582,7 +582,7 @@ struct CustomDictionaryView: View {
             }
 
             if !self.manualTriggers.isEmpty || !self.manualReplacement.isEmpty {
-                FlowLayout(spacing: 6) {
+                CompatFlow(spacing: 6) {
                     ForEach(self.manualTriggers, id: \.self) { trigger in
                         DictionaryPreviewChip(text: trigger)
                     }
@@ -3325,7 +3325,7 @@ struct DictionaryEntryRow: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: self.theme.metrics.spacing.sm) {
-            FlowLayout(spacing: 4) {
+            CompatFlow(spacing: 4) {
                 ForEach(self.entry.triggers, id: \.self) { trigger in
                     Text(trigger)
                         .font(self.theme.typography.caption)
@@ -3522,7 +3522,7 @@ struct AddDictionaryEntrySheet: View {
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.secondary)
 
-                    FlowLayout(spacing: 6) {
+                    CompatFlow(spacing: 6) {
                         ForEach(self.parseTriggers(), id: \.self) { trigger in
                             Text(trigger)
                                 .font(.caption)
@@ -3674,7 +3674,7 @@ struct EditDictionaryEntrySheet: View {
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.secondary)
 
-                    FlowLayout(spacing: 6) {
+                    CompatFlow(spacing: 6) {
                         ForEach(self.parseTriggers(), id: \.self) { trigger in
                             Text(trigger)
                                 .font(.caption)

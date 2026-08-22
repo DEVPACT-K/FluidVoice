@@ -1015,7 +1015,7 @@ extension AIEnhancementSettingsView {
                 }
                 guard self.privateAISelectedModelID == model.id else { return }
                 self.privateAILoadState = .loading(modelID: model.id)
-                let start = ContinuousClock.now
+                let start = Date()
                 let verified = await self.viewModel.verifyPrivateAIProvider(model: model)
                 let latencyMilliseconds = Self.elapsedMilliseconds(since: start)
                 guard self.privateAISelectedModelID == model.id else { return }
@@ -1059,7 +1059,7 @@ extension AIEnhancementSettingsView {
     private func verifyPrivateAIConnection(_ model: PrivateAIRegisteredModel) {
         self.privateAILoadState = .loading(modelID: model.id)
         Task { @MainActor in
-            let start = ContinuousClock.now
+            let start = Date()
             let verified = await self.viewModel.verifyPrivateAIProvider(model: model)
             let latencyMilliseconds = Self.elapsedMilliseconds(since: start)
             guard self.privateAISelectedModelID == model.id else { return }
@@ -1186,7 +1186,7 @@ extension AIEnhancementSettingsView {
         self.privateAILoadState = .loading(modelID: model.id)
         Task { @MainActor in
             do {
-                let start = ContinuousClock.now
+                let start = Date()
                 let status = try await PrivateAIIntegrationService.shared.loadModel(model)
                 let latencyMilliseconds = Self.elapsedMilliseconds(since: start)
                 guard self.privateAISelectedModelID == model.id else { return }
@@ -1260,9 +1260,8 @@ extension AIEnhancementSettingsView {
         PrivateAIModelDownloadProgressText.detailText(for: progress)
     }
 
-    private static func elapsedMilliseconds(since start: ContinuousClock.Instant) -> Int {
-        let elapsed = start.duration(to: ContinuousClock.now)
-        return Int(elapsed.components.seconds * 1000) + Int(elapsed.components.attoseconds / 1_000_000_000_000_000)
+    private static func elapsedMilliseconds(since start: Date) -> Int {
+        return Int(Date().timeIntervalSince(start) * 1000)
     }
 
     private func persistPrivateAIModelSelection(_ value: String) {
