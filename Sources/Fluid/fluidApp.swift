@@ -22,6 +22,10 @@ struct FluidApp: App {
     }
 
     var body: some Scene {
+        windowGroup
+    }
+
+    private var windowGroup: some Scene {
         WindowGroup(id: "main") {
             AdaptiveAppTheme(accent: self.settings.accentColor) {
                 ContentView()
@@ -29,7 +33,6 @@ struct FluidApp: App {
                     .environmentObject(self.appServices)
             }
         }
-        .defaultSize(width: 1000, height: 700)
         .commands {
             CommandGroup(replacing: .appSettings) {
                 Button("Settings...") {

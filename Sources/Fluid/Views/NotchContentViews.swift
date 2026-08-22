@@ -1156,12 +1156,12 @@ struct NotchWaveformView: View {
                     .shadow(color: .white.opacity(0.28), radius: 2.5, x: 0, y: 0)
             }
         }
-        .onChange(of: self.data.audioLevel) { _, level in
+        .onChange(of: self.data.audioLevel) { level in
             if !self.contentState.isProcessing {
                 self.updateBars(level: level)
             }
         }
-        .onChange(of: self.contentState.isProcessing) { _, processing in
+        .onChange(of: self.contentState.isProcessing) { processing in
             if processing {
                 self.resetBarsToBaseline(animated: false)
             } else {
@@ -1523,7 +1523,7 @@ struct NotchCommandOutputExpandedView: View {
                     }
                 }
                 .menuIndicator(.hidden)
-                .menuStyle(.button)
+                .menuStyle(.borderlessButton)
                 .buttonStyle(.plain)
                 .frame(width: 22, height: 22)
                 .onHover { self.isHoveringRecent = $0 }
@@ -1822,7 +1822,7 @@ struct ExpandedModeWaveformView: View {
                     .shadow(color: self.color.opacity(0.4), radius: 2, x: 0, y: 0)
             }
         }
-        .onChange(of: self.contentState.expandedModeAudioLevel) { _, level in
+        .onChange(of: self.contentState.expandedModeAudioLevel) { level in
             self.updateBars(level: level)
         }
         .onAppear {
@@ -1896,12 +1896,12 @@ struct CompactNotchWaveformView: View {
                     .shadow(color: .white.opacity(0.28), radius: 2.5, x: 0, y: 0)
             }
         }
-        .onChange(of: self.data.audioLevel) { _, level in
+        .onChange(of: self.data.audioLevel) { level in
             if !self.contentState.isProcessing {
                 self.updateBars(level: level)
             }
         }
-        .onChange(of: self.contentState.isProcessing) { _, processing in
+        .onChange(of: self.contentState.isProcessing) { processing in
             if processing {
                 self.resetBarsToBaseline(animated: false)
             } else {

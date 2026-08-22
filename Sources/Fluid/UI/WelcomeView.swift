@@ -288,7 +288,6 @@ struct WelcomeView: View {
                                                     )
                                             )
                                     )
-                                    .scrollContentBackground(.hidden)
                                     .overlay(
                                         VStack(spacing: 8) {
                                             if self.asr.isRunning {
@@ -622,6 +621,7 @@ struct WelcomeView: View {
 }
 
 struct OnboardingFlowView: View {
+    private var isLowRAMIntel: Bool { ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024 && !CPUArchitecture.isAppleSilicon }
     @EnvironmentObject var appServices: AppServices
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var asr: ASRService {
@@ -977,7 +977,7 @@ struct OnboardingFlowView: View {
                 origin: self.settings.analyticsOnboardingOrigin
             )
         }
-        .onChange(of: self.isMicrophoneReady) { _, isReady in
+        .onChange(of: self.isMicrophoneReady) { isReady in
             guard self.step == .permissions else { return }
             if isReady {
                 self.refreshOnboardingMicrophones(startPreview: true)
@@ -985,7 +985,7 @@ struct OnboardingFlowView: View {
                 self.stopOnboardingMicrophonePreview()
             }
         }
-        .onChange(of: self.asr.isStarting) { _, isStarting in
+        .onChange(of: self.asr.isStarting) { isStarting in
             guard self.isOnboardingFlowVisible,
                   self.step == .permissions,
                   self.isMicrophoneReady
@@ -1399,7 +1399,7 @@ struct OnboardingFlowView: View {
                     "",
                     text: self.$languageSearchText,
                     prompt: Text("Search supported languages")
-                        .foregroundStyle(Color.white.opacity(0.42))
+                        .foregroundColor(Color.white.opacity(0.42))
                 )
                 .textFieldStyle(.plain)
                 .font(.system(size: 14, weight: .medium))
@@ -2452,7 +2452,6 @@ struct OnboardingFlowView: View {
                 .foregroundStyle(fillPercent > 0 ? color : Color.white.opacity(0.48))
                 .lineLimit(1)
                 .minimumScaleFactor(0.82)
-                .contentTransition(.numericText())
                 .frame(width: 46, alignment: .trailing)
         }
         .frame(height: 18)

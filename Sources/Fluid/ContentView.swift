@@ -356,7 +356,7 @@ struct ContentView: View {
 
         let tracked = layout.withMouseTracking(self.mouseTracker)
         let env = tracked.environmentObject(self.mouseTracker)
-        let nav = env.onChange(of: self.menuBarManager.requestedNavigationDestination) { _, destination in
+        let nav = env.onChange(of: self.menuBarManager.requestedNavigationDestination) { destination in
             self.handleMenuBarNavigation(destination)
         }
         let sized = nav.fluidWindowSizing(self.windowSizing)
@@ -465,7 +465,7 @@ struct ContentView: View {
             .onAppear {
                 self.handleContentAppear()
             }
-            .onChange(of: self.accessibilityEnabled) { _, enabled in
+            .onChange(of: self.accessibilityEnabled) { enabled in
                 if enabled {
                     self.finishAccessibilityPermissionFlow()
                 }

@@ -296,7 +296,6 @@ struct OnboardingTryoutStepView: View {
                                     )
                             )
                     )
-                    .scrollContentBackground(.hidden)
                     .focused(self.$isEditorFocused)
 
                 if self.shouldShowPlaceholder {

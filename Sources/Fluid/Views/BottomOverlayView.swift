@@ -3190,7 +3190,7 @@ struct BottomOverlayView: View {
             self.frozenDynamicPreviewHeight = nil
             BottomOverlayWindowController.shared.refreshSizeForContent()
         }
-        .onChange(of: self.contentState.isBottomOverlayPresented) { _, presented in
+        .onChange(of: self.contentState.isBottomOverlayPresented) { presented in
             self.borderAnimationStartedAt = presented ? Date() : nil
         }
         .onChange(of: self.settings.enableStreamingPreview) { _ in
@@ -3221,7 +3221,7 @@ struct BottomOverlayView: View {
                 BottomOverlayWindowController.shared.refreshSizeForContent()
             }
         }
-        .onChange(of: self.contentState.isProcessing) { _, processing in
+        .onChange(of: self.contentState.isProcessing) { processing in
             self.processingStatusVisible = processing
             if processing {
                 self.processingStatusCycleID &+= 1
@@ -3245,7 +3245,7 @@ struct BottomOverlayView: View {
             guard !self.layout.usesFixedCanvas else { return }
             self.refreshDynamicPreviewSizeIfNeeded(for: self.currentPreviewSizingText)
         }
-        .onChange(of: self.contentState.isBottomOverlayReleaseTransitioning) { _, transitioning in
+        .onChange(of: self.contentState.isBottomOverlayReleaseTransitioning) { transitioning in
             guard self.shouldReservePreviewArea else {
                 self.frozenDynamicPreviewHeight = nil
                 return
@@ -3378,13 +3378,13 @@ struct BottomWaveformView: View {
                     .shadow(color: .white.opacity(0.28), radius: 2.5, x: 0, y: 0)
             }
         }
-        .onChange(of: self.contentState.bottomOverlayAudioLevel) { _, level in
+        .onChange(of: self.contentState.bottomOverlayAudioLevel) { level in
             guard !self.isReleaseAnimationActive else { return }
             if !self.contentState.isProcessing {
                 self.updateBars(level: level)
             }
         }
-        .onChange(of: self.contentState.isProcessing) { _, processing in
+        .onChange(of: self.contentState.isProcessing) { processing in
             guard !self.isReleaseAnimationActive else { return }
             if processing {
                 self.setFlatProcessingBars()

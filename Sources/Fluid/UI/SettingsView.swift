@@ -2046,7 +2046,6 @@ struct SettingsView: View {
                         Text("\(index + 1).")
                             .font(.caption)
                             .foregroundStyle(warningStyle ? self.theme.palette.warning : self.theme.palette.accent)
-                            .fontWeight(.semibold)
                             .frame(width: 16, alignment: .trailing)
                         Text(.init(step))
                             .font(.caption)

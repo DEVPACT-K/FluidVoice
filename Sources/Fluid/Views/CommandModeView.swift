@@ -310,7 +310,7 @@ struct CommandModeView: View {
             .onChange(of: self.service.conversationHistory.count) { _ in
                 self.scrollToBottom(proxy)
             }
-            .onChange(of: self.service.isProcessing) { _, isProcessing in
+            .onChange(of: self.service.isProcessing) { isProcessing in
                 // Scroll when processing starts, not on every streaming update
                 if isProcessing {
                     self.scrollToBottom(proxy)
@@ -474,10 +474,10 @@ struct CommandModeView: View {
             }
 
             VStack(alignment: .leading, spacing: 14) {
-                TextField("Type a command or ask a question...", text: self.$inputText, axis: .vertical)
+                TextField("Type a command or ask a question...", text: self.$inputText)
                     .textFieldStyle(.plain)
                     .font(.system(size: 16))
-                    .lineLimit(1...4)
+                    .lineLimit(4)
                     .onSubmit {
                         self.submitCommand()
                     }

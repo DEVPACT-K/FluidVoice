@@ -488,7 +488,6 @@ struct TranscriptionHistoryView: View {
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.secondary)
                     .textCase(.uppercase)
-                    .tracking(0.5)
 
                 if let badge = badge {
                     Text(badge)
@@ -522,7 +521,6 @@ struct TranscriptionHistoryView: View {
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .textCase(.uppercase)
-                .tracking(0.5)
 
             LazyVGrid(columns: [
                 GridItem(.flexible(), spacing: 16),
@@ -743,7 +741,6 @@ private struct TranscriptionFeedbackReportSheet: View {
 
             TextEditor(text: text)
                 .font(.system(size: 13))
-                .scrollContentBackground(.hidden)
                 .padding(8)
                 .frame(height: height)
                 .background(

@@ -35,7 +35,6 @@ struct FluidOnboardingLandingHero<Actions: View>: View {
             if !self.eyebrow.isEmpty {
                 Text(self.eyebrow)
                     .font(.system(size: 14, weight: .bold))
-                    .tracking(4.2)
                     .foregroundStyle(FluidOnboardingLandingColors.blue.opacity(0.72))
                     .textCase(.uppercase)
                     .padding(.bottom, 16)

@@ -50,24 +50,17 @@ struct MouseTrackingModifier: ViewModifier {
     let tracker: MousePositionTracker
 
     func body(content: Content) -> some View {
-        content
-            .onContinuousHover { phase in
-                switch phase {
-                case let .active(location):
-                    // Validate location is finite before processing
-                    guard location.x.isFinite && location.y.isFinite else { return }
-                    guard self.tracker.windowFrame != .zero else { return }
-
-                    // Convert to global coordinates for consistent tracking
-                    let globalLocation = CGPoint(
-                        x: location.x + self.tracker.windowFrame.minX,
-                        y: location.y + self.tracker.windowFrame.minY
-                    )
-                    self.tracker.updateMousePosition(globalLocation)
-                case .ended:
-                    break
-                }
+        Group {
+            if #available(macOS 14.0, *) {
+                self.continuous(content: content)
+            } else {
+                self.base(content: content)
             }
+        }
+    }
+
+    private func base(content: Content) -> some View {
+        content
             .background(
                 GeometryReader { geometry in
                     Color.clear
@@ -89,5 +82,39 @@ struct MouseTrackingModifier: ViewModifier {
 extension View {
     func withMouseTracking(_ tracker: MousePositionTracker) -> some View {
         modifier(MouseTrackingModifier(tracker: tracker))
+    }
+}
+
+extension MouseTrackingModifier {
+    @available(macOS 14.0, *)
+    fileprivate func continuous(content: Content) -> some View {
+        content
+            .onContinuousHover { phase in
+                switch phase {
+                case let .active(location):
+                    guard location.x.isFinite && location.y.isFinite else { return }
+                    guard self.tracker.windowFrame != .zero else { return }
+                    let globalLocation = CGPoint(
+                        x: location.x + self.tracker.windowFrame.minX,
+                        y: location.y + self.tracker.windowFrame.minY
+                    )
+                    self.tracker.updateMousePosition(globalLocation)
+                case .ended:
+                    break
+                }
+            }
+            .background(
+                GeometryReader { geometry in
+                    Color.clear
+                        .onAppear {
+                            self.tracker.updateWindowFrame(geometry.frame(in: .global))
+                        }
+                        .onChange(of: geometry.frame(in: .global)) { newFrame in
+                            guard newFrame.minY < NSScreen.main?.frame.height ?? 1000 else { return }
+                            guard newFrame.maxY > 0 else { return }
+                            self.tracker.updateWindowFrame(newFrame)
+                        }
+                }
+            )
     }
 }
