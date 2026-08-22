@@ -1,5 +1,13 @@
 import CoreML
+#if canImport(FluidAudio)
 import FluidAudio
+typealias ExternalCoreMLComputeConfiguration = CohereTranscribeComputeConfiguration
+#else
+// Intel builds drop FluidAudio entirely; mirror only the configuration value used by specs.
+enum ExternalCoreMLComputeConfiguration {
+    case aneSmall
+}
+#endif
 import Foundation
 
 enum ExternalCoreMLASRBackend {
@@ -70,7 +78,7 @@ struct ExternalCoreMLASRModelSpec {
     let cachedDecoderFileName: String
     let expectedModelID: String
     let expectedSampleRate: Int
-    let computeConfiguration: CohereTranscribeComputeConfiguration
+    let computeConfiguration: ExternalCoreMLComputeConfiguration
     let sourceURL: URL?
     let repositoryOwner: String?
     let repositoryName: String?
