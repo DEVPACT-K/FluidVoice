@@ -26,12 +26,12 @@ jobs:
       - name: Patch deps for Monterey 12.7
         run: |
           ./scripts/patch-deps-for-monterey.sh
-          # Force SwiftPM to discard its cached build plan and re-read patched manifests
-          find DerivedData/SourcePackages/checkouts -name Package.swift -exec touch {} +
-          rm -f DerivedData/SourcePackages/workspace-state.json
-          rm -rf DerivedData/SourcePackages/Manifests
-          echo "--- FluidAudio manifest after patch ---"
-          sed -n '1,12p' DerivedData/SourcePackages/checkouts/FluidAudio/Package.swift
+          # Rebuild EVERYTHING downstream of resolution: keep patched checkouts,
+          # discard DerivedData entirely (incl. XCBuildData plan databases)
+          mv DerivedData/SourcePackages/checkouts /tmp/checkouts
+          rm -rf DerivedData
+          mkdir -p DerivedData/SourcePackages
+          mv /tmp/checkouts DerivedData/SourcePackages/checkouts
       - name: Build unsigned x86_64 (Monterey Intel)
         run: >
           xcodebuild -project Fluid.xcodeproj -scheme Fluid -configuration Debug
