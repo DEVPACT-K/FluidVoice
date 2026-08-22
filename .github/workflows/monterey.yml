@@ -32,11 +32,6 @@ jobs:
           rm -rf DerivedData
           mkdir -p DerivedData/SourcePackages
           mv /tmp/checkouts DerivedData/SourcePackages/checkouts
-          # Diagnostics: prove which swift-transformers revision is present and what SwiftPM parses
-          echo "--- swift-transformers checkout state ---"
-          git -C DerivedData/SourcePackages/checkouts/swift-transformers rev-parse HEAD
-          grep -n "platforms" DerivedData/SourcePackages/checkouts/swift-transformers/Package.swift
-          ( cd DerivedData/SourcePackages/checkouts/swift-transformers && swift package dump-package 2>/dev/null | grep -A4 '"platforms"' ) || true
           # Warm-runner insurance: clear user-level SwiftPM caches
           rm -rf ~/Library/org.swift.swiftpm ~/Library/Caches/org.swift.swiftpm
       - name: Build unsigned x86_64 (Monterey Intel)
