@@ -24,9 +24,12 @@ jobs:
       - name: Resolve package dependencies
         run: xcodebuild -resolvePackageDependencies -project Fluid.xcodeproj -scheme Fluid -derivedDataPath DerivedData
       - name: Patch deps for Monterey 12.7
-        run: ./scripts/patch-deps-for-monterey.sh
+        run: |
+          ./scripts/patch-deps-for-monterey.sh
+          # Invalidate SwiftPM's cached build plan so it re-reads the patched manifests
+          find DerivedData/SourcePackages/checkouts -name Package.swift -exec touch {} +
       - name: Run Monterey tests
-        run: xcodebuild test -project Fluid.xcodeproj -scheme Fluid -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO -only-testing:FluidDictationIntegrationTests/MontereyOverlayTests -only-testing:FluidDictationIntegrationTests/MontereyCompatTests -only-testing:FluidDictationIntegrationTests/MontereyDefaultModelTests 2>&1 | tail -20
+        run: set -o pipefail && xcodebuild test -project Fluid.xcodeproj -scheme Fluid -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO -only-testing:FluidDictationIntegrationTests/MontereyOverlayTests -only-testing:FluidDictationIntegrationTests/MontereyCompatTests -only-testing:FluidDictationIntegrationTests/MontereyDefaultModelTests 2>&1 | tail -40
       - name: Build unsigned x86_64 (Monterey Intel)
         run: >
           xcodebuild -project Fluid.xcodeproj -scheme Fluid -configuration Debug
