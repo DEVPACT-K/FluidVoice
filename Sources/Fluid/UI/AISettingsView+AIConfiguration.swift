@@ -220,6 +220,7 @@ extension AIEnhancementSettingsView {
     }
 
     private var aiSetupSummaryBar: some View {
+        Group {
         if #available(macOS 13.0, *) {
             ViewThatFits(in: .horizontal) {
             HStack(spacing: 12) {
@@ -250,6 +251,7 @@ extension AIEnhancementSettingsView {
                 self.aiSetupSummaryItem(icon: "cloud", text: "Cloud models use provider APIs")
                 self.aiSetupSummaryItem(icon: "keyboard", text: "Shortcuts choose when prompts run")
             }}
+        }
         }
         .padding(.horizontal, 2)
         .padding(.vertical, 2)

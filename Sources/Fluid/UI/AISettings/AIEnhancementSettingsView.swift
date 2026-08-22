@@ -77,8 +77,8 @@ struct AIEnhancementSettingsView: View {
     @ObservedObject var promptTest: DictationPromptTestCoordinator
     let theme: AppTheme
     @Binding var activeShortcutRecordingTarget: ShortcutRecordingTarget?
-    @State private var previousConnectionStatus: AIConnectionStatus = .unknown
-    @State private var previousShortcutRecordingTarget: ShortcutRecordingTarget? = nil
+    @State var previousConnectionStatus: AIConnectionStatus = .unknown
+    @State var previousShortcutRecordingTarget: ShortcutRecordingTarget? = nil
     @Binding var shortcutRecordingMessage: String?
     @State var expandedProviderID: String? = nil
     @State var providerSearchText: String = ""
@@ -116,7 +116,7 @@ struct AIEnhancementSettingsView: View {
                 }
                 self.previousConnectionStatus = newValue
             }
-            .onChange(of: self.viewModel.showKeychainPermissionAlert) { _, isPresented in
+            .onChange(of: self.viewModel.showKeychainPermissionAlert) { isPresented in
                 guard isPresented else { return }
                 self.viewModel.presentKeychainAccessAlert(message: self.viewModel.keychainPermissionMessage)
                 self.viewModel.showKeychainPermissionAlert = false
