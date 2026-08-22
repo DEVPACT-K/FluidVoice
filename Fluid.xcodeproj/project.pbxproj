@@ -687,14 +687,14 @@
 				kind = branch;
 			};
 		};
-		7C9A71002F58B00000FB7CAF /* XCRemoteSwiftPackageReference "transcribe-cpp-swift" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/altic-dev/transcribe-cpp-swift.git";
-			requirement = {
-				kind = exactVersion;
-				version = 0.1.2;
-			};
-		};
+ 		7C9A71002F58B00000FB7CAF /* XCRemoteSwiftPackageReference "transcribe-cpp-swift" */ = {
+ 			isa = XCRemoteSwiftPackageReference;
+ 			repositoryURL = "https://github.com/DEVPACT-K/transcribe-cpp-swift.git";
+ 			requirement = {
+ 				branch = "monterey-12.7";
+ 				kind = branch;
+ 			};
+ 		};
 		7CE006BB2E80EBE600DDCCD6 /* XCRemoteSwiftPackageReference "AppUpdater" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/mxcl/AppUpdater.git";
