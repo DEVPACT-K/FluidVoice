@@ -2,9 +2,16 @@ name: monterey-compat
 on: [push, pull_request]
 jobs:
   monterey:
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Select newest Xcode
+        run: |
+          ls -d /Applications/Xcode*.app
+          NEWEST=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
+          echo "Using $NEWEST"
+          sudo xcode-select -s "$NEWEST"
+          xcodebuild -version
       - name: Verify deployment 12.7
         run: |
           ! grep -q 'MACOSX_DEPLOYMENT_TARGET = 15' Fluid.xcodeproj/project.pbxproj || (echo "Deployment regressed to 15" && exit 1)
