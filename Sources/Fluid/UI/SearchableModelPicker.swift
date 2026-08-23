@@ -169,9 +169,8 @@ struct SearchableModelPicker: View {
                         Task { await onRefresh() }
                     }) {
                         if self.isRefreshing {
-                            ProgressView()
+                            ProgressView().controlSize(.small)
                                 .scaleEffect(0.6)
-                                .frame(width: 16, height: 16)
                         } else {
                             Image(systemName: "arrow.clockwise")
                         }
@@ -186,9 +185,8 @@ struct SearchableModelPicker: View {
                     }) {
                         ZStack {
                             if self.isRefreshing {
-                                ProgressView()
+                                ProgressView().controlSize(.small)
                                     .scaleEffect(0.6)
-                                    .frame(width: 16, height: 16)
                             } else {
                                 Image(systemName: "arrow.clockwise")
                                     .font(.system(size: 12, weight: .semibold))

@@ -544,9 +544,8 @@ extension AIEnhancementSettingsView {
         Button(action: action) {
             ZStack {
                 if isRefreshing {
-                    ProgressView()
+                    ProgressView().controlSize(.small)
                         .scaleEffect(0.6)
-                        .frame(width: 16, height: 16)
                 } else {
                     Image(systemName: "arrow.clockwise")
                         .font(.system(size: 12, weight: .semibold))
@@ -2677,7 +2676,7 @@ extension AIEnhancementSettingsView {
                 }
             } else if self.viewModel.connectionStatus == .testing {
                 HStack(spacing: 8) {
-                    ProgressView().frame(width: 16, height: 16)
+                    ProgressView().controlSize(.small)
                     Text("Verifying...").font(.caption).foregroundStyle(self.theme.palette.accent)
                 }
             }
