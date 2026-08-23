@@ -378,21 +378,7 @@ struct ContentView: View {
             .onReceive(self.asr.$partialTranscription) { text in
                 self.handleSpokenSendPartialTranscription(text)
             }
-            .toolbar {
-                if !self.settings.shouldShowOnboarding {
-                    ToolbarItemGroup(placement: .primaryAction) {
-                        self.todayStatsButton
-
-                        self.themePreferenceButton
-
-                        Button(action: self.openIssueReportingPage) {
-                            Image(systemName: "ladybug.fill")
-                        }
-                        .help("Report an issue")
-                        .accessibilityLabel("Report an issue")
-                    }
-                }
-            }
+            .toolbar { self.primaryToolbarContent }
             .toolbar(removing: .sidebarToggle)
             .overlay(alignment: .center) {}
             .alert(
@@ -487,6 +473,26 @@ struct ContentView: View {
             }
     }
 
+
+
+    @ToolbarContentBuilder
+    private var primaryToolbarContent: some ToolbarContent {
+        if !self.settings.shouldShowOnboarding {
+            ToolbarItemGroup(placement: .primaryAction) {
+                self.todayStatsButton
+                self.themePreferenceButton
+                self.bugReportButton
+            }
+        }
+    }
+
+    private var bugReportButton: some View {
+        Button(action: self.openIssueReportingPage) {
+            Image(systemName: "ladybug.fill")
+        }
+        .help("Report an issue")
+        .accessibilityLabel("Report an issue")
+    }
 
     private func handlePrimaryDictationShortcutsChange(_ newValue: [HotkeyShortcut]) {
         SettingsStore.shared.primaryDictationShortcuts = newValue
