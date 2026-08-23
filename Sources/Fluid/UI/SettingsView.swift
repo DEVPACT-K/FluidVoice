@@ -214,6 +214,31 @@ struct SettingsView: View {
         .padding(.bottom, 4)
     }
 
+
+    private func accentColorButton(_ option: SettingsStore.AccentColorOption) -> some View {
+        let isSelected = self.settings.accentColorOption == option
+        return Button {
+            self.settings.accentColorOption = option
+        } label: {
+            Circle()
+                .fill(Color(hex: option.hex) ?? .gray)
+                .frame(width: 16, height: 16)
+                .overlay(
+                    Circle()
+                        .stroke(
+                            isSelected ? self.theme.palette.accent : self.theme.palette.cardBorder.opacity(0.5),
+                            lineWidth: isSelected ? 2 : 1
+                        )
+                )
+                .padding(4)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(option.rawValue)
+        .help(option.rawValue)
+    }
+
+    private var accentRowPlaceholder: some View { EmptyView() }
+
     var body: some View {
         SettingsPersistentScrollView(
             theme: self.theme,
@@ -289,31 +314,7 @@ struct SettingsView: View {
                                         }
                                     }
                                     .padding(.horizontal, 6)
-                                    .padding(.vertical, 4)
-    private func accentColorButton(_ option: SettingsStore.AccentColorOption) -> some View {
-        let isSelected = self.settings.accentColorOption == option
-        return Button {
-            self.settings.accentColorOption = option
-        } label: {
-            Circle()
-                .fill(Color(hex: option.hex) ?? .gray)
-                .frame(width: 16, height: 16)
-                .overlay(
-                    Circle()
-                        .stroke(
-                            isSelected ? self.theme.palette.accent : self.theme.palette.cardBorder.opacity(0.5),
-                            lineWidth: isSelected ? 2 : 1
-                        )
-                )
-                .padding(4)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(option.rawValue)
-        .help(option.rawValue)
-    }
-
-    private var accentRowPlaceholder: some View { EmptyView() }
-                                    .background(
+                                    .padding(.vertical, 4)                                    .background(
                                         RoundedRectangle(cornerRadius: 8, style: .continuous)
                                             .fill(self.theme.palette.contentBackground)
                                             .overlay(
