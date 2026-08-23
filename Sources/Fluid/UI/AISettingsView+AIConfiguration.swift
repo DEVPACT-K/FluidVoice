@@ -219,25 +219,25 @@ extension AIEnhancementSettingsView {
         }
     }
 
-    private var aiSetupSummaryBar: some View {
-        Group {
+
+/// macOS 12-safe adaptive layout: horizontal when it fits (13+), vertical stack otherwise.
+struct AdaptiveHV<H: View, V: View>: View {
+    @ViewBuilder var horizontal: H
+    @ViewBuilder var vertical: V
+    var body: some View {
         if #available(macOS 13.0, *) {
             ViewThatFits(in: .horizontal) {
-            HStack(spacing: 12) {
-                self.aiSetupSummaryItem(icon: "cpu", text: "Local models run on Mac")
-                self.aiSetupSummaryDivider
-                self.aiSetupSummaryItem(icon: "cloud", text: "Cloud models use provider APIs")
-                self.aiSetupSummaryDivider
-                self.aiSetupSummaryItem(icon: "keyboard", text: "Shortcuts choose when prompts run")
+                horizontal
+                vertical
             }
-
-            VStack(alignment: .leading, spacing: 7) {
-                self.aiSetupSummaryItem(icon: "cpu", text: "Local models run on Mac")
-                self.aiSetupSummaryItem(icon: "cloud", text: "Cloud models use provider APIs")
-                self.aiSetupSummaryItem(icon: "keyboard", text: "Shortcuts choose when prompts run")
-            }}
         } else {
-            FallbackVerticalStack {
+            vertical
+        }
+    }
+}
+
+    private var aiSetupSummaryBar: some View {
+        AdaptiveHV {
             HStack(spacing: 12) {
                 self.aiSetupSummaryItem(icon: "cpu", text: "Local models run on Mac")
                 self.aiSetupSummaryDivider
@@ -245,13 +245,12 @@ extension AIEnhancementSettingsView {
                 self.aiSetupSummaryDivider
                 self.aiSetupSummaryItem(icon: "keyboard", text: "Shortcuts choose when prompts run")
             }
-
+        } vertical: {
             VStack(alignment: .leading, spacing: 7) {
                 self.aiSetupSummaryItem(icon: "cpu", text: "Local models run on Mac")
                 self.aiSetupSummaryItem(icon: "cloud", text: "Cloud models use provider APIs")
                 self.aiSetupSummaryItem(icon: "keyboard", text: "Shortcuts choose when prompts run")
-            }}
-        }
+            }
         }
         .padding(.horizontal, 2)
         .padding(.vertical, 2)

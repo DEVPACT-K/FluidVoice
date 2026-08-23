@@ -19,6 +19,23 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// macOS 12-safe adaptive layout: horizontal when it fits (13+), vertical stack otherwise.
+struct AdaptiveHVCDV<H: View, V: View>: View {
+    @ViewBuilder var horizontal: H
+    @ViewBuilder var vertical: V
+    var body: some View {
+        if #available(macOS 13.0, *) {
+            ViewThatFits(in: .horizontal) {
+                horizontal
+                vertical
+            }
+        } else {
+            vertical
+        }
+    }
+}
+
+
 // This legacy screen still owns several dictionary editors; split them into standalone views incrementally.
 // swiftlint:disable:next type_body_length
 struct CustomDictionaryView: View {
@@ -572,28 +589,19 @@ struct CustomDictionaryView: View {
 
     private var manualReplacementComposer: some View {
         VStack(alignment: .leading, spacing: self.theme.metrics.spacing.md) {
-            if #available(macOS 13.0, *) {
-                ViewThatFits(in: .horizontal) {
+            AdaptiveHVCDV {
                 HStack(alignment: .top, spacing: self.theme.metrics.spacing.md) {
-                    self.manualTriggerField
-                    self.manualReplacementField
-                }
-
+                                    self.manualTriggerField
+                                    self.manualReplacementField
+                                }
+                
+                                VStack(alignment: .leading, spacing: self.theme.metrics.spacing.md) {
+                                    self.manualTriggerField
+                                    self.manualReplacementField
+            } vertical: {
                 VStack(alignment: .leading, spacing: self.theme.metrics.spacing.md) {
-                    self.manualTriggerField
-                    self.manualReplacementField
-                }}
-            } else {
-                FallbackVerticalStack {
-                HStack(alignment: .top, spacing: self.theme.metrics.spacing.md) {
-                    self.manualTriggerField
-                    self.manualReplacementField
-                }
-
-                VStack(alignment: .leading, spacing: self.theme.metrics.spacing.md) {
-                    self.manualTriggerField
-                    self.manualReplacementField
-                }}
+                                    self.manualTriggerField
+                                    self.manualReplacementField
             }
 
             if !self.manualDuplicateTriggers.isEmpty {
@@ -1655,28 +1663,19 @@ struct CustomDictionaryView: View {
             Text(self.punctuationEditorTitle)
                 .font(self.theme.typography.captionStrong)
 
-            if #available(macOS 13.0, *) {
-                ViewThatFits(in: .horizontal) {
+            AdaptiveHVCDV {
                 HStack(alignment: .top, spacing: self.theme.metrics.spacing.md) {
-                    self.punctuationAliasesEditor
-                    self.punctuationSymbolEditor
-                }
-
+                                    self.punctuationAliasesEditor
+                                    self.punctuationSymbolEditor
+                                }
+                
+                                VStack(alignment: .leading, spacing: self.theme.metrics.spacing.md) {
+                                    self.punctuationAliasesEditor
+                                    self.punctuationSymbolEditor
+            } vertical: {
                 VStack(alignment: .leading, spacing: self.theme.metrics.spacing.md) {
-                    self.punctuationAliasesEditor
-                    self.punctuationSymbolEditor
-                }}
-            } else {
-                FallbackVerticalStack {
-                HStack(alignment: .top, spacing: self.theme.metrics.spacing.md) {
-                    self.punctuationAliasesEditor
-                    self.punctuationSymbolEditor
-                }
-
-                VStack(alignment: .leading, spacing: self.theme.metrics.spacing.md) {
-                    self.punctuationAliasesEditor
-                    self.punctuationSymbolEditor
-                }}
+                                    self.punctuationAliasesEditor
+                                    self.punctuationSymbolEditor
             }
 
             HStack {
