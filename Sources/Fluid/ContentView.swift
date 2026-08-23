@@ -379,7 +379,6 @@ struct ContentView: View {
                 self.handleSpokenSendPartialTranscription(text)
             }
             .toolbar { self.primaryToolbarContent }
-            .toolbar(removing: .sidebarToggle)
             .overlay(alignment: .center) {}
             .alert(
                 self.asr.errorTitle,
@@ -477,8 +476,8 @@ struct ContentView: View {
 
     @ToolbarContentBuilder
     private var primaryToolbarContent: some ToolbarContent {
-        if !self.settings.shouldShowOnboarding {
-            ToolbarItemGroup(placement: .primaryAction) {
+        ToolbarItemGroup(placement: .primaryAction) {
+            if !self.settings.shouldShowOnboarding {
                 self.todayStatsButton
                 self.themePreferenceButton
                 self.bugReportButton
