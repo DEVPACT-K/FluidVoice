@@ -430,25 +430,7 @@ struct ContentView: View {
                 self.removeShortcutCaptureMonitor()
             }
             .onChange(of: self.primaryDictationShortcuts) { newValue in
-                SettingsStore.shared.primaryDictationShortcuts = newValue
-                let storedShortcuts = SettingsStore.shared.primaryDictationShortcuts
-                if storedShortcuts != newValue {
-                    self.primaryDictationShortcuts = storedShortcuts
-                    return
-                }
-
-                let display = storedShortcuts.map(\.displayString).joined(separator: ", ")
-                DebugLogger.shared.debug("Primary dictation shortcuts changed to \(display)", source: "ContentView")
-                self.hotkeyManager?.updatePrimaryShortcuts(storedShortcuts)
-
-                // Update initialization status after shortcut change
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                    self.hotkeyManagerInitialized = self.hotkeyManager?.validateEventTapHealth() ?? false
-                    DebugLogger.shared.debug(
-                        "Hotkey manager initialized: \(self.hotkeyManagerInitialized)",
-                        source: "ContentView"
-                    )
-                }
+                self.handlePrimaryDictationShortcutsChange(newValue)
             }
             .onChange(of: self.selectedSidebarItem) { newValue in
                 self.handleModeTransition(from: self.previousSidebarItem, to: newValue)
@@ -503,6 +485,31 @@ struct ContentView: View {
             .onChange(of: self.isPasteLastTranscriptionShortcutEnabled) { newValue in
                 self.handlePasteLastTranscriptionShortcutEnabledChange(newValue)
             }
+    }
+
+
+    private func handlePrimaryDictationShortcutsChange(_ newValue: [HotkeyShortcut]) {
+        SettingsStore.shared.primaryDictationShortcuts = newValue
+        let storedShortcuts = SettingsStore.shared.primaryDictationShortcuts
+        if storedShortcuts != newValue {
+            self.primaryDictationShortcuts = storedShortcuts
+            return
+        }
+
+        let display = storedShortcuts.map({ $0.displayString }).joined(separator: ", ")
+        DebugLogger.shared.debug("Primary dictation shortcuts changed to " + display, source: "ContentView")
+        self.hotkeyManager?.updatePrimaryShortcuts(storedShortcuts)
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            self.finishHotkeyHealthCheck()
+        }
+    }
+
+    private func finishHotkeyHealthCheck() {
+        let healthy = self.hotkeyManager?.validateEventTapHealth() ?? false
+        self.hotkeyManagerInitialized = healthy
+        let message = "Hotkey manager initialized: " + (healthy ? "true" : "false")
+        DebugLogger.shared.debug(message, source: "ContentView")
     }
 
     private func handlePasteLastTranscriptionShortcutEnabledChange(_ isEnabled: Bool) {

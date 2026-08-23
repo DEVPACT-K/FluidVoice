@@ -1439,9 +1439,8 @@ struct SettingsView: View {
 
                             if self.asr.isRunning {
                                 Text("Settings are disabled during active recording")
-                                    .font(.caption)
-                                    .foregroundStyle(self.settingsSecondaryText)
-                                    .italic()
+                                    .font(.caption.italic())
+                                    .foregroundColor(self.settingsSecondaryText)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .padding(.top, 4)
                             }
