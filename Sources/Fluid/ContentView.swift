@@ -333,26 +333,27 @@ struct ContentView: View {
     @State private var microphoneSettingsScrollRequest = 0
 
     var body: some View {
-        let layout = AnyView(
-            Group {
-                if self.settings.shouldShowOnboarding {
-                    self.onboardingOnlyView
-                } else if #available(macOS 13.0, *) {
-                    SplitNavigationShell(
-                        sidebar: {
-                            self.sidebarView
-                                .navigationSplitViewColumnWidth(min: 220, ideal: 250, max: 300)
-                        },
-                        detail: { self.detailView }
-                    )
-                } else {
-                    NavigationView {
+        let layout: AnyView
+        if self.settings.shouldShowOnboarding {
+            layout = AnyView(self.onboardingOnlyView)
+        } else if #available(macOS 13.0, *) {
+            layout = AnyView(
+                SplitNavigationShell(
+                    sidebar: {
                         self.sidebarView
-                        self.detailView
-                    }
+                            .navigationSplitViewColumnWidth(min: 220, ideal: 250, max: 300)
+                    },
+                    detail: { self.detailView }
+                )
+            )
+        } else {
+            layout = AnyView(
+                NavigationView {
+                    self.sidebarView
+                    self.detailView
                 }
-            }
-        )
+            )
+        }
 
         let tracked = layout.withMouseTracking(self.mouseTracker)
         let env = tracked.environmentObject(self.mouseTracker)
@@ -1233,12 +1234,15 @@ struct ContentView: View {
     }
 
     private func sidebarNavigationLink(_ item: SidebarItem, title: String, systemImage: String) -> some View {
-        NavigationLink(value: item) {
+        Button {
+            self.selectedSidebarItem = item
+        } label: {
             Label(title, systemImage: systemImage)
                 .font(self.theme.typography.sidebarItem)
                 .frame(minHeight: 24, alignment: .leading)
                 .padding(.vertical, self.theme.metrics.spacing.xs / 2)
         }
+        .buttonStyle(.plain)
     }
 
     private var themePreferenceButton: some View {
@@ -1465,7 +1469,6 @@ struct ContentView: View {
             Text(number + ".")
                 .font(self.theme.typography.captionSmall)
                 .foregroundStyle(self.theme.palette.accent)
-                .fontWeight(.semibold)
                 .frame(width: 16)
             Text(text)
                 .font(self.theme.typography.caption)

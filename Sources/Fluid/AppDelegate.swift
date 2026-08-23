@@ -442,7 +442,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
                 if result.hasUpdate {
                     DebugLogger.shared.info("✅ Update available: \(result.latestVersion)", source: "AppDelegate")
 
-                    guard !SimpleUpdater.shared.isUpdateInProgress else {
+                    let updateAlreadyRunning = await MainActor.run { SimpleUpdater.shared.isUpdateInProgress }
+                    guard !updateAlreadyRunning else {
                         DebugLogger.shared.debug(
                             "Update prompt skipped because installation is already in progress",
                             source: "AppDelegate"
