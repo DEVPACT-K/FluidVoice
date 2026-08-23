@@ -175,13 +175,14 @@ enum ShortcutRecordingTarget: Hashable {
 
 @available(macOS 13.0, *)
 private struct SplitNavigationShell<Sidebar: View, Detail: View>: View {
-    @ViewBuilder var sidebar: Sidebar
-    @ViewBuilder var detail: Detail
+    var sidebar: Sidebar
+    var detail: Detail
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
     var body: some View {
         NavigationSplitView(columnVisibility: self.$columnVisibility) {
             self.sidebar
+                .navigationSplitViewColumnWidth(min: 220, ideal: 250, max: 300)
         } detail: {
             self.detail
         }
@@ -337,15 +338,9 @@ struct ContentView: View {
         if self.settings.shouldShowOnboarding {
             layout = AnyView(self.onboardingOnlyView)
         } else if #available(macOS 13.0, *) {
-            layout = AnyView(
-                SplitNavigationShell(
-                    sidebar: {
-                        self.sidebarView
-                            .navigationSplitViewColumnWidth(min: 220, ideal: 250, max: 300)
-                    },
-                    detail: { self.detailView }
-                )
-            )
+            let side = self.sidebarView
+                .navigationSplitViewColumnWidth(min: 220, ideal: 250, max: 300)
+            layout = AnyView(SplitNavigationShell(sidebar: side, detail: self.detailView))
         } else {
             layout = AnyView(
                 NavigationView {

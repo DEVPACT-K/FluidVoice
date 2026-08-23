@@ -55,6 +55,7 @@ struct SettingsView: View {
     // Querying AudioDevice.getDefaultInputDevice() in the view body triggers HALSystem::InitializeShell()
     // which races with SwiftUI's AttributeGraph metadata processing and causes EXC_BAD_ACCESS crashes.
     @State private var cachedDefaultInputUID: String = ""
+    @State private var previousSelectedOutputUID: String = ""
     @State private var cachedDefaultOutputName: String = ""
 
     // Analytics consent UI state (default ON; user can opt-out)
@@ -1187,7 +1188,9 @@ struct SettingsView: View {
                                 .pickerStyle(.menu)
                                 .frame(width: 240)
                                 .disabled(self.asr.isRunning) // Disable device changes during recording
-                                .onChange(of: self.selectedOutputUID) { oldUID, newUID in
+                                .onChange(of: self.selectedOutputUID) { newUID in
+                                    let oldUID = self.previousSelectedOutputUID
+                                    defer { self.previousSelectedOutputUID = newUID }
                                     guard !newUID.isEmpty else { return }
 
                                     // Prevent device changes during active recording
