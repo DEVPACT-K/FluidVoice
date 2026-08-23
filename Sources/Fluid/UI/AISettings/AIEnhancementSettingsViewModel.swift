@@ -1167,6 +1167,9 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
     }
 
     func fetchModelsForCurrentProvider() async {
+        // Monterey SwiftUI: rebuilding this section while the key field is focused
+        // crashes NSView layout (SIGILL in intrinsicLayoutTraits). Defocus first.
+        NSApp.keyWindow?.makeFirstResponder(nil)
         self.refreshingProviderID = self.selectedProviderID
         self.isFetchingModels = true
         self.fetchModelsError = nil

@@ -2313,6 +2313,7 @@ extension AIEnhancementSettingsView {
 
             HStack(spacing: 10) {
                 Button(action: {
+                    NSApp.keyWindow?.makeFirstResponder(nil) // Monterey: defocus before section rebuild
                     guard self.viewModel.saveEditedProviderAPIKey() else { return }
                     if !isBuiltIn {
                         self.viewModel.saveEditedProvider()
