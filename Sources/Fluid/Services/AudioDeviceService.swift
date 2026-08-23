@@ -98,7 +98,12 @@ nonisolated enum AudioDevice {
     // Monterey 12.7: cache devices for 2s on 4GB Intel to avoid HAL churn during dictate
     private static var cachedDevices: [Device]?
     private static var cacheTimestamp: TimeInterval = 0
+    // Enumerated concurrently from main + background queues (refreshDevices); unsynchronized
+    // static cache mutation raced and crashed (SIGSEGV releasing freed array storage).
+    private static let devicesLock = NSLock()
     static func listAllDevices() -> [Device] {
+        self.devicesLock.lock()
+        defer { self.devicesLock.unlock() }
         if ProcessInfo.processInfo.physicalMemory <= 4 * 1024 * 1024 * 1024,
            let cached = cachedDevices, ProcessInfo.processInfo.systemUptime - cacheTimestamp < 2 {
             return cached
